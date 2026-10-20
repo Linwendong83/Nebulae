@@ -2,6 +2,10 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <PropertyGroup>
         <DevEnvLoc>$(MSBuildThisFileDirectory)DevEnv.targets</DevEnvLoc>
+        <!-- Toolkit artifacts and intermediate files live under dist. -->
+        <NebulaeArtifactsRoot Condition="'$(NebulaeArtifactsRoot)' == ''">$(MSBuildThisFileDirectory)dist\artifacts</NebulaeArtifactsRoot>
+        <BaseIntermediateOutputPath Condition="'$(NebulaeToolkitBuild)' == 'true'">$(NebulaeArtifactsRoot)\cache\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+        <MSBuildProjectExtensionsPath Condition="'$(NebulaeToolkitBuild)' == 'true'">$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
     </PropertyGroup>
 
     <!-- This sets $(DSPGameDir) -->
@@ -10,9 +14,11 @@
     <PropertyGroup Label="Game Install Properties">
         <DSPGameDir Condition="!Exists('$(DevEnvLoc)')">C:\Program Files (x86)\Steam\steamapps\common\Dyson Sphere Program\</DSPGameDir>
         <DSPGameDir>$([MSBuild]::EnsureTrailingSlash('$(DSPGameDir)'))</DSPGameDir>
-        <PluginOutputDirectory>$(DSPGameDir)BepInEx\plugins\nebula-NebulaMultiplayerMod\</PluginOutputDirectory>
+        <UseInstalledGameAssemblies Condition="'$(UseInstalledGameAssemblies)' == '' And Exists('$(DSPGameDir)DSPGAME_Data\Managed\Assembly-CSharp.dll')">true</UseInstalledGameAssemblies>
+        <PluginOutputDirectory>$(DSPGameDir)BepInEx\plugins\Nebulae\</PluginOutputDirectory>
         <PropSheetPath>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)'))</PropSheetPath>
-        <PluginOutputDirectory Condition="Exists('$(PropSheetPath).remoteBuild')">$(PropSheetPath)dist\release\nebula-NebulaMultiplayerMod\</PluginOutputDirectory>
+        <SupportedDSPVersion>0.10.35.29151</SupportedDSPVersion>
+        <PluginOutputDirectory Condition="'$(NebulaeToolkitBuild)' == 'true'">$(NebulaeArtifactsRoot)\build\$(Configuration)\Nebulae\</PluginOutputDirectory>
     </PropertyGroup>
 
     <PropertyGroup Label="Common Properties">
@@ -20,20 +26,21 @@
         <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
-        <OutputPath Condition="(Exists('$(DSPGameDir)') Or Exists('$(PropSheetPath).remoteBuild')) AND '$(MSBuildProjectName)' != 'NebulaTests' ">$(PluginOutputDirectory)</OutputPath>
+        <!-- Toolkit builds use isolated artifact directories. -->
+        <OutputPath Condition="'$(NebulaeToolkitBuild)' == 'true' And '$(MSBuildProjectName)' != 'NebulaeTests'">$(PluginOutputDirectory)</OutputPath>
+        <OutputPath Condition="'$(NebulaeToolkitBuild)' == 'true' And '$(MSBuildProjectName)' == 'NebulaeTests'">$(NebulaeArtifactsRoot)\tests\bin\$(Configuration)\</OutputPath>
         <TargetFramework>net472</TargetFramework>
         <LangVersion>latest</LangVersion>
         <EnableNETAnalyzers>true</EnableNETAnalyzers>
         <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
-        <DefaultItemExcludes>$(DefaultItemExcludes);*.binlog</DefaultItemExcludes>
+        <DefaultItemExcludes>$(DefaultItemExcludes);*.binlog;**/dist/**;**/bin/**;**/obj/**;**/TestResults/**;$(NebulaeArtifactsRoot)/**</DefaultItemExcludes>
 
         <DebugType>portable</DebugType>
         <DebugSymbols>true</DebugSymbols>
         <GitVersionBaseDirectory>$(MSBuildThisFileDirectory)</GitVersionBaseDirectory>
-    </PropertyGroup>
-
-    <PropertyGroup Label="API Properties" Condition=" '$(MSBuildProjectName)' == 'NebulaAPI' ">
-        <OutputPath Condition="Exists('$(DSPGameDir)') Or Exists('$(PropSheetPath).remoteBuild')">$(OutputPath)..\nebula-NebulaMultiplayerModApi</OutputPath>
+        <!-- NU1900 only reports that the vulnerability database could not be downloaded; it says
+             nothing about the referenced packages themselves. -->
+        <NoWarn>$(NoWarn);NU1900</NoWarn>
     </PropertyGroup>
 
     <!-- Shared Items -->
@@ -42,7 +49,7 @@
         <PackageReference Include="Nerdbank.GitVersioning" Version="3.*" PrivateAssets="all"/>
     </ItemGroup>
 
-    <ItemGroup Label="NuGetsMain" Condition=" '$(MSBuildProjectName)' != 'NebulaAPI' ">
+    <ItemGroup Label="NuGetsMain">
         <PackageReference Include="K4os.Compression.LZ4.Streams" Version="1.*"/>
         <Reference Include="Unity.TextMeshPro">
             <HintPath>..\Libs\Unity.TextMeshPro.dll</HintPath>
@@ -52,7 +59,18 @@
     <ItemGroup Label="Core">
         <PackageReference Include="BepInEx.Core" Version="5.4.17" PrivateAssets="all"/>
         <PackageReference Include="UnityEngine.Modules" Version="2022.3.53" IncludeAssets="compile" PrivateAssets="all"/>
-        <PackageReference Include="DysonSphereProgram.GameLibs" Version="*-*" IncludeAssets="compile" PrivateAssets="all"/>
+        <PackageReference Include="DysonSphereProgram.GameLibs" Version="$(SupportedDSPVersion)-r.0" IncludeAssets="compile" PrivateAssets="all" Condition="'$(UseInstalledGameAssemblies)' != 'true'"/>
+    </ItemGroup>
+
+    <ItemGroup Condition="'$(UseInstalledGameAssemblies)' == 'true'">
+        <Reference Include="Assembly-CSharp">
+            <HintPath>$(NebulaeArtifactsRoot)\cache\compat-refs\Assembly-CSharp.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="UnityEngine.UI">
+            <HintPath>$(NebulaeArtifactsRoot)\cache\compat-refs\UnityEngine.UI.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
     </ItemGroup>
 
     <ItemGroup Condition="'$(TargetFramework.TrimEnd(`0123456789`))' == 'net'">

@@ -1,0 +1,42 @@
+﻿#region
+
+using NebulaeModel.Networking;
+using NebulaeModel.Logger;
+using NebulaeModel.Packets;
+using NebulaeModel.Packets.Universe.Editor;
+using NebulaeWorld;
+using NebulaeWorld.Universe;
+
+#endregion
+
+namespace NebulaeNetwork.PacketProcessors.Universe.Editor;
+internal class DysonSphereRemoveShellProcessor : PacketProcessor<DysonSphereRemoveShellPacket>
+{
+    protected override void ProcessPacket(DysonSphereRemoveShellPacket packet, NebulaeConnection conn)
+    {
+        var layer = GameMain.data.dysonSpheres[packet.StarIndex]?.GetLayer(packet.LayerId);
+        if (layer == null)
+        {
+            return;
+        }
+        using (Multiplayer.Session.DysonSpheres.IsIncomingRequest.On())
+        {
+            if (packet.ShellId < 1 || packet.ShellId >= layer.shellCursor)
+            {
+                Log.Warn($"Cannot remove shell[{packet.ShellId}] on layer[{layer.id}], starIndex[{packet.StarIndex}]");
+                Multiplayer.Session.DysonSpheres.HandleDesync(packet.StarIndex, conn);
+                return;
+            }
+            //No need to remove if the shell is already null
+            if (layer.shellPool[packet.ShellId] != null)
+            {
+                layer.RemoveDysonShell(packet.ShellId);
+                DysonSphereManager.ClearSelection(packet.StarIndex, layer.id);
+            }
+        }
+        if (IsHost)
+        {
+            Multiplayer.Session.DysonSpheres.SendPacketToDysonSphereExcept(packet, packet.StarIndex, conn);
+        }
+    }
+}

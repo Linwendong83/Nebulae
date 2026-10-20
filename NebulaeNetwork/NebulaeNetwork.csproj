@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+    <ItemGroup>
+        <PackageReference Include="Open.Nat" Version="2.1.0" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\NebulaeModel\NebulaeModel.csproj" SpecificVersion="true" />
+
+        <ProjectReference Include="..\NebulaeWorld\NebulaeWorld.csproj" SpecificVersion="true" />
+        <ProjectReference Include="..\dep\websocket-sharp\websocket-sharp\websocket-sharp.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <Reference Include="System.IO.Compression" />
+        <Reference Include="System.Net.Http" />
+    </ItemGroup>
+</Project>

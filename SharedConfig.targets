@@ -2,6 +2,29 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003"
          InitialTargets="TestDSPGameFolder">
 
+    <Target Name="VerifyInstalledGameVersion" BeforeTargets="PrepareInstalledGameReferences;CoreCompile"
+            Condition="'$(UseInstalledGameAssemblies)' == 'true'">
+        <Error Condition="!Exists('$(DSPGameDir)Updates\Versions.txt')"
+               Text="The installed game's Updates\Versions.txt is missing."/>
+        <Exec Command="powershell -NoProfile -Command &quot;(Get-Content -LiteralPath '$(DSPGameDir)Updates\Versions.txt' -Tail 1).Split(',')[0]&quot;"
+              ConsoleToMSBuild="true">
+            <Output TaskParameter="ConsoleOutput" PropertyName="InstalledDSPVersion"/>
+        </Exec>
+        <Error Condition="'$(InstalledDSPVersion)' != '$(SupportedDSPVersion)'"
+               Text="Installed Dyson Sphere Program version $(InstalledDSPVersion) does not match supported version $(SupportedDSPVersion)."/>
+    </Target>
+
+    <Target Name="PrepareInstalledGameReferences" BeforeTargets="ResolveAssemblyReferences"
+            Condition="'$(UseInstalledGameAssemblies)' == 'true'"
+            Inputs="$(DSPGameDir)DSPGAME_Data\Managed\Assembly-CSharp.dll;$(DSPGameDir)DSPGAME_Data\Managed\UnityEngine.UI.dll"
+            Outputs="$(NebulaeArtifactsRoot)\cache\compat-refs\Assembly-CSharp.dll;$(NebulaeArtifactsRoot)\cache\compat-refs\UnityEngine.UI.dll">
+        <Error Condition="!Exists('$(DSPGameDir)DSPGAME_Data\Managed\Assembly-CSharp.dll')"
+               Text="The installed Dyson Sphere Program Assembly-CSharp.dll is missing."/>
+        <MakeDir Directories="$(NebulaeArtifactsRoot)\cache\compat-refs"/>
+        <Exec Command="&quot;$(MSBuildThisFileDirectory)Libs\NStrip\NStrip.exe&quot; -p -n &quot;$(DSPGameDir)DSPGAME_Data\Managed\Assembly-CSharp.dll&quot; &quot;$(NebulaeArtifactsRoot)\cache\compat-refs\Assembly-CSharp.dll&quot;"/>
+        <Exec Command="&quot;$(MSBuildThisFileDirectory)Libs\NStrip\NStrip.exe&quot; -p -n &quot;$(DSPGameDir)DSPGAME_Data\Managed\UnityEngine.UI.dll&quot; &quot;$(NebulaeArtifactsRoot)\cache\compat-refs\UnityEngine.UI.dll&quot;"/>
+    </Target>
+
     <Target Name="MaybeCopyDevEnv"
             Inputs="$(MSBuildAllProjects)"
             Outputs="$(DevEnvLoc)"
@@ -23,39 +46,37 @@
     <!-- Note that this is the first target, called by InitialTargets -->
     <Target Name="TestDSPGameFolder"
             DependsOnTargets="MaybeCopyDevEnv;DevEnvInvalid"
-            Condition="!Exists('$(DSPGameDir)') And !Exists('$(PropSheetPath).remoteBuild')"/>
+            Condition="!Exists('$(DSPGameDir)')"/>
 
     <ItemGroup>
         <ProjectAssembliesForUnityProject Include="$(OutputPath)\*.dll"/>
-        <ProjectAssembliesMetaFilesFolder Include="..\NebulaUnity\AssemblyMeta\*.meta"/>
+        <ProjectAssembliesMetaFilesFolder Include="..\NebulaeUnity\AssemblyMeta\*.meta"/>
     </ItemGroup>
     <Target Name="CopyAssembliesToUnityProject"
-            AfterTargets="Build">
+            AfterTargets="Build" Condition="'$(IsolatedBuild)' != 'true'">
         <Message Text="Executing CopyAssembliesToUnityProject task $(ProjectName)" Importance="high"/>
         <Copy
                 SourceFiles="@(ProjectAssembliesForUnityProject)"
-                DestinationFolder="..\NebulaUnity\Assets\Assemblies\"/>
+                DestinationFolder="..\NebulaeUnity\Assets\Assemblies\"/>
     </Target>
 
     <Target Name="CopyMetaFilesToUnityProject"
-            AfterTargets="Build">
+            AfterTargets="Build" Condition="'$(IsolatedBuild)' != 'true'">
         <Copy
                 SourceFiles="@(ProjectAssembliesMetaFilesFolder)"
-                DestinationFolder="..\NebulaUnity\Assets\Assemblies\"/>
+                DestinationFolder="..\NebulaeUnity\Assets\Assemblies\"/>
     </Target>
 
-    <Target Name="CopyFilesToOutDir" AfterTargets="Build" Condition=" '$(MSBuildProjectName)' != 'NebulaAPI' ">
-        <ItemGroup>
-            <DiscordLibs Include="..\dep\discord_game_sdk\lib\x86_64\*"/>
-        </ItemGroup>
-        <Copy SourceFiles="..\NebulaWorld\Assets\nebulabundle" DestinationFolder="$(OutDir)"/>
-        <Copy SourceFiles="@(DiscordLibs)" DestinationFolder="$(OutDir)"/>
+    <Target Name="CopyFilesToOutDir" AfterTargets="Build">
+        <Copy SourceFiles="..\NebulaeWorld\Assets\nebulaebundle" DestinationFolder="$(OutDir)"/>
+        <Copy SourceFiles="..\NebulaeWorld\Assets\nebulaenametag" DestinationFolder="$(OutDir)"
+              Condition="Exists('..\NebulaeWorld\Assets\nebulaenametag')"/>
     </Target>
 
-    <Target Name="BeforeBuild">
+    <Target Name="BeforeBuild" Condition="'$(IsolatedBuild)' != 'true'">
         <Copy
-                Condition="Exists('..\NebulaUnity\Assets\StreamingAssets\AssetBundles\nebulabundle')"
-                SourceFiles="..\NebulaUnity\Assets\StreamingAssets\AssetBundles\nebulabundle"
-                DestinationFolder="..\NebulaWorld\Assets\"/>
+                Condition="Exists('..\NebulaeUnity\Assets\StreamingAssets\AssetBundles\nebulaebundle')"
+                SourceFiles="..\NebulaeUnity\Assets\StreamingAssets\AssetBundles\nebulaebundle"
+                DestinationFolder="..\NebulaeWorld\Assets\"/>
     </Target>
 </Project>

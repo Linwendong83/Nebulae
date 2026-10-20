@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net472</TargetFramework>
+        <!-- Nerdbank.GitVersioning generates ThisAssembly per project and NebulaeModel exposes its
+             copy through InternalsVisibleTo. The compiler binds to this project's own copy, which
+             is the version PluginInfo reports, so the shadowing is intentional. -->
+        <NoWarn>$(NoWarn);CS0436</NoWarn>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\NebulaeModel\NebulaeModel.csproj" SpecificVersion="true" />
+
+        <ProjectReference Include="..\NebulaeNetwork\NebulaeNetwork.csproj" />
+        <ProjectReference Include="..\NebulaeWorld\NebulaeWorld.csproj" SpecificVersion="true" />
+    </ItemGroup>
+
+    <Target Name="WriteDSPGameVersion" BeforeTargets="CoreCompile">
+        <PropertyGroup>
+            <GeneratedText><![CDATA[
+namespace $(RootNamespace)
+{
+    internal static class DSPGameVersion
+    {
+        public const string VERSION = "$(SupportedDSPVersion)"%3B
+    }
+}
+      ]]></GeneratedText>
+            <GeneratedFilePath>$(IntermediateOutputPath)DSPGameVersion.cs</GeneratedFilePath>
+        </PropertyGroup>
+        <ItemGroup>
+            <Compile Include="$(GeneratedFilePath)" />
+            <FileWrites Include="$(GeneratedFilePath)" />
+        </ItemGroup>
+        <WriteLinesToFile Lines="$(GeneratedText)" File="$(GeneratedFilePath)" WriteOnlyWhenDifferent="true" Overwrite="true" />
+    </Target>
+</Project>

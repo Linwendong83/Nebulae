@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup Condition="'$(NebulaToolkitBuild)' == 'true'">
+        <OutputPath>$(NebulaArtifactsRoot)\build\$(Configuration)\dependencies\$(MSBuildProjectName)\</OutputPath>
+        <BaseIntermediateOutputPath>$(NebulaArtifactsRoot)\cache\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+        <MSBuildProjectExtensionsPath>$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
+        <DefaultItemExcludes>$(DefaultItemExcludes);**/obj/**;**/bin/**</DefaultItemExcludes>
+        <NoWarn>$(NoWarn);NU1900</NoWarn>
+    </PropertyGroup>
     <ItemGroup>
         <PackageReference Include="jnm2.ReferenceAssemblies.net35" Version="1.0.1" PrivateAssets="All"/>
     </ItemGroup>

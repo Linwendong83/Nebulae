@@ -1,0 +1,58 @@
+﻿#region
+
+using NebulaeModel.Networking;
+using NebulaeModel.Logger;
+using NebulaeModel.Packets;
+using NebulaeModel.Packets.Universe.Editor;
+using NebulaeWorld;
+using NebulaeWorld.Universe;
+
+#endregion
+
+namespace NebulaeNetwork.PacketProcessors.Universe.Editor;
+internal class DysonSphereRemoveNodeProcessor : PacketProcessor<DysonSphereRemoveNodePacket>
+{
+    protected override void ProcessPacket(DysonSphereRemoveNodePacket packet, NebulaeConnection conn)
+    {
+        var layer = GameMain.data.dysonSpheres[packet.StarIndex]?.GetLayer(packet.LayerId);
+        if (layer == null)
+        {
+            return;
+        }
+        using (Multiplayer.Session.DysonSpheres.IsIncomingRequest.On())
+        {
+            if (!Check(layer, packet))
+            {
+                Log.Warn($"Cannot remove node[{packet.NodeId}] on layer[{layer.id}], starIndex[{packet.StarIndex}]");
+                Multiplayer.Session.DysonSpheres.HandleDesync(packet.StarIndex, conn);
+                return;
+            }
+            //No need to remove if the node is already null
+            if (layer.nodePool[packet.NodeId] != null)
+            {
+                layer.RemoveDysonNode(packet.NodeId);
+                DysonSphereManager.ClearSelection(packet.StarIndex, layer.id);
+            }
+        }
+        if (IsHost)
+        {
+            Multiplayer.Session.DysonSpheres.SendPacketToDysonSphereExcept(packet, packet.StarIndex, conn);
+        }
+    }
+
+    private static bool Check(DysonSphereLayer layer, DysonSphereRemoveNodePacket packet)
+    {
+        if (packet.NodeId < 1 || packet.NodeId >= layer.nodeCursor)
+        {
+            return false;
+        }
+        var node = layer.nodePool[packet.NodeId];
+        if (node == null)
+        {
+            //Sender and receiver are in the same state, so it's ok to pass
+            return true;
+        }
+        //Make sure that shells and frames connected to the node are removed first.
+        return node.frames.Count <= 0;
+    }
+}

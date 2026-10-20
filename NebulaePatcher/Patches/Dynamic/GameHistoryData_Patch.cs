@@ -1,0 +1,239 @@
+#region
+
+using HarmonyLib;
+using NebulaeModel.Authority;
+using NebulaeModel.Packets.GameHistory;
+using NebulaeWorld;
+using NebulaeWorld.GameStates;
+
+#endregion
+
+namespace NebulaePatcher.Patches.Dynamic;
+
+[HarmonyPatch(typeof(GameHistoryData))]
+internal class GameHistoryData_Patch
+{
+    [HarmonyPostfix]
+    [HarmonyPatch(nameof(GameHistoryData.EnqueueTech))]
+    public static void EnqueueTech_Postfix(int techId)
+    {
+        if (!Multiplayer.IsActive || Multiplayer.Session.History.IsIncomingRequest)
+        {
+            return;
+        }
+        //Synchronize enqueueing techs by players
+        Multiplayer.Session.Network.SendPacket(new GameHistoryEnqueueTechPacket(techId));
+    }
+
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(GameHistoryData.RemoveTechInQueue))]
+    public static void RemoveTechInQueue_Prefix(int index, out int __state)
+    {
+        __state = GameMain.history.techQueue[index];
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(nameof(GameHistoryData.RemoveTechInQueue))]
+    public static void RemoveTechInQueue_Postfix(int __state)
+    {
+        if (!Multiplayer.IsActive || Multiplayer.Session.History.IsIncomingRequest)
+        {
+            return;
+        }
+        //Synchronize dequeuing techs by players and trigger refunds for all clients
+        Multiplayer.Session.Network.SendPacket(new GameHistoryRemoveTechPacket(__state));
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(nameof(GameHistoryData.SortTechQueue))]
+    public static void SortTechQueue_Postfix(GameHistoryData __instance)
+    {
+        if (!Multiplayer.IsActive || Multiplayer.Session.History.IsIncomingRequest)
+        {
+            return;
+        }
+        //Synchronize reorder queue action when the player done dragging
+        Multiplayer.Session.Network.SendPacket(new GameHistoryTechQueueSyncPacket(__instance.techQueue));
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(nameof(GameHistoryData.PauseTechQueue))]
+    public static void PauseTechQueue_Postfix()
+    {
+        if (!Multiplayer.IsActive || Multiplayer.Session.History.IsIncomingRequest)
+        {
+            return;
+        }
+        //Synchronize pausing techs by players
+        Multiplayer.Session.Network.SendPacket(new GameHistoryNotificationPacket(GameHistoryEvent.PauseQueue));
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(nameof(GameHistoryData.ResumeTechQueue))]
+    public static void ResumeTechQueue_Postfix()
+    {
+        if (!Multiplayer.IsActive || Multiplayer.Session.History.IsIncomingRequest)
+        {
+            return;
+        }
+        //Synchronize resuming techs by players
+        Multiplayer.Session.Network.SendPacket(new GameHistoryNotificationPacket(GameHistoryEvent.ResumeQueue));
+    }
+
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(GameHistoryData.UnlockRecipe))]
+    public static bool UnlockRecipe_Prefix()
+    {
+        //Wait for the authoritative packet for unlocking recipes in multiplayer for clients
+        return !Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost || Multiplayer.Session.History.IsIncomingRequest;
+    }
+
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(GameHistoryData.UnlockTechFunction))]
+    public static bool UnlockTechFunction_Prefix()
+    {
+        // The host-confirmed unlock is applied inside the incoming-request window (see
+        // GameHistoryUnlockTechProcessor and MetadataTransactionManager.ApplyWorld). The vanilla
+        // functions carry the effects of the tech - drive engine flight, universe observation level and
+        // the rest - so they must run on the client there as well, or those effects only land on the
+        // next full GameHistoryData import, i.e. after rejoining the game.
+        if (Multiplayer.IsActive && Multiplayer.Session.History.IsIncomingRequest)
+        {
+            return true;
+        }
+        if (!AuthorityRuleGuard.AllowHostRule())
+        {
+            return false;
+        }
+        //Wait for the authoritative packet for unlocking tech features in multiplayer for clients
+        return !Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost;
+    }
+
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(GameHistoryData.GainTechAwards))]
+    public static bool GainTechAwards_Prefix()
+    {
+        //Wait for the authoritative packet for gaining tech awards in multiplayer for clients
+        return !Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost || Multiplayer.Session.History.IsIncomingRequest;
+    }
+
+    [HarmonyPatch(nameof(GameHistoryData.DequeueTech))]
+    public static bool DequeueTech_Prefix()
+    {
+        // Wait for the authoritative packet for dequeuing tech in multiplayer for clients
+        return !Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost || Multiplayer.Session.History.IsIncomingRequest;
+    }
+
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(GameHistoryData.UnlockTech))]
+    public static bool UnlockTech_Prefix()
+    {
+        //Wait for the authoritative packet for unlocking tech features in multiplayer for clients
+        return !Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost || Multiplayer.Session.History.IsIncomingRequest;
+    }
+
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(GameHistoryData.UnlockTechUnlimited))]
+    public static bool UnlockTechUnlimited_Prefix(GameHistoryData __instance, int techId)
+    {
+        if (!Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost || Multiplayer.Session.History.IsIncomingRequest)
+        {
+            return true;
+        }
+        // If client initial the manual unlock event (metadata, sandbox), send to server and wait for the authoritative
+        var techState = __instance.TechState(techId);
+        var level = techState.hashUploaded >= techState.hashNeeded ? techState.maxLevel : techState.curLevel;
+        Multiplayer.Session.Network.SendPacket(new GameHistoryUnlockTechPacket(techId, level));
+        return false;
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(nameof(GameHistoryData.NotifyTechUnlock))]
+    public static void NotifyTechUnlock_Postfix(int _techId, int _level)
+    {
+        if (!Multiplayer.IsActive || !Multiplayer.Session.LocalPlayer.IsHost)
+        {
+            return;
+        }
+        // Synchronize unlocking techs
+        Multiplayer.Session.Network.SendPacket(new GameHistoryUnlockTechPacket(_techId, _level));
+    }
+
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(GameHistoryData.RegFeatureKey))]
+    public static void RegFeatureKey_Prefix(GameHistoryData __instance, int featureId, out bool __state)
+    {
+        __state = Multiplayer.IsActive && __instance != null && (__instance.featureKeys == null || !__instance.featureKeys.Contains(featureId));
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(nameof(GameHistoryData.RegFeatureKey))]
+    public static void RegFeatureKey_Postfix(int featureId, bool __state)
+    {
+        if (!Multiplayer.IsActive)
+        {
+            return;
+        }
+
+        GameStatesManager.PreserveFeatureKey(featureId);
+
+        if (!__state || Multiplayer.Session.History.IsIncomingRequest || GameStatesManager.IsAdvisorOrTutorialFeatureKey(featureId))
+        {
+            return;
+        }
+
+        Multiplayer.Session.Network.SendPacket(new GameHistoryFeatureKeyPacket(featureId, true));
+    }
+
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(GameHistoryData.UnregFeatureKey))]
+    public static void UnregFeatureKey_Prefix(GameHistoryData __instance, int featureId, out bool __state)
+    {
+        __state = Multiplayer.IsActive && __instance?.featureKeys != null && __instance.featureKeys.Contains(featureId);
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(nameof(GameHistoryData.UnregFeatureKey))]
+    public static void UnregFeatureKey_Postfix(int featureId, bool __state)
+    {
+        if (!Multiplayer.IsActive)
+        {
+            return;
+        }
+
+        GameStatesManager.UnpreserveFeatureKey(featureId);
+
+        if (!__state || Multiplayer.Session.History.IsIncomingRequest || GameStatesManager.IsAdvisorOrTutorialFeatureKey(featureId))
+        {
+            return;
+        }
+
+        Multiplayer.Session.Network.SendPacket(new GameHistoryFeatureKeyPacket(featureId, false));
+    }
+
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(GameHistoryData.UnlockTutorial))]
+    public static void UnlockTutorial_Prefix(GameHistoryData __instance, int tutorialId, out bool __state)
+    {
+        __state = Multiplayer.IsActive && __instance != null && tutorialId > 0 && (__instance.tutorialUnlocked == null || !__instance.tutorialUnlocked.Contains(tutorialId));
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(nameof(GameHistoryData.UnlockTutorial))]
+    public static void UnlockTutorial_Postfix(int tutorialId, bool __state)
+    {
+        if (tutorialId <= 0 || !Multiplayer.IsActive)
+        {
+            return;
+        }
+
+        GameStatesManager.PreserveTutorial(tutorialId);
+
+        if (!__state || Multiplayer.Session.History.IsIncomingRequest)
+        {
+            return;
+        }
+
+        // Tutorial acknowledgements belong to this player and are persisted locally.
+    }
+}
