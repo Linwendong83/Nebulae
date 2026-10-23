@@ -1,7 +1,7 @@
 ﻿#region
 
 using System;
-using System.Collections.Generic;
+using System.Collections.Concurrent;
 using UnityEngine;
 
 #endregion
@@ -12,17 +12,11 @@ public class UnityDispatchQueue : MonoBehaviour
 {
     private static UnityDispatchQueue _instance;
 
-    private readonly Queue<Action> actionsQueue = new();
+    private static readonly MainThreadActionQueue actionsQueue = new();
 
     private void Update()
     {
-        lock (actionsQueue)
-        {
-            while (actionsQueue.Count > 0)
-            {
-                actionsQueue.Dequeue().Invoke();
-            }
-        }
+        actionsQueue.Drain();
     }
 
     private void OnDestroy()
@@ -30,30 +24,32 @@ public class UnityDispatchQueue : MonoBehaviour
         _instance = null;
     }
 
-    private static UnityDispatchQueue GetInstance()
+    /// <summary>Called from plugin Awake, before sockets start. Unity APIs stay on that thread.</summary>
+    public static void Initialize()
     {
-        if (!_instance)
-        {
-            _instance = FindObjectOfType<UnityDispatchQueue>();
-        }
-
-        if (_instance)
-        {
-            return _instance;
-        }
+        if (_instance) return;
         var go = new GameObject(nameof(UnityDispatchQueue));
         _instance = go.AddComponent<UnityDispatchQueue>();
         DontDestroyOnLoad(_instance);
-
-        return _instance;
     }
 
     public static void RunOnMainThread(Action action)
     {
-        var instance = GetInstance();
-        lock (instance.actionsQueue)
-        {
-            instance.actionsQueue.Enqueue(action);
-        }
+        // In particular, do not FindObjectOfType/AddComponent from WebSocket callbacks.
+        actionsQueue.Enqueue(action);
+    }
+}
+
+internal sealed class MainThreadActionQueue
+{
+    private readonly ConcurrentQueue<Action> actions = new();
+    public void Enqueue(Action action)
+    {
+        if (action == null) throw new ArgumentNullException(nameof(action));
+        actions.Enqueue(action);
+    }
+    public void Drain()
+    {
+        while (actions.TryDequeue(out var action)) action();
     }
 }

@@ -1,4 +1,4 @@
-using NebulaeWorld;
+﻿using NebulaeWorld;
 #region
 
 using NebulaeModel.Authority;
@@ -50,12 +50,10 @@ internal sealed class GroundEnemyReplicaPools : IGroundEnemyPools
     internal void CancelBatch() { presentationWrites.Clear(); batchFactory = null; }
     internal void EndBatch()
     {
-        var started = LoadingTimings.Now;
         try { presentationWrites.Flush(writePose); }
         finally
         {
             batchFactory = null;
-            Multiplayer.Session?.AuthorityRuntime?.Metrics.Stages.Record("client.presentation", LoadingTimings.Elapsed(started));
         }
     }
     private void WritePose(int id, bool moved, bool rotated)
@@ -74,6 +72,7 @@ internal sealed class GroundEnemyReplicaPools : IGroundEnemyPools
 
     public void CreateEnemyShell(int enemyId, in GroundEnemyState state)
     {
+        Multiplayer.Session?.AuthorityRuntime?.DarkFogReplica?.MarkSearchDirty(planetId);
         var factory = Factory;
         if (factory == null || enemyId <= 0) return;
         EnsureCapacity(factory, enemyId);
@@ -160,6 +159,7 @@ internal sealed class GroundEnemyReplicaPools : IGroundEnemyPools
         if (factory == null || enemyId <= 0 || enemyId >= factory.enemyPool.Length) return;
         ref var enemy = ref factory.enemyPool[enemyId];
         if (enemy.id != enemyId) return;
+        if (enemy.owner != state.Owner) Multiplayer.Session?.AuthorityRuntime?.DarkFogReplica?.MarkSearchDirty(planetId);
         var presentation = Multiplayer.Session?.EnemyMotion;
         var before = presentation?.Capture(factory, enemyId,
             state.Kind == GroundEnemyKind.GroundUnit && state.IsDynamic && state.NativeUnit?.Length > 0) ?? default;
@@ -345,6 +345,7 @@ internal sealed class GroundEnemyReplicaPools : IGroundEnemyPools
     }
     public void RemoveEnemyShell(int enemyId)
     {
+        Multiplayer.Session?.AuthorityRuntime?.DarkFogReplica?.MarkSearchDirty(planetId);
         presentationWrites.FlushOne(enemyId, writePose);
         var factory = Factory;
         if (factory == null || enemyId <= 0 || enemyId >= factory.enemyPool.Length) return;

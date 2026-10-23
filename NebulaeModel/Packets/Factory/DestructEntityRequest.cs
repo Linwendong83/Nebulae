@@ -1,7 +1,7 @@
 ﻿namespace NebulaeModel.Packets.Factory;
 
 [NebulaeModel.Networking.PacketId(6363043609523338168UL)]
-internal class DestructEntityRequest
+internal class DestructEntityRequest : NebulaeModel.Networking.IVegetationOperation
 {
     public DestructEntityRequest() { }
 
@@ -21,4 +21,8 @@ internal class DestructEntityRequest
     public int ProtoId { get; set; }
     [NebulaeModel.Networking.WireOrder(3)]
     public int AuthorId { get; set; }
+    [NebulaeModel.Networking.WireOrder(4)]
+    public byte[] CollectionBefore { get; set; } = System.Array.Empty<byte>();
+    [NebulaeModel.Networking.WireOrder(5)]
+    public long CommandSequence { get; set; }
 }

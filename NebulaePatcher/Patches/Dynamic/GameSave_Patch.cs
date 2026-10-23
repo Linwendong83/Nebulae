@@ -18,6 +18,7 @@ internal class GameSave_Patch
     [HarmonyPatch(nameof(GameSave.SaveCurrentGame))]
     public static bool SaveCurrentGame_Prefix()
     {
+        if (Multiplayer.SuppressClientWorldSaves) return false;
         if (!Multiplayer.IsActive || !Multiplayer.Session.LocalPlayer.IsHost)
         {
             return !Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost;
@@ -31,7 +32,7 @@ internal class GameSave_Patch
     [HarmonyPatch(nameof(GameSave.SaveCurrentGame))]
     public static void SaveCurrentGame_Postfix(string saveName, bool __result)
     {
-        if (!Multiplayer.IsActive || !Multiplayer.Session.LocalPlayer.IsHost)
+        if (Multiplayer.SuppressClientWorldSaves || !Multiplayer.IsActive || !Multiplayer.Session.LocalPlayer.IsHost)
         {
             return;
         }
@@ -47,8 +48,13 @@ internal class GameSave_Patch
     public static bool AutoSave_Prefix()
     {
         // Only save if in single player or if you are the host
-        return !Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost;
+        return !Multiplayer.SuppressClientWorldSaves && (!Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost);
     }
+
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(GameSave.AutoSaveAfterErrored))]
+    public static bool AutoSaveAfterErrored_Prefix() =>
+        !Multiplayer.SuppressClientWorldSaves && (!Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost);
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(GameSave.SaveAsLastExit))]

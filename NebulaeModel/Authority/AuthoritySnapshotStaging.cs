@@ -52,8 +52,6 @@ internal sealed class ClientSnapshotStaging
     /// <summary>Counts a refusal the replica detected outside the staging calls themselves.</summary>
     internal void CountRefused() => RefusedTotal++;
 
-    public void Clear() => stagings.Clear();
-
     /// <summary>True when a baseline is currently being staged for this scope.</summary>
     public bool IsStaging(ScopeKey scope) => stagings.ContainsKey(scope);
 

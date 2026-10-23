@@ -6,6 +6,14 @@ using System.Collections.Generic;
 
 namespace NebulaeModel.Authority;
 
+/// <summary>Owner classification stored in historical authority records.</summary>
+internal enum ConstructionOwnerKind : byte
+{
+    Unknown = 0,
+    Player = 1,
+    BattleBase = 2
+}
+
 /// <summary>Historical NBAS schema, retained unchanged for existing authority records.</summary>
 /// <remarks>
 /// The optional NBAS block is now embedded after the players in the .server file. Its contents

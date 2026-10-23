@@ -14,9 +14,20 @@ internal class UIScreenshotTool_Patch
     [HarmonyPatch(nameof(UIScreenshotTool.OnPauseButtonClick))]
     public static bool OnPauseButtonClick_Prefix()
     {
-        // The screenshot tool freezes the world for a clean shot. In multiplayer the pause is a
-        // host-authoritative world state, so a local toggle must not write the flag: the world
-        // pause (tech tree, Dyson editor) is the only way to stop the shared clock.
-        return !Multiplayer.IsActive;
+        if (!Multiplayer.IsActive || !Multiplayer.Session.IsClient) return true;
+        SimulatedWorld.RequestWorldPause();
+        return false;
+    }
+
+    [HarmonyPostfix, HarmonyPatch(nameof(UIScreenshotTool.OnPauseButtonClick))]
+    public static void OnPauseButtonClick_Postfix()
+    {
+        if (Multiplayer.IsActive) SimulatedWorld.SyncWorldPauseAfterToggle();
+    }
+
+    [HarmonyPostfix, HarmonyPatch("_OnClose")]
+    public static void OnClose_Postfix()
+    {
+        if (Multiplayer.IsActive) SimulatedWorld.SyncWorldPauseAfterWindowClosed(false);
     }
 }

@@ -29,6 +29,7 @@ internal class StorageSyncRequestProcessor : PacketProcessor<StorageSyncRequestP
         using var writer = new BinaryUtils.Writer();
         storageComponent.Export(writer.BinaryWriter);
         conn.SendPacket(new StorageSyncResponsePacket(packet.PlanetId, packet.StorageId,
-            writer.CloseAndGetBytes()) { Sequence = packet.Sequence });
+            writer.CloseAndGetBytes())
+        { Sequence = packet.Sequence });
     }
 }

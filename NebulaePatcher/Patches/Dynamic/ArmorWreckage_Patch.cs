@@ -34,7 +34,8 @@ internal static class ArmorWreckage_Patch
 
         var owner = __instance.gameObject.AddComponent<RespawnWreckageMaterialOwner>();
         owner.Initialize(new List<Material>(copies.Values).ToArray());
-        var renderer = __instance.GetComponent<MeshRenderer>();
+        // Bone armor puts its renderer on a "mesh" child; stock parts use the root.
+        var renderer = __instance.GetComponentInChildren<MeshRenderer>(true);
         if (renderer != null) renderer.sharedMaterials = isolated;
         __instance.mats = isolated;
     }

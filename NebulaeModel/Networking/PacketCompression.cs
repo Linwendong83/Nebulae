@@ -1,10 +1,8 @@
-#region
+﻿#region
 
 using System;
-using System.Globalization;
 using System.IO;
 using System.IO.Compression;
-using System.Threading;
 using NebulaeModel.Logger;
 using NebulaeModel.Networking.Serialization;
 using NebulaeModel.Packets.Authority;
@@ -33,8 +31,8 @@ namespace NebulaeModel.Networking;
 /// that does not save bytes falls back to the original packet.
 /// </para>
 /// <para>
-/// No negotiation packet is needed: the handshake refuses a peer whose mod version differs, so both
-/// ends of a live connection always agree on the framing.
+/// Every message uses this frame. The handshake carries the mod version and player certificate;
+/// packet identifiers and field order are declared by the wire contract.
 /// </para>
 /// </remarks>
 internal static class PacketCompression
@@ -57,8 +55,6 @@ internal static class PacketCompression
     private static readonly ulong playerWeaponId = WireContract.PacketId(typeof(PlayerWeaponPacket));
     private static readonly ulong transportBatchId = WireContract.PacketId(typeof(StarBroadcastPacket));
 
-    private static long latencyBypasses;
-    internal static long LatencyBypasses => Interlocked.Read(ref latencyBypasses);
 
     private static bool ShouldCompress(byte[] packet, bool favorLatency)
     {
@@ -71,7 +67,7 @@ internal static class PacketCompression
         // setup on small batches. Snapshot chunks and large transfers retain compression.
         if (favorLatency && (id == worldStateId || id == playerCombatStateId || id == lifecycleId ||
             id == battleVisualId || id == playerWeaponId || id == stateDeltaId))
-        { Interlocked.Increment(ref latencyBypasses); return false; }
+            return false;
         return id == transportBatchId || id == stateDeltaId || id == snapshotChunkId || id == worldStateId || id == playerCombatStateId || id == lifecycleId ||
                id == battleVisualId || id == playerWeaponId;
     }
@@ -115,34 +111,6 @@ internal static class PacketCompression
     /// </remarks>
     public const int MaxDecompressedMessageBytes = 64 * 1024 * 1024;
 
-    private static long rawMessages;
-    private static long rawBytes;
-    private static long compressedMessages;
-    private static long compressedBytesBefore;
-    private static long compressedBytesAfter;
-    private static long rejectedMessages;
-
-    /// <summary>Messages that crossed the wire as serialized, frame header excluded.</summary>
-    public static long RawMessages => Interlocked.Read(ref rawMessages);
-
-    /// <summary>Serialized bytes inside <see cref="RawMessages"/>.</summary>
-    public static long RawBytes => Interlocked.Read(ref rawBytes);
-
-    /// <summary>Messages that crossed the wire deflated.</summary>
-    public static long CompressedMessages => Interlocked.Read(ref compressedMessages);
-
-    /// <summary>Serialized bytes inside <see cref="CompressedMessages"/>, before compression.</summary>
-    public static long CompressedBytesBefore => Interlocked.Read(ref compressedBytesBefore);
-
-    /// <summary>Wire bytes of <see cref="CompressedMessages"/>, frame header and DEFLATE output included.</summary>
-    public static long CompressedBytesAfter => Interlocked.Read(ref compressedBytesAfter);
-
-    /// <summary>Messages refused on arrival: bad flag, failed inflate, or past the size ceiling.</summary>
-    public static long RejectedMessages => Interlocked.Read(ref rejectedMessages);
-
-    /// <summary>True once any message has crossed either counter, so a report can stay silent otherwise.</summary>
-    public static bool HasTraffic => RawMessages + CompressedMessages > 0;
-
     /// <summary>
     /// Frames one serialized packet for the socket.
     /// </summary>
@@ -158,7 +126,6 @@ internal static class PacketCompression
 
         if (!ShouldCompress(packet, favorLatency))
         {
-            CountRaw(packet.Length);
             return Frame(packet, FlagRaw, packet.Length);
         }
 
@@ -176,19 +143,14 @@ internal static class PacketCompression
         catch (Exception exception)
         {
             Log.Warn($"Packet compression failed, sending {packet.Length} bytes as they are: {exception.Message}");
-            CountRaw(packet.Length);
             return Frame(packet, FlagRaw, packet.Length);
         }
 
         if (deflated.Length >= packet.Length)
         {
-            CountRaw(packet.Length);
             return Frame(packet, FlagRaw, packet.Length);
         }
 
-        Interlocked.Increment(ref compressedMessages);
-        Interlocked.Add(ref compressedBytesBefore, packet.Length);
-        Interlocked.Add(ref compressedBytesAfter, deflated.Length + HeaderBytes);
         return Frame(deflated, FlagDeflate, packet.Length);
     }
 
@@ -200,56 +162,24 @@ internal static class PacketCompression
     /// </exception>
     public static byte[] UnwrapForReceive(byte[] message)
     {
-        try
+        if (message == null || message.Length <= HeaderBytes || BitConverter.ToUInt32(message, 0) != Signature)
+            throw new InvalidDataException("Invalid packet frame header.");
+        var length = BitConverter.ToInt32(message, LengthOffset);
+        if (length < sizeof(ulong) || length > MaxDecompressedMessageBytes)
+            throw new InvalidDataException("Invalid decoded packet length.");
+        switch (message[FlagOffset])
         {
-            if (message == null || message.Length <= HeaderBytes || BitConverter.ToUInt32(message, 0) != Signature)
-                throw new InvalidDataException("Invalid packet frame header.");
-            var length = BitConverter.ToInt32(message, LengthOffset);
-            if (length < sizeof(ulong) || length > MaxDecompressedMessageBytes)
-                throw new InvalidDataException("Invalid decoded packet length.");
-            switch (message[FlagOffset])
-            {
-                case FlagRaw:
-                    if (message.Length - HeaderBytes != length)
-                        throw new InvalidDataException("Raw packet length does not match its frame header.");
-                    var raw = new byte[length];
-                    Array.Copy(message, HeaderBytes, raw, 0, raw.Length);
-                    return raw;
-                case FlagDeflate:
-                    return Inflate(message, length);
-                default:
-                    throw new InvalidDataException($"Unknown packet compression flag {message[FlagOffset]}.");
-            }
+            case FlagRaw:
+                if (message.Length - HeaderBytes != length)
+                    throw new InvalidDataException("Raw packet length does not match its frame header.");
+                var raw = new byte[length];
+                Array.Copy(message, HeaderBytes, raw, 0, raw.Length);
+                return raw;
+            case FlagDeflate:
+                return Inflate(message, length);
+            default:
+                throw new InvalidDataException($"Unknown packet compression flag {message[FlagOffset]}.");
         }
-        catch (InvalidDataException)
-        {
-            Interlocked.Increment(ref rejectedMessages);
-            throw;
-        }
-    }
-
-    /// <summary>One line of process-lifetime totals, for the perf report.</summary>
-    /// <remarks>
-    /// Process-lifetime rather than per-session on purpose: the counters sit on the transport, where
-    /// host and client traffic of a self-hosted session share one process. They answer "how much did
-    /// compression save", which is what tuning the threshold needs, not a per-role session metric.
-    /// </remarks>
-    public static string Describe()
-    {
-        var before = CompressedBytesBefore;
-        var after = CompressedBytesAfter;
-        var saved = before > after ? 100.0 * (before - after) / before : 0.0;
-        return "wire compression rawMessages=" + RawMessages + " rawBytes=" + RawBytes +
-               " compressedMessages=" + CompressedMessages + " rawBytesCompressed=" + before +
-               " wireBytesCompressed=" + after +
-               " savedPercent=" + saved.ToString("F1", CultureInfo.InvariantCulture) +
-               " rejected=" + RejectedMessages + " " + StateDeltaMetrics.Describe();
-    }
-
-    private static void CountRaw(int bytes)
-    {
-        Interlocked.Increment(ref rawMessages);
-        Interlocked.Add(ref rawBytes, bytes);
     }
 
     private static byte[] Frame(byte[] payload, byte flag, int packetLength)

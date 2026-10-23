@@ -54,7 +54,9 @@ internal enum PoolKind : byte
     HiveSummary,
     PlayerCombat,
     /// <summary>Player turrets, keyed by their owning entity slot.</summary>
-    Turret
+    Turret,
+    /// <summary>Persistent factory ruins, including geothermal dark fog pits.</summary>
+    Ruin
 }
 
 /// <summary>How a pool's ScopeId is derived from the game's astro id.</summary>
@@ -73,12 +75,6 @@ internal enum PoolScopeKind : byte
 /// <summary>
 /// The single place that decides how a game astro id becomes a replication scope.
 /// </summary>
-/// <remarks>
-/// The sector/planet split reuses the rule the existing generation tracking already uses
-/// (<c>CombatGenerationState.NormalizeAstro</c> and <c>EnemyManager.NormalizeEnemyScope</c>:
-/// <c>astroId &gt; 1000000 ? 0 : astroId</c>), so identity in the new protocol cannot disagree with
-/// identity in the code that is already shipped.
-/// </remarks>
 internal static class AuthorityScope
 {
     /// <summary>ScopeId of every pool shared by the whole sector.</summary>
@@ -116,6 +112,7 @@ internal static class AuthorityScope
             case PoolKind.Vegetable:
             case PoolKind.Vein:
             case PoolKind.Turret:
+            case PoolKind.Ruin:
                 scopeKind = PoolScopeKind.Planet;
                 return true;
             default:

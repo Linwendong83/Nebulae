@@ -11,13 +11,13 @@ internal class EnemyFormation_Patch
 {
     [HarmonyPrefix]
     [HarmonyPatch(typeof(EnemyFormation), nameof(EnemyFormation.RemoveUnit))]
-    public static bool RemoveUnit_Prefix(EnemyFormation __instance, int port)
+    public static bool RemoveUnit_Prefix(EnemyFormation __instance, int port, int[] ___vacancies, ref int ___vacancyCursor)
     {
         if (__instance.units[port] != 0)
         {
-            if (__instance.vacancyCursor < __instance.vacancies.Length) // guard
+            if (___vacancyCursor < ___vacancies.Length) // guard
             {
-                __instance.vacancies[__instance.vacancyCursor++] = port;
+                ___vacancies[___vacancyCursor++] = port;
             }
             __instance.units[port] = 0;
         }

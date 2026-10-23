@@ -1,4 +1,4 @@
-#region
+﻿#region
 
 using System;
 using System.IO;
@@ -54,9 +54,8 @@ internal class GameData_Patch
             __instance.factories[factoryIndex] = imported;
             if (previous == null) __instance.factoryCount++;
             using var reader = new BinaryUtils.Reader(factoryBytes);
-            var importStarted = NebulaeModel.DataStructures.LoadingTimings.Now;
             imported.Import(factoryIndex, __instance, reader.BinaryReader.BaseStream, reader.BinaryReader);
-            manager.Timings.Record("factory-import", NebulaeModel.DataStructures.LoadingTimings.Elapsed(importStarted));
+            NebulaeWorld.Factory.ConstructionRepairTargets.ResetImported(imported);
             planet.factory = imported;
             if (manager.PendingBuildAssignments.TryGetValue(planet.id, out var assignments))
                 Multiplayer.Session.BuildDispatch.ImportSnapshot(imported, assignments);
@@ -182,6 +181,14 @@ internal class GameData_Patch
         return false;
     }
 
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(GameData.SetForNewGame))]
+    public static void SetForNewGame_Prefix(GameData __instance)
+    {
+        if (Multiplayer.IsActive && Multiplayer.Session.IsClient)
+            Multiplayer.Session.State.InstallWorldClock(__instance);
+    }
+
     [HarmonyPostfix]
     [HarmonyPatch(nameof(GameData.SetForNewGame))]
     public static void SetForNewGame_Postfix(GameData __instance)
@@ -192,7 +199,7 @@ internal class GameData_Patch
             return;
         }
 
-        //Update player's position before searching for closest planet (GS2: Modeler.ModelingCoroutine)
+        // Apply the assigned position before searching for the closest planet.
         Multiplayer.Session.State.ApplyBirthData(__instance);
         __instance.mainPlayer.uPosition = new VectorLF3(Multiplayer.Session.LocalPlayer.Data.UPosition.x,
             Multiplayer.Session.LocalPlayer.Data.UPosition.y, Multiplayer.Session.LocalPlayer.Data.UPosition.z);
@@ -204,6 +211,9 @@ internal class GameData_Patch
         }
         else
         {
+            // Vanilla first attaches a new client to the birth planet. A returning space seat
+            // must detach even when ArriveStar would be a no-op for the same star.
+            __instance.LeavePlanet();
             StarData nearestStar = null;
             PlanetData nearestPlanet = null;
             GameMain.data.GetNearestStarPlanet(ref nearestStar, ref nearestPlanet);
@@ -224,9 +234,7 @@ internal class GameData_Patch
         if (!Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost) return;
 
         // Overwrite from binaryData in GlobalGameDataResponse
-        var start = NebulaeModel.DataStructures.LoadingTimings.Now;
         Multiplayer.Session.State.OverwriteGlobalGameData(__instance);
-        Multiplayer.Session.Planets.Timings.Record("world-import", NebulaeModel.DataStructures.LoadingTimings.Elapsed(start));
     }
 
 

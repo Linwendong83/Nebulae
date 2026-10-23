@@ -12,7 +12,8 @@ internal sealed class PlayerInventoryTransfers : IDisposable
     private AuthorityEpoch epoch;
     private ConnectionEpoch connection;
     public long ClientSequence { get; private set; }
-    public bool Pending => Multiplayer.Session.Turrets.InventoryPending || Multiplayer.Session.FactoryProducts.InventoryPending || Multiplayer.Session.Research.InventoryPending;
+    public bool Pending => Multiplayer.Session.Turrets.InventoryPending || Multiplayer.Session.FactoryProducts.InventoryPending ||
+                           Multiplayer.Session.Research.InventoryPending || Multiplayer.Session.ManualBuilds?.InventoryPending == true;
 
     public void EnsureWorld()
     {

@@ -89,6 +89,7 @@ internal class AuthorityCommandResultProcessor : PacketProcessor<AuthorityComman
         Multiplayer.Session.Turrets.ReceiveResult(packet);
         Multiplayer.Session.FactoryProducts.ReceiveResult(packet);
         Multiplayer.Session.Research.ReceiveResult(packet);
+        Multiplayer.Session.ManualBuilds.ReceiveResult(packet);
     }
 }
 

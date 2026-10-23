@@ -41,6 +41,14 @@ internal sealed class MetadataTransaction
     {
         using var stream = new MemoryStream();
         using var w = new BinaryWriter(stream);
+        WriteCore(w, disk);
+        return stream.ToArray();
+    }
+
+    internal void WriteTo(BinaryWriter writer) => WriteCore(writer, true);
+
+    private void WriteCore(BinaryWriter w, bool disk)
+    {
         if (disk) w.Write(1);
         w.Write(Id); w.Write(Owner); w.Write((byte)Operation); w.Write((byte)State);
         w.Write(Target); w.Write(Count); w.Write(Parameter); w.Write(Stamp); w.Write(Expires);
@@ -53,7 +61,6 @@ internal sealed class MetadataTransaction
         w.Write(beforePlayer.Length); w.Write(beforePlayer);
         w.Write(afterPlayer.Length); w.Write(afterPlayer);
         w.Write(Error);
-        return stream.ToArray();
     }
 
     public static MetadataTransaction Import(byte[] bytes) => ImportCore(bytes, true);

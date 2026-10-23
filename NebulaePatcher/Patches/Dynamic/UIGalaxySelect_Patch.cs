@@ -1,5 +1,7 @@
+using System;
 using HarmonyLib;
 using NebulaeModel.Packets.Session;
+using NebulaeModel.Utils;
 using NebulaeWorld;
 using UnityEngine.UI;
 
@@ -8,10 +10,34 @@ namespace NebulaePatcher.Patches.Dynamic;
 [HarmonyPatch(typeof(UIGalaxySelect))]
 internal class UIGalaxySelect_Patch
 {
+    public static bool UsesExtendedStarRange() => Multiplayer.IsInMultiplayerMenu || Multiplayer.IsActive;
+
+    [HarmonyPrefix, HarmonyPatch(nameof(UIGalaxySelect._OnOpen))]
+    public static void StarRange_Prefix(UIGalaxySelect __instance) => StarCountControl.Open(__instance);
+
+    [HarmonyPostfix, HarmonyPatch(nameof(UIGalaxySelect._OnClose))]
+    public static void RestoreStarRange(UIGalaxySelect __instance) => StarCountControl.Close(__instance);
+
+    public static void SetStarCountDisplay(Slider slider, float value)
+    {
+        if (UsesExtendedStarRange()) slider.SetValueWithoutNotify(Math.Min(value, StarCountSelection.More));
+        else slider.value = value;
+    }
+
+    [HarmonyPrefix, HarmonyPatch(nameof(UIGalaxySelect.OnStarCountSliderValueChange))]
+    public static bool StarCount_Prefix(UIGalaxySelect __instance)
+    {
+        if (!UsesExtendedStarRange()) return true;
+        StarCountControl.ChangeSlider(__instance);
+        return false;
+    }
+
+    [HarmonyPostfix, HarmonyPatch(nameof(UIGalaxySelect.UpdateUIDisplay))]
+    public static void StarCountDisplay_Postfix(UIGalaxySelect __instance) => StarCountControl.Refresh(__instance);
+
     [HarmonyPrefix]
     [HarmonyPatch(nameof(UIGalaxySelect.OnSeedInputSubmit))]
     [HarmonyPatch(nameof(UIGalaxySelect.OnSeedInputValueChange))]
-    [HarmonyPatch(nameof(UIGalaxySelect.OnStarCountSliderValueChange))]
     [HarmonyPatch(nameof(UIGalaxySelect.OnResourceMultiplierValueChange))]
     [HarmonyPatch(nameof(UIGalaxySelect.OnSandboxToggleValueChanged))]
     [HarmonyPatch(nameof(UIGalaxySelect.OnDarkFogToggleValueChanged))]
@@ -23,8 +49,8 @@ internal class UIGalaxySelect_Patch
     [HarmonyPatch(nameof(UIGalaxySelect._OnOpen))]
     public static void OnOpen_Postfix(UIGalaxySelect __instance)
     {
-        if (!Multiplayer.IsActive || !Multiplayer.Session.IsClient) return;
-        SetSettingsInteractable(__instance, false);
+        if (Multiplayer.IsActive && Multiplayer.Session.IsClient) SetSettingsInteractable(__instance, false);
+        StarCountControl.Refresh(__instance);
     }
 
     private static void SetSettingsInteractable(UIGalaxySelect instance, bool value)
@@ -34,6 +60,8 @@ internal class UIGalaxySelect_Patch
         var group = instance.transform.Find("setting-group");
         foreach (var control in instance.GetComponentsInChildren<Selectable>(true))
         {
+            // The custom field's enabled state is owned by its slider selection.
+            if (control.name == StarCountControl.InputName) continue;
             if ((group != null && control.transform.IsChildOf(group)) || control.name == "random-button")
                 control.interactable = value;
         }
@@ -44,8 +72,9 @@ internal class UIGalaxySelect_Patch
     public static bool ApplySetting_Prefix(UIGalaxySelect __instance)
     {
         if (!Multiplayer.IsInMultiplayerMenu) return true;
+        StarCountControl.SubmitPending(__instance);
         var session = Multiplayer.Session;
-        if (session is null || __instance.gameDesc == null) return false;
+        if (session is null || NebulaeModel.Utils.NativeGameAccess.GetGalaxyDescription(__instance) == null) return false;
         if (session.IsServer) return true; // Includes vanilla goal selection.
 
         // The combat settings panel is not created on every multiplayer menu path.
@@ -69,6 +98,8 @@ internal class UIGalaxySelect_Patch
     [HarmonyPatch(nameof(UIGalaxySelect._OnClose))]
     public static void OnClose_Prefix(UIGalaxySelect __instance)
     {
+        // Closing can clear the session; stop input events before that happens.
+        RestoreStarRange(__instance);
         if (Multiplayer.IsInMultiplayerMenu && Multiplayer.IsActive && Multiplayer.Session.IsInLobby)
         {
             Multiplayer.ShouldReturnToJoinMenu = true;
@@ -83,7 +114,7 @@ internal class UIGalaxySelect_Patch
     public static void UpdateParametersUIDisplay_Postfix(UIGalaxySelect __instance)
     {
         if (!Multiplayer.IsActive) return;
-        var desc = __instance.gameDesc;
+        var desc = NebulaeModel.Utils.NativeGameAccess.GetGalaxyDescription(__instance);
         if (Multiplayer.Session.IsClient)
         {
             // Updating the check mark must not run the vanilla callback, which uses the
@@ -96,7 +127,9 @@ internal class UIGalaxySelect_Patch
         var packet = new LobbyUpdateValues(desc);
         var server = Multiplayer.Session.Server;
         server.SendToPlayers(server.Players.Syncing, packet);
-        server.SendToPlayers(server.Players.Pending, packet);
+        foreach (var player in server.Players.Pending.Values)
+            if ((player.Data as NebulaeModel.DataStructures.PlayerData)?.SessionCounted == true)
+                player.SendPacket(packet);
     }
 }
 

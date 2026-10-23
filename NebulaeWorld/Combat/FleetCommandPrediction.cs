@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -36,9 +36,19 @@ internal sealed class FleetCommandPrediction : IDisposable
     {
         if (index < 0 || index >= module.fleetCount) return;
         foreach (var old in pending.Values.Where(x => x.Module.isSpace == module.isSpace && x.Index == index).ToArray()) Remove(old, false);
-        var command = new Command { Sequence = sequence, Tick = GameMain.gameTick, Module = module, Index = index,
-            Planet = GameMain.localPlanet?.id ?? 0, Star = GameMain.localStar?.id ?? 0, Recall = recall,
-            BeforeCommand = module.moduleFleets[index].inCommand, Connection = Multiplayer.Session.Authority.Connection.Value, FleetId = module.moduleFleets[index].fleetId };
+        var command = new Command
+        {
+            Sequence = sequence,
+            Tick = GameMain.gameTick,
+            Module = module,
+            Index = index,
+            Planet = GameMain.localPlanet?.id ?? 0,
+            Star = GameMain.localStar?.id ?? 0,
+            Recall = recall,
+            BeforeCommand = module.moduleFleets[index].inCommand,
+            Connection = Multiplayer.Session.Authority.Connection.Value,
+            FleetId = module.moduleFleets[index].fleetId
+        };
         pending[sequence] = command;
         module.moduleFleets[index].inCommand = !recall;
         var pool = Pool(command);

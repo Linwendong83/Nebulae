@@ -20,29 +20,49 @@ internal class VegeAddProcessor : PacketProcessor<VegeAddPacket>
             packet.IsPlanting && packet.IsVein) return;
         var planet = GameMain.galaxy.PlanetById(packet.PlanetId);
         if (planet?.factory == null) return;
+        if (packet.IsRejected)
+        {
+            if (IsHost || !packet.IsPlanting || packet.IsVein) return;
+            VegeData predicted = new();
+            using (BinaryUtils.Reader reader = new(packet.Data, 2, byteHeader: true))
+            {
+                predicted.Import(reader.BinaryReader);
+                reader.RequireEnd();
+            }
+            var pool = planet.factory.vegePool;
+            if (predicted.id > 0 && predicted.id < planet.factory.vegeCursor && pool[predicted.id].id == predicted.id &&
+                pool[predicted.id].protoId == predicted.protoId && pool[predicted.id].pos == predicted.pos)
+                using (Multiplayer.Session.Planets.IsIncomingRequest.On()) planet.factory.RemoveVegeWithComponents(predicted.id);
+            return;
+        }
         ushort author = 0;
         if (IsHost)
         {
             var player = Players.Get(conn, EConnectionStatus.Connected);
             if (player == null || player.Data.LocalPlanetId != packet.PlanetId) return;
             author = player.Id;
+            if (!Multiplayer.Session.Vegetation.AcceptCommand(author, packet.CommandSequence)) return;
             if (packet.IsPlanting)
             {
                 VegeData planted = new();
-                using (BinaryUtils.Reader reader = new(packet.Data))
+                using (BinaryUtils.Reader reader = new(packet.Data, 2, byteHeader: true))
+                {
                     planted.Import(reader.BinaryReader);
+                    reader.RequireEnd();
+                }
                 var collection = Multiplayer.Session.Vegetation.GetRemote(author);
                 if (LDB.veges.Select(planted.protoId) == null || collection == null ||
                     collection.RemoveVegeFromPlayer(planted.protoId, 1) != 1)
                 {
-                    Server.Disconnect(conn, DisconnectionReason.InvalidData,
-                        "Vegetation planting rejected. Reconnect to reload the planet.");
+                    packet.IsRejected = true;
+                    conn.SendPacket(packet);
                     return;
                 }
             }
         }
         using (Multiplayer.Session.Planets.IsIncomingRequest.On())
         {
+            using var context = new NebulaeWorld.Factory.FactoryOperationScope();
             var factory = planet?.factory;
             if (factory == null)
             {
@@ -57,9 +77,10 @@ internal class VegeAddProcessor : PacketProcessor<VegeAddPacket>
             if (packet.IsVein)
             {
                 VeinData veinData = new();
-                using (BinaryUtils.Reader reader = new(packet.Data))
+                using (BinaryUtils.Reader reader = new(packet.Data, 1, byteHeader: true))
                 {
                     veinData.Import(reader.BinaryReader);
+                    reader.RequireEnd();
                 }
 
                 // Modify from PlayerAction_Plant.PlantVeinFinally
@@ -89,9 +110,10 @@ internal class VegeAddProcessor : PacketProcessor<VegeAddPacket>
             else
             {
                 VegeData vegeData = new();
-                using (BinaryUtils.Reader reader = new(packet.Data))
+                using (BinaryUtils.Reader reader = new(packet.Data, 2, byteHeader: true))
                 {
                     vegeData.Import(reader.BinaryReader);
+                    reader.RequireEnd();
                 }
 
                 // Modify from PlayerAction_Plant.PlantVegeFinally
@@ -124,8 +146,7 @@ internal class VegeAddProcessor : PacketProcessor<VegeAddPacket>
         {
             Multiplayer.Session.Server.SendPacketToStarExclude(packet, planet.star.id, conn);
             if (packet.IsPlanting)
-                conn.SendPacket(new VegetableCollectionSnapshotPacket(
-                    Multiplayer.Session.Vegetation.CaptureRemote(author), true));
+                Multiplayer.Session.Vegetation.CaptureRemote(author);
         }
     }
 }

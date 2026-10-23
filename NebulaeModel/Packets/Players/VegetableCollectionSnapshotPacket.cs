@@ -15,4 +15,8 @@ internal sealed class VegetableCollectionSnapshotPacket
     public byte[] Data { get; set; } = Array.Empty<byte>();
     [NebulaeModel.Networking.WireOrder(1)]
     public bool IsAuthoritative { get; set; }
+    [NebulaeModel.Networking.WireOrder(2)]
+    public long OperationSequence { get; set; }
+    [NebulaeModel.Networking.WireOrder(3)]
+    public long Revision { get; set; }
 }

@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using NebulaeModel.DataStructures;
 using NebulaeModel.Networking;
 using NebulaeModel.Packets;
@@ -18,9 +18,7 @@ internal class PlanetDataRequestProcessor : PacketProcessor<PlanetDataRequest>
             if (!seen.Add(planetId)) continue;
             var planet = GameMain.galaxy.PlanetById(planetId);
             if (planet == null) continue;
-            var start = LoadingTimings.Now;
             conn.SendPacket(new PlanetDataResponse(planetId, PlanetRuntimeSnapshot.Export(planet)));
-            Multiplayer.Session.Planets.Timings.Record("planet-runtime-export", LoadingTimings.Elapsed(start));
         }
     }
 }

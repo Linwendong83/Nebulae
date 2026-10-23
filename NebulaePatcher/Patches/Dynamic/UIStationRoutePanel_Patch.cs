@@ -65,6 +65,8 @@ internal class UIStationRoutePanel_Patch
     }
 
     [HarmonyPrefix, HarmonyPatch(nameof(UIStationRoutePanel.OnSearchNameInputEndEdit))]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Style", "IDE0060:Remove unused parameter",
+        Justification = "Retain the public patch signature and the native argument name used by Harmony.")]
     public static bool OnSearchNameInputEndEdit_Prefix(UIStationRoutePanel __instance, string str)
     {
         if (!Multiplayer.IsActive || Multiplayer.Session.IsServer) return true;

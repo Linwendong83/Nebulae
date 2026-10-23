@@ -15,11 +15,14 @@ internal class BuildEntityRequestProcessor : PacketProcessor<BuildEntityRequest>
 {
     protected override void ProcessPacket(BuildEntityRequest packet, NebulaeConnection conn)
     {
+        if (packet.CollectionBefore == null || packet.CollectionBefore.Length > NebulaeModel.DataStructures.VegetableCollectionState.MaxBytes) return;
+        if (!IsHost) Multiplayer.Session.Vegetation.InstallReplicaCollection(packet.AuthorId, packet.CollectionBefore);
         if (IsHost)
         {
             var sender = Players.Get(conn);
             if (sender == null || sender.Id != packet.AuthorId ||
                 sender.Data.LocalPlanetId != packet.PlanetId) return;
+            if (!Multiplayer.Session.Vegetation.AcceptCommand(sender.Id, packet.CommandSequence)) return;
             if (!GameMain.sandboxToolsEnabled &&
                 (!Multiplayer.Session.BuildDispatch.TryGet(packet.PlanetId, packet.PrebuildId, out var claim) ||
                  !claim.Launched || claim.OwnerKind == NebulaeModel.DataStructures.BuildOwnerKind.Player &&
@@ -41,6 +44,9 @@ internal class BuildEntityRequestProcessor : PacketProcessor<BuildEntityRequest>
         }
         using (Multiplayer.Session.Factories.IsIncomingRequest.On())
         {
+            if (packet.InstanceGeneration <= 0 ||
+                Multiplayer.Session.BuildDispatch.Instances.Get(planet.factory, packet.PrebuildId) != packet.InstanceGeneration) return;
+            using var context = new FactoryOperationScope();
             Multiplayer.Session.Factories.EventFactory = planet.factory;
             Multiplayer.Session.Factories.TargetPlanet = packet.PlanetId;
             Multiplayer.Session.Factories.PacketAuthor = packet.AuthorId;

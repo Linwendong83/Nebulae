@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using NebulaeModel.DataStructures;
@@ -46,9 +46,18 @@ internal abstract class NativePlayerWeaponPool
     }
     public static int Life(IPoolElement value) => value switch
     {
-        LocalGeneralProjectile p => p.life, LocalLaserOneShot p => p.life, SpaceLaserOneShot p => p.life,
-        GeneralProjectile p => p.life, GeneralMissile p => p.life, LocalCannonade p => p.life, GeneralCannonade p => p.life,
-        Bomb_Explosive p => p.life, Bomb_Liquid p => p.life, Bomb_EMCapsule p => p.life, GeneralShieldBurst p => p.life, _ => 0
+        LocalGeneralProjectile p => p.life,
+        LocalLaserOneShot p => p.life,
+        SpaceLaserOneShot p => p.life,
+        GeneralProjectile p => p.life,
+        GeneralMissile p => p.life,
+        LocalCannonade p => p.life,
+        GeneralCannonade p => p.life,
+        Bomb_Explosive p => p.life,
+        Bomb_Liquid p => p.life,
+        Bomb_EMCapsule p => p.life,
+        GeneralShieldBurst p => p.life,
+        _ => 0
     };
     public byte[] Export(int id)
     {
@@ -114,8 +123,12 @@ internal abstract class NativePlayerWeaponPool
 
     public static int Astro(IPoolElement skill) => skill switch
     {
-        LocalLaserOneShot x => x.astroId, LocalGeneralProjectile x => x.astroId, LocalCannonade x => x.astroId,
-        Bomb_Explosive x => x.nearPlanetAstroId, Bomb_Liquid x => x.nearPlanetAstroId, Bomb_EMCapsule x => x.nearPlanetAstroId,
+        LocalLaserOneShot x => x.astroId,
+        LocalGeneralProjectile x => x.astroId,
+        LocalCannonade x => x.astroId,
+        Bomb_Explosive x => x.nearPlanetAstroId,
+        Bomb_Liquid x => x.nearPlanetAstroId,
+        Bomb_EMCapsule x => x.nearPlanetAstroId,
         GeneralShieldBurst x => SpaceSector.IsPlanetAstro(x.astroId) ? x.astroId : 0,
         _ => 0
     };

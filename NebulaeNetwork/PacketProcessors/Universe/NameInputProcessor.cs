@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using NebulaeModel.Networking;
 using NebulaeModel.Packets;
@@ -41,7 +41,7 @@ internal class NameInputProcessor : PacketProcessor<NameInputPacket>
                     var star = galaxyData.StarById(packet.StarIds[i]);
                     star.overrideName = packet.Names[i];
                     if (Multiplayer.Session.IsInLobby)
-                        star.RegeneratePlanetNames(false, UIRoot.instance.galaxySelect.gameDesc);
+                        star.RegeneratePlanetNames(false, NebulaeModel.Utils.NativeGameAccess.GetGalaxyDescription(UIRoot.instance.galaxySelect));
                     else
                         galaxyData.NotifyAstroNameChange(star.id * 100);
                 }

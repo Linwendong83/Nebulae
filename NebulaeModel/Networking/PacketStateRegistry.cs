@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -84,17 +84,24 @@ internal static partial class PacketStateRegistry
             }
             var layout = fields.ToArray(); var identityFields = keyFields.ToArray();
             var size = offset; var keySize = identityFields.Sum(field => field.Length);
-            policies[id] = new Policy { Kind = PacketSyncKind.State, Describe = bytes =>
+            policies[id] = new Policy
+            {
+                Kind = PacketSyncKind.State,
+                Describe = bytes =>
             {
                 if (bytes.Length != size) throw new InvalidDataException("Invalid fixed state size.");
                 var identity = new byte[keySize]; var position = 0;
                 foreach (var field in identityFields)
                 { Buffer.BlockCopy(bytes, field.Offset, identity, position, field.Length); position += field.Length; }
                 return new SerializedState { Bytes = bytes, Fields = layout, Key = identity, CacheKey = CacheKey(id, identity) };
-            } };
+            }
+            };
             return;
         }
-        policies[id] = new Policy { Kind = PacketSyncKind.State, Describe = bytes =>
+        policies[id] = new Policy
+        {
+            Kind = PacketSyncKind.State,
+            Describe = bytes =>
         {
             T packet; int[] ends;
             lock (decoder) packet = decoder.ReadFieldLayout<T>(bytes, out ends);
@@ -123,7 +130,8 @@ internal static partial class PacketStateRegistry
             var identity = key.ToArray();
             if (identity.Length > 4096 || !FieldDeltaCodec.ValidLayout(bytes, fields)) throw new InvalidDataException("Invalid state layout.");
             return new SerializedState { Bytes = bytes, Fields = fields.ToArray(), Key = identity, CacheKey = CacheKey(id, identity) };
-        } };
+        }
+        };
     }
 
     private static int PrimitiveSize(Type type) => type == typeof(byte) || type == typeof(sbyte) || type == typeof(bool) ? 1 :

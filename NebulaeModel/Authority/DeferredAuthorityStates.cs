@@ -1,7 +1,6 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using NebulaeModel.DataStructures;
 using NebulaeModel.Networking;
 using NebulaeModel.Packets.Authority;
 
@@ -43,9 +42,8 @@ internal static class DeferredAuthorityStates
     }
 
     internal static AuthorityWorldStatePacket Build(DeferredAuthorityState[] inputs, AuthorityEnvelopeHeader header,
-        ScopeKey scope, long baseline, long subscriptionEpoch, AuthorityPerfMeter metrics, AuthorityDeltaCache patches)
+        ScopeKey scope, long baseline, long subscriptionEpoch, AuthorityDeltaCache patches)
     {
-        var started = LoadingTimings.Now;
         var records = new AuthorityWorldStateRecord[inputs.Length];
         for (var i = 0; i < inputs.Length; i++)
         {
@@ -53,16 +51,12 @@ internal static class DeferredAuthorityStates
             var patch = record.Previous == null ? null : patches == null ? Delta(record) : patches.Get(record);
             var delta = patch != null;
             records[i] = new AuthorityWorldStateRecord(record.Key, record.Revision, patch ?? record.State, delta ? record.BaseRevision : 0);
-            StateDeltaMetrics.Record(record.State.Length, records[i].State.Length + (delta ? 8 : 0), delta);
         }
-        metrics?.Stages.Record("encode.delta", LoadingTimings.Elapsed(started));
-        started = LoadingTimings.Now;
         if (!AuthorityWorldStateCodec.TryEncode(records, out var bytes)) throw new InvalidOperationException("World state batch refused by its own codec.");
         header = new AuthorityEnvelopeHeader(header.Family, header.Epoch, header.Connection, header.Sequence,
             header.HostTick, header.ClaimedPlayerId, bytes.Length);
         var packet = AuthorityWorldStatePacket.Create(header, scope, baseline, records.Length, bytes);
         packet.SubscriptionEpoch = subscriptionEpoch;
-        metrics?.Stages.Record("encode.batch", LoadingTimings.Elapsed(started));
         return packet;
     }
 }

@@ -119,6 +119,7 @@ internal class Dedicated_Server_Patches
     [HarmonyPatch(typeof(UIMechaSaveGroup), nameof(UIMechaSaveGroup._OnCreate))]
     [HarmonyPatch(typeof(UIMilkyWay), nameof(UIMilkyWay.CheckOrCreateRTex))]
     [HarmonyPatch(typeof(UIMinimap3DControl), nameof(UIMinimap3DControl._OnCreate))]
+    [HarmonyPatch(typeof(UIMinimap3DControl), nameof(UIMinimap3DControl._OnDestroy))] // No texture was created on the dedicated host.
     [HarmonyPatch(typeof(UISplitterWindow), nameof(UISplitterWindow._OnCreate))]
     [HarmonyPatch(typeof(UIStarmap), nameof(UIMilkyWay.CheckOrCreateRTex))]
     [HarmonyPatch(typeof(TranslucentImageSource), nameof(TranslucentImageSource.CreateNewBlurredScreen))]

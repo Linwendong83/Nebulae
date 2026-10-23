@@ -1,4 +1,4 @@
-using UnityEngine;
+﻿using UnityEngine;
 
 namespace NebulaeWorld.Combat;
 
@@ -34,16 +34,28 @@ internal static class GroundTurretCombat
 
     private static HatredTarget At(in HatredList list, int index) => index switch
     {
-        0 => list.max, 1 => list.h1, 2 => list.h2, 3 => list.h3,
-        4 => list.h4, 5 => list.h5, 6 => list.h6, _ => list.min
+        0 => list.max,
+        1 => list.h1,
+        2 => list.h2,
+        3 => list.h3,
+        4 => list.h4,
+        5 => list.h5,
+        6 => list.h6,
+        _ => list.min
     };
 
     private static ref HatredTarget Slot(ref HatredList list, int index)
     {
         switch (index)
         {
-            case 0: return ref list.max; case 1: return ref list.h1; case 2: return ref list.h2; case 3: return ref list.h3;
-            case 4: return ref list.h4; case 5: return ref list.h5; case 6: return ref list.h6; default: return ref list.min;
+            case 0: return ref list.max;
+            case 1: return ref list.h1;
+            case 2: return ref list.h2;
+            case 3: return ref list.h3;
+            case 4: return ref list.h4;
+            case 5: return ref list.h5;
+            case 6: return ref list.h6;
+            default: return ref list.min;
         }
     }
 
@@ -177,13 +189,13 @@ internal static class GroundTurretCombat
             var distance = float.MaxValue;
             var players = Multiplayer.Session.Combat?.Players;
             if (players != null) foreach (var player in players)
-            {
-                if (!TryPlayer(factory, player.id, out var valid)) continue;
-                var next = (valid.skillTargetL - turret.muzzleWPos).sqrMagnitude;
-                if (!Finite(next) || next > turret.sensorRange * turret.sensorRange && next > turret.realAttactRange * turret.realAttactRange) continue;
-                if (next < distance || next == distance && player.id < selected.id)
-                { selected = new SkillTargetLocal { type = ETargetType.Player, id = player.id }; distance = next; }
-            }
+                {
+                    if (!TryPlayer(factory, player.id, out var valid)) continue;
+                    var next = (valid.skillTargetL - turret.muzzleWPos).sqrMagnitude;
+                    if (!Finite(next) || next > turret.sensorRange * turret.sensorRange && next > turret.realAttactRange * turret.realAttactRange) continue;
+                    if (next < distance || next == distance && player.id < selected.id)
+                    { selected = new SkillTargetLocal { type = ETargetType.Player, id = player.id }; distance = next; }
+                }
             if (selected.id > 0 && distance <= turret.realAttactRange * turret.realAttactRange) return Select(ref turret, factory, selected);
             SearchHash(turret, factory, factory.hashSystemStatic, false, threadIdx, ref selected, ref distance);
             SearchHash(turret, factory, factory.hashSystemDynamic, true, threadIdx, ref selected, ref distance);
@@ -260,9 +272,12 @@ internal static class GroundTurretCombat
         var ray = (end - turret.muzzleWPos).normalized;
         if (!Finite(ray) || ray.sqrMagnitude <= 1e-12f) return;
         var dot = Vector3.Dot(turret.muzzleWPos, ray);
+        // Combat also runs on remote factories and headless hosts; use the simulated planet.
+        var radius = factory.planet.realRadius;
+        if (!Finite(radius) || radius <= 2.4f) return;
         turret.targetInShootRange = (distance <= turret.realAttactRange * turret.realAttactRange || retaliation) &&
             (turret.type != EDFTurretType.Laser || angle < 2f) &&
-            (!Phys.RayCastSphere(turret.muzzleWPos, ray, 200f, Vector3.zero, 197.6f) || distance <= dot * dot);
+            (!Phys.RayCastSphere(turret.muzzleWPos, ray, radius, Vector3.zero, radius - 2.4f) || distance <= dot * dot);
         if (!turret.targetInShootRange || turret.fire > 0 || turret.heat < 0 || component == null ||
             builders == null || turret.builderId < 0 || turret.builderId >= builders.Length || builders[turret.builderId].state < 3 ||
             factory.enemyPool == null || turret.enemyId <= 0 || turret.enemyId >= factory.enemyPool.Length || factory.enemyPool[turret.enemyId].id != turret.enemyId) return;

@@ -14,7 +14,10 @@ internal class DysonSwarmRemoveOrbitProcessor : PacketProcessor<DysonSwarmRemove
 {
     protected override void ProcessPacket(DysonSwarmRemoveOrbitPacket packet, NebulaeConnection conn)
     {
-        var sphere = GameMain.data.dysonSpheres[packet.StarIndex];
+        var spheres = GameMain.data?.dysonSpheres;
+        if (spheres == null || packet.StarIndex < 0 || packet.StarIndex >= spheres.Length) return;
+        if (packet.Event == SwarmRemoveOrbitEvent.MakeSailsEternal && !GameMain.data.gameDesc.isSandboxMode) return;
+        var sphere = spheres[packet.StarIndex];
         if (sphere == null)
         {
             return;
@@ -33,14 +36,23 @@ internal class DysonSwarmRemoveOrbitProcessor : PacketProcessor<DysonSwarmRemove
                 case SwarmRemoveOrbitEvent.RemoveSails:
                     sphere.swarm.RemoveSailsByOrbit(packet.OrbitId);
                     break;
+                case SwarmRemoveOrbitEvent.MakeSailsEternal:
+                    sphere.swarm.SetAllSailsEternal();
+                    var editor = UIRoot.instance?.uiGame?.dysonEditor;
+                    if (editor?.selection?.viewStar?.index == packet.StarIndex)
+                        editor.controlPanel?.inspector?.sphereInfo?.RefreshSailHistogram();
+                    break;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(packet), "Unknown SwarmRemoveOrbitEvent type: " + packet.Event);
             }
-            DysonSphereManager.ClearSelection(packet.StarIndex);
+            if (packet.Event != SwarmRemoveOrbitEvent.MakeSailsEternal) DysonSphereManager.ClearSelection(packet.StarIndex);
         }
         if (IsHost)
         {
-            Multiplayer.Session.DysonSpheres.SendPacketToDysonSphereExcept(packet, packet.StarIndex, conn);
+            // Eternal-life requests have no client prediction; include their author.
+            if (packet.Event == SwarmRemoveOrbitEvent.MakeSailsEternal)
+                Multiplayer.Session.DysonSpheres.SendPacketToDysonSphere(packet, packet.StarIndex);
+            else Multiplayer.Session.DysonSpheres.SendPacketToDysonSphereExcept(packet, packet.StarIndex, conn);
         }
     }
 }

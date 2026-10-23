@@ -29,8 +29,7 @@ internal class WebSocketService : WebSocketBehavior
         }
 
         Log.Info($"Client connected ID: {ID}");
-        if (TcpSocketOptions.TryEnableNoDelay(Context, out var previousNoDelay))
-            Log.Info($"[network] accepted TCP NoDelay: {previousNoDelay} -> true");
+        TcpSocketOptions.TryEnableNoDelay(Context, out _);
         var conn = new NebulaeConnection(Context.WebSocket, Context.UserEndPoint, PacketProcessor, hostSide: true);
         Server.OnSocketConnection(conn);
 
@@ -55,6 +54,7 @@ internal class WebSocketService : WebSocketBehavior
         }
         catch (System.IO.InvalidDataException exception)
         {
+            conn.StopSending();
             // The stream cannot be trusted past a message its framing cannot read, so the peer is
             // dropped instead of being answered with packets decoded from a corrupt stream.
             Log.Warn($"Dropping socket {ID} after an unreadable message: {exception.Message}");

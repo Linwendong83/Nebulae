@@ -29,11 +29,9 @@ internal class PlanetManager : IDisposable
     public bool EnableVeinPacket { get; set; } = true;
     public static byte[] PreservedDashboardData { get; set; }
     public FactoryLoadTracker Loads { get; } = new();
-    public LoadingTimings Timings { get; } = new();
     public HostPlanetPreparation HostPreparation { get; }
     public FactoryModelLoader ModelLoader { get; }
-    private readonly Dictionary<int, long> loadStarted = new();
-    private readonly Dictionary<int, long> terrainStarted = new();
+    private readonly HashSet<int> terrainLoads = new();
     private readonly HashSet<int> terrainReceived = new();
     private readonly Dictionary<int, byte[]> terrainPayloads = new();
     public HashSet<int> KnownFactoryPlanets { get; } = new();
@@ -75,7 +73,7 @@ internal class PlanetManager : IDisposable
         foreach (var id in added)
         {
             var planet = GameMain.galaxy.PlanetById(id);
-            if (planet == null || !planet.wanted || !planet.loading || terrainStarted.ContainsKey(id)) continue;
+            if (planet == null || !planet.wanted || !planet.loading || terrainLoads.Contains(id)) continue;
             // Another player may have modified a pristine planet while its base was generating.
             BeginTerrainLoad(id); refresh.Add(id);
         }
@@ -85,11 +83,10 @@ internal class PlanetManager : IDisposable
     {
         if (!AcceptTerrainResponse(planet)) return;
         terrainPayloads[planet.id] = (byte[])bytes.Clone();
-        TerrainReceived(planet.id);
     }
     public bool PrepareModeling(PlanetData planet)
     {
-        if (!planet.wanted || !terrainStarted.ContainsKey(planet.id)) return true;
+        if (!planet.wanted || !terrainLoads.Contains(planet.id)) return true;
         if (!terrainReceived.Contains(planet.id)) return false;
         if (terrainPayloads.TryGetValue(planet.id, out var bytes))
         {
@@ -110,53 +107,33 @@ internal class PlanetManager : IDisposable
     }
     private static void SendDetails(PlanetData planet, INebulaeConnection client) => client.SendPacket(
         new PlanetDetailResponse(planet.id, planet.runtimeVeinGroups ?? Array.Empty<VeinGroup>(), planet.landPercent) { Success = planet.scanned });
-    private long worldStarted;
-    private long lastFrame;
     public PlanetManager()
     {
-        HostPreparation = new HostPlanetPreparation(Timings);
+        HostPreparation = new HostPlanetPreparation();
         ModelLoader = new FactoryModelLoader(this);
-    }
-    public void BeginLoad(int planet) => loadStarted[planet] = LoadingTimings.Now;
-    public void BeginWorldLoad() => worldStarted = LoadingTimings.Now;
-    public void WorldDataReceived()
-    {
-        if (worldStarted != 0) Timings.Record("world-receive", LoadingTimings.Elapsed(worldStarted));
-    }
-    public void CompleteWorldLoad()
-    {
-        if (worldStarted == 0) return;
-        Timings.Record("world-load", LoadingTimings.Elapsed(worldStarted));
-        worldStarted = 0;
     }
     public void BeginTerrainLoad(int planet)
     {
-        terrainStarted[planet] = LoadingTimings.Now;
+        terrainLoads.Add(planet);
         terrainReceived.Remove(planet);
         terrainPayloads.Remove(planet);
     }
     public bool AcceptTerrainResponse(PlanetData planet) => planet != null && planet.wanted && planet.loading &&
-        terrainStarted.ContainsKey(planet.id) && terrainReceived.Add(planet.id);
-    public void ClearTerrainLoads() { terrainStarted.Clear(); terrainReceived.Clear(); terrainPayloads.Clear(); }
+        terrainLoads.Contains(planet.id) && terrainReceived.Add(planet.id);
+    public void ClearTerrainLoads() { terrainLoads.Clear(); terrainReceived.Clear(); terrainPayloads.Clear(); }
     public void CancelTerrainLoads(StarData star)
     {
         if (star == null) return;
         foreach (var planet in star.planets)
         {
-            terrainStarted.Remove(planet.id);
+            terrainLoads.Remove(planet.id);
             terrainReceived.Remove(planet.id);
             terrainPayloads.Remove(planet.id);
         }
     }
-    public void TerrainReceived(int planet)
-    {
-        if (terrainStarted.TryGetValue(planet, out var start)) Timings.Record("planet-runtime-receive", LoadingTimings.Elapsed(start));
-    }
     public void TerrainLoaded(int planet)
     {
-        if (!terrainStarted.TryGetValue(planet, out var start)) return;
-        Timings.Record("planet-terrain-ready", LoadingTimings.Elapsed(start));
-        terrainStarted.Remove(planet);
+        if (!terrainLoads.Remove(planet)) return;
         terrainReceived.Remove(planet);
         terrainPayloads.Remove(planet);
     }
@@ -176,7 +153,6 @@ internal class PlanetManager : IDisposable
         if (planet == null || planet.factory != null || Loads.Contains(planet.id)) return;
         if (Loads.Begin(planet.id, true))
             Multiplayer.Session.Network.SendPacket(new FactoryLoadRequest(planet.id));
-        BeginLoad(planet.id);
     }
 
     public void BufferFactory(FactoryData packet)
@@ -272,7 +248,6 @@ internal class PlanetManager : IDisposable
     private void ClearPending(int planet)
     {
         ModelLoader.Cancel(planet);
-        loadStarted.Remove(planet);
         PendingFactories.Remove(planet);
         PendingTerrainData.Remove(planet);
         PendingBuildAssignments.Remove(planet);
@@ -338,10 +313,6 @@ internal class PlanetManager : IDisposable
                 detailRequests.Remove(pending.Planet.id);
             }
         }
-        var now = LoadingTimings.Now;
-        if ((worldStarted != 0 || loadStarted.Count > 0 || terrainStarted.Count > 0) && lastFrame != 0)
-            Timings.Record("frame", LoadingTimings.Elapsed(lastFrame));
-        lastFrame = now;
         if (meshRepairPlanet == null || Time.realtimeSinceStartup < meshRepairAt) return;
         if (GameMain.localPlanet == meshRepairPlanet && meshRepairPlanet.factoryLoaded) RefreshMeshes(meshRepairPlanet);
         meshRepairPlanet = null;
@@ -351,7 +322,6 @@ internal class PlanetManager : IDisposable
     {
         HostPreparation.Clear();
         ModelLoader.Clear();
-        loadStarted.Clear();
         ClearTerrainLoads();
         detailRequests.Clear();
         KnownFactoryPlanets.Clear();

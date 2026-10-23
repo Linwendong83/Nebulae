@@ -1,4 +1,4 @@
-
+﻿
 namespace NebulaeWorld.Combat;
 
 /// <summary>Validate local skill references before native code dereferences a pool or released player.</summary>
@@ -17,7 +17,8 @@ internal static class LocalSkillLifetime
         if (target.id < 0) return false;
         switch (target.type)
         {
-            case ETargetType.Player: return CombatTargetContext.IsPlayerTarget(target.id) &&
+            case ETargetType.Player:
+                return CombatTargetContext.IsPlayerTarget(target.id) &&
                 (!mayMiss || GroundTurretCombat.TryPlayer(factory, target.id, out _));
             case ETargetType.Enemy: return target.id < factory.enemyCursor && factory.enemyPool[target.id].id == target.id;
             case ETargetType.Craft: return target.id < factory.craftCursor && factory.craftPool[target.id].id == target.id;

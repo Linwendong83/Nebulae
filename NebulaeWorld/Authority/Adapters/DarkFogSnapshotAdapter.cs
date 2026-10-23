@@ -12,6 +12,7 @@ internal sealed class DarkFogSnapshotAdapter : IHostWorldView
     private readonly AuthorityEpoch epoch;
     private readonly Dictionary<ScopeKey, SlotGenerationTracker> trackers = new();
     private readonly Dictionary<ObjectKey, byte[]> publishedHives = new();
+    private readonly Dictionary<ObjectKey, HiveFormationExportCache> formationExports = new();
     private readonly Dictionary<ObjectKey, byte[]> publishedBases = new();
     private readonly Dictionary<int, byte[]> baseRemovalFlags = new();
     private readonly List<ObjectKey> retired = [];
@@ -52,7 +53,7 @@ internal sealed class DarkFogSnapshotAdapter : IHostWorldView
         foreach (var key in publishedHives.Keys)
             if (key.Kind == scope.Kind && key.Scope == scope.Scope &&
                 (!tracker.IsAlive(key.NativeId) || tracker.GenerationOf(key.NativeId) != key.Generation)) retired.Add(key);
-        foreach (var key in retired) publishedHives.Remove(key);
+        foreach (var key in retired) { publishedHives.Remove(key); formationExports.Remove(key); }
         retired.Clear();
         foreach (var key in publishedBases.Keys)
             if (key.Kind == scope.Kind && key.Scope == scope.Scope &&
@@ -95,7 +96,8 @@ internal sealed class DarkFogSnapshotAdapter : IHostWorldView
         writer.Write(orbit.orbitRotation.x); writer.Write(orbit.orbitRotation.y); writer.Write(orbit.orbitRotation.z); writer.Write(orbit.orbitRotation.w);
         writer.Write(orbit.orbitNormal.x); writer.Write(orbit.orbitNormal.y); writer.Write(orbit.orbitNormal.z);
         writer.Write(hive.orbitRadius);
-        for (var form = 0; form < 3; form++) HiveFormationStateCodec.Write(writer, form, hive.forms[form].units);
+        if (!formationExports.TryGetValue(key, out var formations)) formationExports[key] = formations = new();
+        for (var form = 0; form < 3; form++) formations.Write(writer, form, hive.forms[form].units);
 
         var length = (int)stream.Position;
         var buffer = stream.GetBuffer();
@@ -163,6 +165,7 @@ internal sealed class DarkFogSnapshotAdapter : IHostWorldView
     internal static void WriteBase(BinaryWriter writer, DFGBaseComponent item, byte removalFlags)
     {
         writer.Write(item.enemyId); writer.Write(item.ruinId);
+        writer.Write(Multiplayer.Session?.AuthorityRuntime?.RuinHost?.Generation(item.groundSystem.factory.planetId, item.ruinId) ?? 0);
         writer.Write(item.groundSystem.builders.buffer[item.builderId].sp > 0);
         writer.Write(removalFlags); writer.Write(item.hiveAstroId); writer.Write(item.relayEnemyId);
         var stream = writer.BaseStream;

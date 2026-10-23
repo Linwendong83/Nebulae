@@ -2,6 +2,7 @@
 
 using System;
 using HarmonyLib;
+using NebulaeModel.Utils;
 using NebulaeWorld;
 using UnityEngine;
 
@@ -308,7 +309,7 @@ internal class EnemyDFHiveSystem_Patch
                 {
                     enemyData.protoId = (short)(8113 - formId);
                     enemyData.port = (short)portId;
-                    enemyData.owner = (short)(__instance.hiveAstroId - 1000000);
+                    GalaxyLimits.SetSpaceFormationOwner(ref enemyData, __instance.hiveAstroId - 1000000);
                     enemyData.Formation(formTicks, (float)__instance.orbitRadius, ref pos, ref rot, ref vel);
                     var dx = localPos.x - pos.x;
                     var dy = localPos.y - pos.y;

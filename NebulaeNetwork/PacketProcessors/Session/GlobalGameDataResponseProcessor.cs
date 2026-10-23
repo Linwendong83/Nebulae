@@ -21,7 +21,6 @@ internal class GlobalGameDataResponseProcessor : PacketProcessor<GlobalGameDataR
         }
         if (packet.DataType == GlobalGameDataResponse.EDataType.Ready)
         {
-            Multiplayer.Session.Planets.WorldDataReceived();
             Multiplayer.Session.JoinSync.MarkWorldDataReceived();
         }
 

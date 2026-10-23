@@ -136,10 +136,4 @@ internal sealed class AuthoritySessionState
         isHost
             ? new AuthoritySessionContext(handshakeComplete, epoch, connectionEpoch, connectionPlayerId, true)
             : Context;
-
-    /// <summary>
-    /// True when an authority room is running on the host with a world epoch. Used to decide whether
-    /// per-connection identity is meaningful.
-    /// </summary>
-    public bool RequiresConnectionIdentity => isHost && IsActive;
 }

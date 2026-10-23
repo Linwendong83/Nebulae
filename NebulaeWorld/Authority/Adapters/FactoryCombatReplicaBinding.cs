@@ -113,6 +113,7 @@ internal sealed class FactoryCombatReplicaBinding : IReplicaMirrorObserver, IRep
             NeutralizeImportedReferences(factory);
             binding.ReferencesRepaired = true;
         }
+        NebulaeWorld.Factory.ConstructionRepairTargets.Invalidate(factory, clear: true);
         binding.Core.ReconcileBaseline(members);
     }
 
@@ -155,6 +156,7 @@ internal sealed class FactoryCombatReplicaBinding : IReplicaMirrorObserver, IRep
     /// </summary>
     private static void NeutralizeImportedReferences(PlanetFactory factory)
     {
+        NebulaeWorld.Factory.ConstructionRepairTargets.ResetImported(factory);
         for (var i = 1; i < factory.entityCursor; i++)
         {
             if (factory.entityPool[i].id == i && factory.entityPool[i].combatStatId != 0)

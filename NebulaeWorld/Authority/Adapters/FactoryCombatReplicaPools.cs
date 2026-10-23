@@ -95,6 +95,7 @@ internal sealed class FactoryCombatReplicaPools : IFactoryCombatPools
     {
         // The pool's own Remove, not ConstructionSystem.RemoveConstructStat: that one also clears
         // module repair queues and warnings, which are rule-side effects the client must not run.
+        NebulaeWorld.Factory.ConstructionRepairTargets.Invalidate(Factory, statId);
         Factory.constructionSystem.constructStats.Remove(statId);
     }
 

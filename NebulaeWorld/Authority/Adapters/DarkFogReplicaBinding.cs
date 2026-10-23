@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using NebulaeModel.Authority;
 using NebulaeModel.Packets.Authority;
+using NebulaeWorld.Combat;
 using UnityEngine;
 
 namespace NebulaeWorld.Authority.Adapters;
@@ -11,6 +12,7 @@ internal sealed class DarkFogReplicaBinding : IReplicaMirrorObserver, IReplicaBa
 {
     private readonly HashSet<int> dirtySearchPlanets = new();
     private readonly Dictionary<(int Planet, int Base), ObjectKey> baseKeys = new();
+    private readonly Dictionary<(int Planet, int Base), GroundBaseState> baseSearch = new();
     private readonly Dictionary<int, (EnemyData[] Enemies, DFGBaseComponent[] Bases, object Identity)> poolIdentities = new();
 
     public object PoolIdentity(int planet, EnemyData[] enemies, DFGBaseComponent[] bases)
@@ -83,7 +85,8 @@ internal sealed class DarkFogReplicaBinding : IReplicaMirrorObserver, IReplicaBa
             if (hostOrbit.orbitalPeriod <= 0 || double.IsNaN(hostOrbit.orbitalPeriod) || double.IsInfinity(hostOrbit.orbitalPeriod))
                 throw new InvalidDataException("Invalid hive orbital period.");
             hostOrbit.PredictPose(GameMain.gameTick, hive.starData.uPosition, ref sector.astros[key.NativeId]);
-            if (hive.pbuilders != null && hive.pbuilders.Length > 1) hive.pbuilders[1].instId = root;
+            var patterns = HivePatternStorage.ReadCore(hive);
+            if (patterns != null && patterns.Length > 1) patterns[1].instId = root;
             hive.evolve = evolve; hive.currentIncomingAssaultingUnitCount = incoming;
             hive.currentIncomingAssaultingUnitUPos = position;
             HiveAlive[hive.hiveAstroId] = alive;
@@ -156,16 +159,23 @@ internal sealed class DarkFogReplicaBinding : IReplicaMirrorObserver, IReplicaBa
         }
         // Imported native builder ids cannot drive this display-only base.
         item.builderId = 0;
-        item.enemyId = state.EnemyId; item.ruinId = state.RuinId; item.evolve = evolve;
+        item.enemyId = state.EnemyId; item.ruinId = 0; item.evolve = evolve;
+        // The live core's state area is independent of the pit's ruin area. Removing
+        // a presentation shell deliberately skips native base teardown, so own it here.
+        factory.platformSystem?.RemoveStateArea((uint)(0x1000000 | id));
+        if (state.CoreAlive && state.EnemyId < factory.enemyCursor && factory.enemyPool[state.EnemyId].id == state.EnemyId)
+            factory.platformSystem?.AddStateArea((uint)(0x1000000 | id), factory.enemyPool[state.EnemyId].pos, 11.25f, 1);
         item.hiveAstroId = state.HiveAstroId; item.relayEnemyId = state.RelayEnemyId;
         item.relayId = 0; // Resolved from the relay enemy's client-local component id when queried.
         item.currentIncomingAssaultingUnitCount = state.Incoming;
         item.currentIncomingAssaultingUnitPos = new Vector3(state.X, state.Y, state.Z);
-        item.pbuilders = Array.Empty<GrowthPattern_DFGround.Builder>();
+        if (!baseKeys.ContainsKey((planet, id))) item.pbuilders = Array.Empty<GrowthPattern_DFGround.Builder>();
         for (var form = 0; form < 3; form++) InstallFormation(item.forms[form], state.Forms[form]);
         BaseBuildings[(planet, id)] = state.Buildings; BaseUnits[(planet, id)] = state.Units;
         BaseAlive[(planet, id)] = state.CoreAlive;
         BaseRemovalFlags[(planet, id)] = state.RemovalFlags;
+        baseSearch[(planet, id)] = state;
+        if (!baseKeys.ContainsKey((planet, id))) dirtySearchPlanets.Add(planet);
     }
 
     public void OnBaselineInstalled(ScopeKey scope, IReadOnlyList<SnapshotMemberRecord> members)
@@ -179,10 +189,12 @@ internal sealed class DarkFogReplicaBinding : IReplicaMirrorObserver, IReplicaBa
             for (var id = 1; id < pool.cursor; id++)
                 if (pool.buffer[id]?.id == id && !keep.Contains(id))
                 {
+                    GameMain.galaxy.PlanetById(scope.Scope).factory.platformSystem?.RemoveStateArea((uint)(0x1000000 | id));
                     pool.Remove(id); dirtySearchPlanets.Add(scope.Scope);
                     BaseBuildings.Remove((scope.Scope, id)); BaseUnits.Remove((scope.Scope, id)); baseKeys.Remove((scope.Scope, id));
                     BaseAlive.Remove((scope.Scope, id));
                     BaseRemovalFlags.Remove((scope.Scope, id));
+                    baseSearch.Remove((scope.Scope, id));
                 }
         }
         else
@@ -201,9 +213,11 @@ internal sealed class DarkFogReplicaBinding : IReplicaMirrorObserver, IReplicaBa
             baseKeys.Remove(identity); BaseBuildings.Remove(identity); BaseUnits.Remove(identity);
             BaseAlive.Remove(identity);
             BaseRemovalFlags.Remove(identity);
+            baseSearch.Remove(identity);
             var pool = GameMain.galaxy?.PlanetById(scope.Scope)?.factory?.enemySystem?.bases;
             if (pool != null && key.NativeId < pool.cursor && pool.buffer[key.NativeId]?.id == key.NativeId)
             {
+                GameMain.galaxy.PlanetById(scope.Scope).factory.platformSystem?.RemoveStateArea((uint)(0x1000000 | key.NativeId));
                 pool.Remove(key.NativeId); dirtySearchPlanets.Add(scope.Scope);
             }
         }
@@ -211,13 +225,66 @@ internal sealed class DarkFogReplicaBinding : IReplicaMirrorObserver, IReplicaBa
 
     public void FlushSearchReferences()
     {
+        var replica = Multiplayer.Session.AuthorityRuntime.WorldReplica;
+        foreach (var pair in baseSearch)
+        {
+            var factory = GameMain.galaxy?.PlanetById(pair.Key.Planet)?.factory;
+            var item = factory?.enemySystem?.bases[pair.Key.Base];
+            if (item?.id != pair.Key.Base || factory.planet.factoryLoaded != true) continue;
+            var state = pair.Value;
+            // Native geothermal collision checks identify the persistent core through this
+            // link. AI remains disabled; shell removal clears the link before native teardown.
+            var bindCore = state.EnemyId > 0 && state.EnemyId < factory.enemyCursor && factory.enemyPool[state.EnemyId].id == state.EnemyId &&
+                factory.enemyPool[state.EnemyId].owner == item.id && factory.enemyPool[state.EnemyId].dfGBaseId != item.id;
+            var ruinId = state.RuinId > 0 && state.RuinId < factory.ruinCursor && factory.ruinPool[state.RuinId].id == state.RuinId &&
+                replica.TryFindKey(PoolKind.Ruin, pair.Key.Planet, state.RuinId, out var ruinKey) && ruinKey.Generation == state.RuinGeneration
+                ? state.RuinId : 0;
+            if (bindCore || item.ruinId != ruinId)
+            {
+                var targetFactory = factory; var targetBase = item; var targetRuin = ruinId;
+                var coreId = bindCore ? state.EnemyId : 0; var alive = state.CoreAlive;
+                Multiplayer.Session.AuthorityRuntime.ApplyContext.Run(new ApplyScope(new ScopeKey(PoolKind.Base, pair.Key.Planet)), () =>
+                {
+                    targetBase.ruinId = targetRuin;
+                    if (coreId <= 0) return;
+                    targetFactory.enemyPool[coreId].dfGBaseId = (short)targetBase.id;
+                    if (alive) targetFactory.platformSystem?.AddStateArea((uint)(0x1000000 | targetBase.id), targetFactory.enemyPool[coreId].pos, 11.25f, 1);
+                });
+            }
+        }
         foreach (var planet in dirtySearchPlanets)
         {
             var defense = GameMain.galaxy?.PlanetById(planet)?.factory?.defenseSystem;
             if (defense == null) continue;
-            Multiplayer.Session.AuthorityRuntime.ApplyContext.Run(new ApplyScope(new ScopeKey(PoolKind.Base, planet)), () => ClearSearchReferences(defense));
+            Multiplayer.Session.AuthorityRuntime.ApplyContext.Run(new ApplyScope(new ScopeKey(PoolKind.Base, planet)), () =>
+            {
+                RebuildSearchIndex(defense.factory, replica);
+                ClearSearchReferences(defense);
+                defense.RefreshTurretSearchPair();
+            });
         }
         dirtySearchPlanets.Clear();
+    }
+
+    public void MarkSearchDirty(int planet) => dirtySearchPlanets.Add(planet);
+
+    internal static void RebuildSearchIndex(PlanetFactory factory, ClientWorldReplica replica)
+    {
+        // Enemy lifecycle records already carry the authoritative generation. Reuse those
+        // installed identities instead of duplicating an unbounded layout in a base record.
+        var grouped = new Dictionary<int, List<GrowthPattern_DFGround.Builder>>();
+        for (var id = 1; id < factory.enemyCursor; id++)
+        {
+            ref var enemy = ref factory.enemyPool[id];
+            if (enemy.id != id || enemy.dynamic || enemy.owner <= 0 ||
+                !replica.TryFindKey(PoolKind.GroundEnemy, factory.planetId, id, out _)) continue;
+            if (!grouped.TryGetValue(enemy.owner, out var list)) grouped[enemy.owner] = list = new();
+            list.Add(new GrowthPattern_DFGround.Builder { instId = id, connections = Array.Empty<int>() });
+        }
+        var bases = factory.enemySystem.bases;
+        for (var id = 1; id < bases.cursor; id++)
+            if (bases.buffer[id]?.id == id)
+                bases.buffer[id].pbuilders = grouped.TryGetValue(id, out var list) ? list.ToArray() : Array.Empty<GrowthPattern_DFGround.Builder>();
     }
 
     public static void ClearSearchReferences(DefenseSystem defense)

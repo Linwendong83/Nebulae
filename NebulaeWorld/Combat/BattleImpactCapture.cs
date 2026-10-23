@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -120,8 +120,16 @@ internal sealed class BattleImpactCapture : IDisposable
             }
             return true;
         }
-        local.Add(new BattleImpactHistory.Entry { Origin = effect.OriginKind, Astro = effect.SourceAstroId, Caster = effect.SourceObjectId,
-            Kind = effect.Subtype, Tick = effect.Tick, Authority = true, Generation = effect.SourceGeneration });
+        local.Add(new BattleImpactHistory.Entry
+        {
+            Origin = effect.OriginKind,
+            Astro = effect.SourceAstroId,
+            Caster = effect.SourceObjectId,
+            Kind = effect.Subtype,
+            Tick = effect.Tick,
+            Authority = true,
+            Generation = effect.SourceGeneration
+        });
         return false; // Host hit had no local counterpart: keep the authoritative fallback.
     }
 
@@ -161,8 +169,17 @@ internal sealed class BattleImpactCapture : IDisposable
             local.Prune(GameMain.gameTick);
             var match = local.Find(current.Origin, current.Astro, current.Caster, current.Generation, born, true, kind, true);
             if (match != null) { match.Matched = true; pool.Remove(id); ReconciledCount++; return; }
-            local.Add(new BattleImpactHistory.Entry { Origin = current.Origin, Astro = current.Astro, Caster = current.Caster,
-                Kind = kind, Id = id, Tick = born, Born = born, Generation = current.Generation });
+            local.Add(new BattleImpactHistory.Entry
+            {
+                Origin = current.Origin,
+                Astro = current.Astro,
+                Caster = current.Caster,
+                Kind = kind,
+                Id = id,
+                Tick = born,
+                Born = born,
+                Generation = current.Generation
+            });
             LocalImpactCount++; return;
         }
         // The universal position is needed only to route the effect to a star. The particle itself
@@ -181,8 +198,17 @@ internal sealed class BattleImpactCapture : IDisposable
             if (sqr < distance) { distance = sqr; nearestStar = star.id; }
         }
         authoritative.TryAdd((kind, id, born), new Impact
-        { Star = nearestStar, Born = born, Particle = particle, Kind = kind, Generation = Interlocked.Increment(ref nextGeneration),
-            Origin = current?.Origin ?? BattleEffectKind.Impact, Astro = current?.Astro ?? 0, Caster = current?.Caster ?? 0, SourceGeneration = current?.Generation ?? 0 });
+        {
+            Star = nearestStar,
+            Born = born,
+            Particle = particle,
+            Kind = kind,
+            Generation = Interlocked.Increment(ref nextGeneration),
+            Origin = current?.Origin ?? BattleEffectKind.Impact,
+            Astro = current?.Astro ?? 0,
+            Caster = current?.Caster ?? 0,
+            SourceGeneration = current?.Generation ?? 0
+        });
     }
 
     /// <summary>Universal position of a captured particle, leaving the frame it was simulated in untouched.</summary>
@@ -224,7 +250,10 @@ internal sealed class BattleImpactCapture : IDisposable
         return impact.Sample = new BattleEffectData
         {
             Kind = BattleEffectKind.Impact,
-            OriginKind = impact.Origin, SourceAstroId = impact.Astro, SourceObjectId = impact.Caster, SourceGeneration = impact.SourceGeneration,
+            OriginKind = impact.Origin,
+            SourceAstroId = impact.Astro,
+            SourceObjectId = impact.Caster,
+            SourceGeneration = impact.SourceGeneration,
             Id = impact.Particle.id,
             Subtype = impact.Kind,
             Generation = impact.Generation,

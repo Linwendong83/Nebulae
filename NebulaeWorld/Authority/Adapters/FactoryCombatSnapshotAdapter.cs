@@ -53,10 +53,6 @@ internal sealed class FactoryCombatSnapshotAdapter : IHostWorldView, IHostIncrem
         public readonly HashSet<ObjectKey> Removed = [];
     }
 
-    public long MembershipScans { get; private set; }
-    public long StateReads { get; private set; }
-    public long IncrementalFrames { get; private set; }
-
     /// <summary>Scopes skipped because their factory was not readable. Persistent growth means a subscriber is watching a planet the host never loads.</summary>
     public long UnreadableScopes { get; private set; }
 
@@ -110,7 +106,6 @@ internal sealed class FactoryCombatSnapshotAdapter : IHostWorldView, IHostIncrem
             foreach (var id in index.Live.Keys) index.Dirty.Add(id);
             index.Initialized = true;
             index.AuditTick = clock();
-            MembershipScans++;
         }
         return true;
     }
@@ -136,7 +131,6 @@ internal sealed class FactoryCombatSnapshotAdapter : IHostWorldView, IHostIncrem
             candidates.Sort(offset, candidates.Count - offset, KeyComparer.Instance);
             removed.Sort(KeyComparer.Instance);
             index.Births.Clear(); index.Removed.Clear();
-            IncrementalFrames++;
             return true;
         }
     }
@@ -213,7 +207,6 @@ internal sealed class FactoryCombatSnapshotAdapter : IHostWorldView, IHostIncrem
             var tracker = TrackerFor(key.Scope);
             if (!tracker.IsAlive(key.NativeId) || tracker.GenerationOf(key.NativeId) != key.Generation) return false;
         }
-        StateReads++;
         var entityState = ReadEntityState(factory, key.NativeId);
         if (!entityState.HasCombatStat && !entityState.HasConstructStat)
         {

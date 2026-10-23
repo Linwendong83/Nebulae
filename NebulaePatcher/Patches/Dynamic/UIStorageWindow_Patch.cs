@@ -34,7 +34,8 @@ internal class UIStorageWindow_Patch
         Multiplayer.Session.Storage.ActiveBansSlider = __instance.bansSlider;
         Multiplayer.Session.Storage.ActiveBansValueText = __instance.bansValueText;
         Multiplayer.Session.Network.SendPacket(new StorageSyncRequestPacket(__instance.factoryStorage.planet.id,
-            __instance.storageId) { Sequence = sequence });
+            __instance.storageId)
+        { Sequence = sequence });
         // Display the loaded replica immediately; the response refreshes only this target.
         return true;
     }

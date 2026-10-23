@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using NebulaeModel.Networking;
 using NebulaeModel.Packets;
@@ -35,7 +35,7 @@ internal class LobbyUpdateValuesProcessor : PacketProcessor<LobbyUpdateValues>
             gameDesc.combatSettings.battleExpFactor = packet.CombatBattleExpFactor;
         }
 
-        UIRoot.instance.galaxySelect.gameDesc = gameDesc;
+        NebulaeModel.Utils.NativeGameAccess.SetGalaxyDescription(UIRoot.instance.galaxySelect, gameDesc);
         UIRoot.instance.galaxySelect.uiCombat.gameDesc = gameDesc;
         UIRoot.instance.galaxySelect.GoalSetting.gameDesc = gameDesc;
         UIRoot.instance.galaxySelect.SetStarmapGalaxy();

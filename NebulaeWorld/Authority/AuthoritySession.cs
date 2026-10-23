@@ -1,8 +1,7 @@
-#region
+﻿#region
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using NebulaeModel.Authority;
 using NebulaeModel.Logger;
 using NebulaeModel.Packets.Authority;
@@ -147,6 +146,8 @@ internal sealed class AuthoritySession : IDisposable
     public Func<ScopeKey, object> ReplicaPoolIdentity { get; set; }
     public DarkFogReplicaBinding DarkFogReplica { get; private set; }
     public TurretReplicaBinding TurretReplica { get; private set; }
+    public RuinSnapshotAdapter RuinHost { get; set; }
+    public RuinReplicaBinding RuinReplica { get; private set; }
     public Action<long> AfterClientFrame { get; set; }
     public Action<long> BeforeHostFrame { get; set; }
     public Action<long> AfterHostFrame { get; set; }
@@ -181,7 +182,6 @@ internal sealed class AuthoritySession : IDisposable
     /// Client apply and traffic counters. Replaced when a world begins, so a report describes
     /// one world instead of accumulating across a reload.
     /// </summary>
-    public AuthorityPerfMeter Metrics { get; private set; } = new("session");
 
     /// <summary>The window in which a replica write is legal. Never open outside the frame boundary.</summary>
     public ReplicaApplyContext ApplyContext { get; } = new();
@@ -410,15 +410,12 @@ internal sealed class AuthoritySession : IDisposable
         }
 
         identity.BeginAuthorityWorld(epoch, isHost);
-        // one meter per world, labelled with the role, so the perf report is per role and per
-        // world rather than an average over everything the process ever ran.
-        Metrics = new AuthorityPerfMeter(isHost ? "host" : "client");
         commands = isHost ? new HostCommandQueue(epoch) : null;
         if (isHost)
         {
             // Native host rules already settle drops and statistics. This ledger observes their
             // generation-aware deaths without installing a second construction/resource model.
-            HostDeaths = new HostDeathLedger(epoch, binding: null);
+            HostDeaths = new HostDeathLedger(epoch);
         }
 
         // A client gets a replica and the applier that feeds it inside the apply
@@ -460,7 +457,8 @@ internal sealed class AuthoritySession : IDisposable
             };
             DarkFogReplica = new DarkFogReplicaBinding();
             TurretReplica = new TurretReplicaBinding(epoch) { Replica = WorldReplica };
-            WorldReplica.MirrorObserver = new CompositeMirrorObserver(factoryBinding, groundBinding, spaceBinding, craftBinding, DarkFogReplica, TurretReplica)
+            RuinReplica = new RuinReplicaBinding();
+            WorldReplica.MirrorObserver = new CompositeMirrorObserver(factoryBinding, groundBinding, spaceBinding, craftBinding, DarkFogReplica, TurretReplica, RuinReplica)
             { EnforceReadiness = RequireGamePools };
             ReplicaPoolIdentity = scope => scope.Kind switch
             {
@@ -471,6 +469,7 @@ internal sealed class AuthoritySession : IDisposable
                     GameMain.galaxy?.PlanetById(scope.Scope)?.factory?.enemyPool,
                     GameMain.galaxy?.PlanetById(scope.Scope)?.factory?.enemySystem?.bases.buffer),
                 PoolKind.Turret => GameMain.galaxy?.PlanetById(scope.Scope)?.factory?.entityPool,
+                PoolKind.Ruin => GameMain.galaxy?.PlanetById(scope.Scope)?.factory?.ruinPool,
                 PoolKind.SpaceEnemy => GameMain.spaceSector?.enemyPool,
                 PoolKind.SpaceCraft => GameMain.spaceSector?.craftPool,
                 _ => (object)GameMain.spaceSector
@@ -501,7 +500,7 @@ internal sealed class AuthoritySession : IDisposable
         if (!identity.IsActive || !identity.IsHost) return false;
         if (HostReplicator != null) return false;
         HostReplicator = new HostWorldReplicator(identity.Epoch, worldView, sink,
-            meter: Metrics, deathView: deathView);
+            deathView: deathView);
         Capture = new HostReplicationCapture(HostReplicator);
         return true;
     }
@@ -615,7 +614,6 @@ internal sealed class AuthoritySession : IDisposable
         }
         // inbound traffic is counted per family at the moment it is accepted, so the receive
         // rate reflects what the session actually took in rather than what the transport delivered.
-        Metrics.RecordPacketReceived(owned.Family, AuthorityWireSize.Of(owned));
         return true;
     }
 
@@ -731,9 +729,6 @@ internal sealed class AuthoritySession : IDisposable
     /// </remarks>
     private void DrainReplicaInbox()
     {
-        var started = Stopwatch.GetTimestamp();
-        var applied = 0;
-        long appliedBytes = 0;
         while (true)
         {
             // The queue is drained in order until it is empty, so the frame applies everything that
@@ -742,9 +737,6 @@ internal sealed class AuthoritySession : IDisposable
             PendingReplicaMessage message;
             lock (gate)
             {
-                // An emptied queue ends the pass but is not a reason to skip the report: the common
-                // case in a healthy session is "queue drained", and that is exactly the frame the
-                // apply latency has to be measured on.
                 if (inbound.Count == 0) break;
                 var next = inbound.Peek().Packet;
                 if (!applyingPausedJoin && next.HostTick > LastFrameTick && next.Family is AuthorityFamily.WorldState or
@@ -752,7 +744,6 @@ internal sealed class AuthoritySession : IDisposable
                 message = inbound.Dequeue();
             }
 
-            appliedBytes += AuthorityWireSize.Of(message.Packet);
             var applier = replicaApplier;
             if (applier == null)
             {
@@ -767,7 +758,6 @@ internal sealed class AuthoritySession : IDisposable
                 ApplyContext.Run(message.Scope, () => appliedMessage = applier.Apply(message));
                 if (appliedMessage)
                 {
-                    applied++;
                     System.Threading.Interlocked.Increment(ref inboundApplied);
                 }
                 else
@@ -782,19 +772,7 @@ internal sealed class AuthoritySession : IDisposable
             }
         }
 
-        int queuedAfter;
-        lock (gate)
-        {
-            queuedAfter = inbound.Count;
-        }
-        // The frame's own host tick, not the last applied packet's: a frame that applied nothing
-        // still has to be reported, and using a packet-carried tick would make two consecutive
-        // frames look simultaneous (the rate is bytes per host tick).
-        Metrics.RecordClientApply(LastFrameTick, ElapsedMs(started), applied, appliedBytes, queuedAfter);
     }
-
-    private static double ElapsedMs(long startedTimestamp) =>
-        (Stopwatch.GetTimestamp() - startedTimestamp) * 1000.0 / Stopwatch.Frequency;
 
     /// <summary>
     /// Offers a validated snapshot acknowledgement to the host. Called on the socket thread.
@@ -1113,6 +1091,7 @@ internal sealed class AuthoritySession : IDisposable
         ApplyContext.Reset();
         WorldReplica = null;
         TurretReplica = null;
+        RuinReplica = null; RuinHost = null;
         DarkFogReplica = null;
         HostReplicator = null;
         Capture = null;

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
@@ -281,23 +281,6 @@ internal static class FieldDeltaCodec
         var result = reader.ReadBytes(length);
         if (result.Length != length) throw new EndOfStreamException();
         return result;
-    }
-
-    internal static void WriteCount(BinaryWriter writer, int value)
-    { var bits = (uint)value; while (bits >= 128) { writer.Write((byte)(bits | 128)); bits >>= 7; } writer.Write((byte)bits); }
-    internal static int ReadCount(BinaryReader reader, int max)
-    {
-        uint value = 0;
-        for (var shift = 0; shift <= 28; shift += 7)
-        {
-            var next = reader.ReadByte();
-            if (shift == 28 && (next & 0xf8) != 0) throw new InvalidDataException("State count overflow.");
-            value |= (uint)(next & 127) << shift;
-            if ((next & 128) != 0) continue;
-            if (value > max) throw new InvalidDataException("State count exceeds its ceiling.");
-            return (int)value;
-        }
-        throw new InvalidDataException("Invalid state count.");
     }
     private static int CountBytes(int value) { var count = 1; while ((value >>= 7) != 0) count++; return count; }
 }

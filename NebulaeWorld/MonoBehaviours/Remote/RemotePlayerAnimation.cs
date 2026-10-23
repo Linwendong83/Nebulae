@@ -1,6 +1,7 @@
 ﻿#region
 
 using NebulaeModel.Packets.Players;
+using NebulaeWorld.Combat;
 using UnityEngine;
 
 #endregion
@@ -9,7 +10,6 @@ namespace NebulaeWorld.MonoBehaviours.Remote;
 
 public class RemotePlayerAnimation : MonoBehaviour
 {
-    private static readonly int s_initPositionSet = Shader.PropertyToID("_InitPositionSet");
     public PlayerAnimator PlayerAnimator;
     private readonly Snapshot[] packetBuffer = new Snapshot[3];
     private float altitudeFactor;
@@ -170,13 +170,7 @@ public class RemotePlayerAnimation : MonoBehaviour
 
     public void AnimateRenderers(PlayerAnimator animator)
     {
-        var position = transform.position;
-        animator.player.mechaArmorModel.inst_part_ar_mat.SetVector(s_initPositionSet, position);
-        animator.player.mechaArmorModel.inst_part_sk_mat.SetVector(s_initPositionSet, position);
-        for (var i = 0; i < 8; i++)
-        {
-            animator.player.mechaArmorModel.bone_mats_inst[i].SetVector(s_initPositionSet, transform.position);
-        }
+        MechaInvincibilityVisual.Apply(animator.player.mechaArmorModel);
     }
 
     internal struct Snapshot

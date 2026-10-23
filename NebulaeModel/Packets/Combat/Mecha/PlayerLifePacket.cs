@@ -2,6 +2,9 @@ using NebulaeModel.DataStructures;
 
 namespace NebulaeModel.Packets.Combat.Mecha;
 
+internal enum CheckpointReceiptStatus : byte { Accepted = 1, Duplicate, Retry, Rejected }
+internal enum CheckpointRejectReason : byte { None, Busy, CombatBaseline, InvalidSnapshot, InvalidLedger }
+
 [NebulaeModel.Networking.PacketId(7385105842791126233UL)]
 internal class PlayerLifePacket
 {
@@ -26,11 +29,29 @@ internal class PlayerLifePacket
     [NebulaeModel.Networking.WireOrder(9)]
     public bool Acknowledgement { get; set; }
 
+    [NebulaeModel.Networking.WireOrder(10)]
+    public byte ReceiptStatus { get; set; }
+    [NebulaeModel.Networking.WireOrder(11)]
+    public long AcceptedRevision { get; set; }
+    [NebulaeModel.Networking.WireOrder(12)]
+    public byte RejectReason { get; set; }
+    [NebulaeModel.Networking.WireOrder(13)]
+    public ulong EpochHigh { get; set; }
+    [NebulaeModel.Networking.WireOrder(14)]
+    public ulong EpochLow { get; set; }
+    [NebulaeModel.Networking.WireOrder(15)]
+    public ulong ConnectionEpoch { get; set; }
+
     /// <summary>A terminal receipt for a snapshot, without adopting its life or inventory facts.</summary>
-    public static PlayerLifePacket CreateReceipt(ushort playerId, long receivedRevision) => new()
-    {
-        PlayerId = playerId,
-        Life = new PlayerLifeData { Revision = receivedRevision },
-        Acknowledgement = true
-    };
+    public static PlayerLifePacket CreateReceipt(ushort playerId, long receivedRevision,
+        CheckpointReceiptStatus status = CheckpointReceiptStatus.Accepted, long acceptedRevision = 0,
+        CheckpointRejectReason reason = CheckpointRejectReason.None) => new()
+        {
+            PlayerId = playerId,
+            Life = new PlayerLifeData { Revision = receivedRevision },
+            Acknowledgement = true,
+            ReceiptStatus = (byte)status,
+            AcceptedRevision = acceptedRevision,
+            RejectReason = (byte)reason
+        };
 }

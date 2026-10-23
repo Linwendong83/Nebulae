@@ -157,6 +157,7 @@ internal static class AuthorityStateFields
                 PoolKind.GroundCraft or PoolKind.SpaceCraft => CraftStateCodec.TryDecode(state, 0, state.Length, out _, out _),
                 PoolKind.Turret => TurretStateCodec.TryDecode(state, out _),
                 PoolKind.Base => ReadBase(state),
+                PoolKind.Ruin => ReadRuin(state),
                 PoolKind.HiveSummary => ReadHive(state),
                 _ => false
             };
@@ -177,6 +178,7 @@ internal static class AuthorityStateFields
     }
 
     private static bool ReadBase(byte[] state) { GroundBaseStateCodec.Decode(state); return true; }
+    private static bool ReadRuin(byte[] state) { RuinStateCodec.Decode(state); return true; }
 
     private static bool ReadHive(byte[] state)
     {

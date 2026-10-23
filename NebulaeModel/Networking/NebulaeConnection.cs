@@ -1,4 +1,4 @@
-#region
+﻿#region
 
 using System;
 using System.Collections.Generic;
@@ -30,6 +30,12 @@ internal class NebulaeConnection : INebulaeConnection
     private EConnectionStatus connectionStatus = EConnectionStatus.Undefined;
     private static int nextConnectionId;
     private long nextTransferId;
+    private int stopped;
+
+    public bool IsStopped => Volatile.Read(ref stopped) != 0;
+    public bool HandshakeCompleted { get; private set; }
+
+    internal void CompleteHandshake() => HandshakeCompleted = true;
 
     public bool IsAlive => peerSocket?.ReadyState == WebSocketState.Open;
 
@@ -63,9 +69,7 @@ internal class NebulaeConnection : INebulaeConnection
         {
             if (peerSocket.ReadyState == WebSocketState.Open)
             {
-                var start = NebulaeModel.DataStructures.LoadingTimings.Now;
                 var success = BlockingWebSocketSender.Send(peerSocket, bytes);
-                sender.Timings.Record("socket-write", NebulaeModel.DataStructures.LoadingTimings.Elapsed(start));
                 done(success);
             }
             else done(false);
@@ -78,7 +82,8 @@ internal class NebulaeConnection : INebulaeConnection
         {
             if (batchWriter == null) { batchWriter = new NebulaeNetPacketProcessor(); PacketUtils.RegisterNestedTypes(batchWriter); }
             return RealtimePacketBatch.Encode(packets, batchWriter);
-        } : null, canCombine: bytes => hostSide && ConnectionStatus == EConnectionStatus.Connected && RealtimePacketBatch.CanInclude(bytes));
+        }
+        : null, canCombine: bytes => hostSide && ConnectionStatus == EConnectionStatus.Connected && RealtimePacketBatch.CanInclude(bytes));
     }
 
 
@@ -103,9 +108,7 @@ internal class NebulaeConnection : INebulaeConnection
             deferredWriter = new NebulaeNetPacketProcessor();
             PacketUtils.RegisterNestedTypes(deferredWriter);
         }
-        var started = NebulaeModel.DataStructures.LoadingTimings.Now;
         var bytes = deferredWriter.Write(packet);
-        sender.Timings.Record("serialize.authority", NebulaeModel.DataStructures.LoadingTimings.Elapsed(started));
         return bytes;
     }), ConnectionStatus == EConnectionStatus.Connected);
 
@@ -116,8 +119,13 @@ internal class NebulaeConnection : INebulaeConnection
         var transferId = Interlocked.Increment(ref nextTransferId);
         sender.EnqueueBatch(messages, prepared => JoinDataTransfer.Encode(Id, transferId, stage, planetId, prepared));
     }
-    public byte[] ReceivePacket(byte[] rawData) => deltas.Receive(rawData);
-    public void StopSending() { sender.Stop(); deltas.Clear(); }
+    public byte[] ReceivePacket(byte[] rawData) => IsStopped ? null : deltas.Receive(rawData);
+    public void StopSending()
+    {
+        Interlocked.Exchange(ref stopped, 1);
+        sender.Stop();
+        deltas.Clear();
+    }
     public bool Equals(INebulaeConnection connection)
     {
         return ReferenceEquals(this, connection);

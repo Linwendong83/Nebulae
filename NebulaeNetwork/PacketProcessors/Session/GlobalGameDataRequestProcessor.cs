@@ -23,7 +23,6 @@ internal class GlobalGameDataRequestProcessor : PacketProcessor<GlobalGameDataRe
         JoinSyncManager.WaitForSimulation();
         NebulaeWorld.Multiplayer.Session.Ships.FlushLifecycle();
         NebulaeWorld.Multiplayer.Session.JoinSync.Begin(conn, new NebulaeModel.DataStructures.PlayerTechBonuses(GameMain.mainPlayer.mecha));
-        var started = NebulaeModel.DataStructures.LoadingTimings.Now;
         var messages = new List<byte[]>();
         void AddSnapshot<T>(T value) where T : class, new() => messages.Add(conn.SerializePacket(value));
         AddSnapshot(new GlobalGameDataResponse(GlobalGameDataResponse.EDataType.PlanetBaseline,
@@ -109,8 +108,8 @@ internal class GlobalGameDataRequestProcessor : PacketProcessor<GlobalGameDataRe
 
         conn.SendJoinTransfer(JoinDataStage.World, 0, messages.ToArray());
         conn.SendPacket(new GameStateSaveInfoPacket(GameStatesManager.LastSaveTime));
-        conn.SendPacket(new GamePausePacket(NebulaeWorld.Multiplayer.Session.WorldPaused));
-        NebulaeWorld.Multiplayer.Session.Planets.Timings.Record("world-export", NebulaeModel.DataStructures.LoadingTimings.Elapsed(started));
+        conn.SendPacket(new GamePausePacket(NebulaeWorld.Multiplayer.Session.WorldPaused, NebulaeWorld.Multiplayer.Session.WorldPauseStepTick));
+        conn.SendPacket(new SimSpeedPacket(NebulaeWorld.Multiplayer.Session.WorldSimSpeed));
     }
 
 }

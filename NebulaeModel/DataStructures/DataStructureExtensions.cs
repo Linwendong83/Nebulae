@@ -1,4 +1,4 @@
-#region
+﻿#region
 
 using UnityEngine;
 
@@ -26,10 +26,5 @@ internal static class DataStructureExtensions
     public static Quaternion ToQuaternion(this Float4 value)
     {
         return new Quaternion(value.x, value.y, value.z, value.w);
-    }
-
-    public static Float4 ToFloat4(this Quaternion value)
-    {
-        return new Float4(value.x, value.y, value.z, value.w);
     }
 }

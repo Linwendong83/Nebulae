@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using NebulaeModel.Authority;
@@ -126,19 +126,19 @@ internal sealed class NativeDarkFogTurrets : IDisposable
         {
             var pool = skills.dfgTowerLasers;
             using (pool.GetScopeLock()) for (var i = 1; i < pool.cursor; i++)
-            {
-                ref var shot = ref pool.buffer[i];
-                if (shot.id == i && shot.life != 0 && shot.astroId == astro && shot.caster.type == ETargetType.Enemy && shot.caster.id == enemy && shot.target.Equals(target)) return true;
-            }
+                {
+                    ref var shot = ref pool.buffer[i];
+                    if (shot.id == i && shot.life != 0 && shot.astroId == astro && shot.caster.type == ETargetType.Enemy && shot.caster.id == enemy && shot.target.Equals(target)) return true;
+                }
         }
         else if (kind == BattleEffectKind.GroundTowerPlasma && skills?.dfgTowerPlasmas != null)
         {
             var pool = skills.dfgTowerPlasmas;
             using (pool.GetScopeLock()) for (var i = 1; i < pool.cursor; i++)
-            {
-                ref var shot = ref pool.buffer[i];
-                if (shot.id == i && shot.life > 0 && shot.astroId == astro && shot.caster.type == ETargetType.Enemy && shot.caster.id == enemy && shot.target.Equals(target)) return true;
-            }
+                {
+                    ref var shot = ref pool.buffer[i];
+                    if (shot.id == i && shot.life > 0 && shot.astroId == astro && shot.caster.type == ETargetType.Enemy && shot.caster.id == enemy && shot.target.Equals(target)) return true;
+                }
         }
         return false;
     }

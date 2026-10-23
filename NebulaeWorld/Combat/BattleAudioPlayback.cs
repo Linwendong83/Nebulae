@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using NebulaeModel.DataStructures;
 using UnityEngine;
@@ -16,7 +16,6 @@ internal sealed class BattleAudioGate
         generations[key] = generation;
         return true;
     }
-    public void Clear() => generations.Clear();
 }
 
 /// <summary>Listener-local audio only. Never ticks a skill or writes to a combat pool.</summary>

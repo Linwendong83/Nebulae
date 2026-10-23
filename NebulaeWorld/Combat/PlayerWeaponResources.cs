@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -26,18 +26,30 @@ internal sealed class PlayerWeaponResources
         public long Laser, Shield;
         public long SettledRevision;
         public long Tick;
+        public long LifeVersion;
         public bool? Recharging;
     }
     public int PendingCount => pending.Count;
     public bool Contains(PlayerShotId shot) => pending.ContainsKey(shot);
     public void Reserve(PlayerShotId shot, EAmmoType ammo, bool bomb, bool local, int item, int slot = 0)
     {
-        pending[shot] = new Reservation { Shot = shot, Ammo = ammo, Bomb = bomb, Local = local, Item = item, Slot = slot, Tick = GameMain.gameTick };
+        var mecha = localMecha ?? GameMain.mainPlayer?.mecha;
+        pending[shot] = new Reservation
+        {
+            Shot = shot,
+            Ammo = ammo,
+            Bomb = bomb,
+            Local = local,
+            Item = item,
+            Slot = slot,
+            Tick = GameMain.gameTick,
+            LifeVersion = mecha == null ? 0 : Recovery.GetLifeVersion(mecha)
+        };
     }
     public void Reject(PlayerShotId shot)
     {
         if (!pending.TryGetValue(shot, out var r)) return;
-        if (localMecha != null) Recovery.Refund(localMecha, r.Laser, r.Shield, r.Core);
+        if (localMecha != null && r.LifeVersion == Recovery.GetLifeVersion(localMecha)) Recovery.Refund(localMecha, r.Laser, r.Shield, r.Core);
         pending.Remove(shot);
     }
     public void Settle(PlayerShotId shot, long revision)
@@ -57,7 +69,10 @@ internal sealed class PlayerWeaponResources
     {
         var own = mecha == GameMain.mainPlayer?.mecha;
         if (own && hostTick.HasValue) localHostTick = hostTick;
-        Recovery.Rebase(mecha, hostTick, own ? pending.Values.Select(r =>
+        var life = Recovery.GetLifeVersion(mecha);
+        // Keep old reservations until their settlement arrives, but their costs and recharge
+        // locks must not be replayed into a respawned mecha.
+        Recovery.Rebase(mecha, hostTick, own ? pending.Values.Where(r => r.LifeVersion == life).Select(r =>
             new CombatRecoveryView.Expenditure(r.Tick, r.Laser, r.Shield, r.Core, r.Recharging)) : null);
     }
     public Scope Enter(Mecha mecha) => new(this, mecha);
@@ -107,7 +122,8 @@ internal sealed class PlayerWeaponResources
                 var view = owner.Recovery.Get(mecha);
                 mecha.laserEnergy = view.laserEnergy; mecha.energyShieldEnergy = view.energyShieldEnergy;
                 mecha.coreEnergy = view.coreEnergy; mecha.laserRecharging = view.laserRecharging;
-                foreach (var reservation in owner.pending.Values.OrderBy(x => x.Shot.Sequence)) Replay(mecha, reservation);
+                var life = owner.Recovery.GetLifeVersion(mecha);
+                foreach (var reservation in owner.pending.Values.Where(x => x.LifeVersion == life).OrderBy(x => x.Shot.Sequence)) Replay(mecha, reservation);
                 predictedCore = mecha.coreEnergy;
                 predictedLaser = mecha.laserEnergy; predictedShield = mecha.energyShieldEnergy;
                 predictedCharging = mecha.laserRecharging;

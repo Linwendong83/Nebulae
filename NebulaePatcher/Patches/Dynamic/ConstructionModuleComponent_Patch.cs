@@ -12,6 +12,27 @@ internal class ConstructionModuleComponent_Patch
     [System.ThreadStatic]
     private static PlanetFactory currentFactory;
 
+    [HarmonyPrefix, HarmonyPatch(nameof(ConstructionModuleComponent.GameTick))]
+    public static bool GameTick_Prefix(ConstructionModuleComponent __instance, PlanetFactory factory)
+    {
+        if (!Multiplayer.IsActive) return true;
+        ConstructionRepairTargets.Prune(__instance, factory);
+        var entity = __instance.entityId;
+        if (entity == 0) return true;
+        if (entity < 0 || entity >= factory.entityCursor || factory.entityPool[entity].id != entity) return false;
+        var baseId = factory.entityPool[entity].battleBaseId;
+        return baseId > 0 && baseId < factory.defenseSystem.battleBases.cursor &&
+               factory.defenseSystem.battleBases.buffer[baseId]?.id == baseId;
+    }
+
+    [HarmonyPrefix, HarmonyPatch("PreLaunchDrone")]
+    [HarmonyPatch(nameof(ConstructionModuleComponent.SortRepairTargets))]
+    [HarmonyPatch(nameof(ConstructionModuleComponent.SearchRepairTargets))]
+    public static void RepairTargets_Prefix(ConstructionModuleComponent __instance, PlanetFactory factory)
+    {
+        if (Multiplayer.IsActive) ConstructionRepairTargets.Prune(__instance, factory);
+    }
+
     [HarmonyPostfix]
     [HarmonyPatch(nameof(ConstructionModuleComponent.EjectMechaDrone))]
     public static void EjectMechaDrone_Postfix(PlanetFactory factory, Player player, int targetObjectId,
@@ -31,7 +52,7 @@ internal class ConstructionModuleComponent_Patch
             return;
         }
         Multiplayer.Session.Network.SendPacketToLocalStar(new PlayerEjectMechaDronePacket(playerId, planetId,
-            targetObjectId, next1ObjectId, next2ObjectId, next3ObjectId, priority));
+            targetObjectId, priority));
     }
 
     [HarmonyPostfix]
@@ -52,7 +73,7 @@ internal class ConstructionModuleComponent_Patch
         currentFactory = factory;
     }
 
-    [HarmonyPostfix]
+    [HarmonyFinalizer]
     [HarmonyPatch(nameof(ConstructionModuleComponent.SearchBuildTargets))]
     public static void SearchBuildTargets_Postfix(PlanetFactory __state) => currentFactory = __state;
 

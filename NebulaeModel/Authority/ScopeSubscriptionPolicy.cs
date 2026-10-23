@@ -150,6 +150,7 @@ internal static class ScopeSubscriptionPolicy
             desired.Add(new ScopeKey(PoolKind.Vegetable, context.CurrentPlanetId));
             desired.Add(new ScopeKey(PoolKind.Vein, context.CurrentPlanetId));
             desired.Add(new ScopeKey(PoolKind.Base, context.CurrentPlanetId));
+            desired.Add(new ScopeKey(PoolKind.Ruin, context.CurrentPlanetId));
             desired.Add(new ScopeKey(PoolKind.DroneTask, context.CurrentPlanetId));
         }
         // Orbital attacks and hive status remain observable while the player is on a planet.

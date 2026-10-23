@@ -1,7 +1,7 @@
 ﻿namespace NebulaeModel.Packets.Factory.Foundation;
 
 [NebulaeModel.Networking.PacketId(5807290630840879386UL)]
-internal class PlanetReformPacket
+internal class PlanetReformPacket : NebulaeModel.Networking.IVegetationOperation
 {
     public PlanetReformPacket() { }
 
@@ -24,4 +24,8 @@ internal class PlanetReformPacket
     public int Color { get; set; }
     [NebulaeModel.Networking.WireOrder(4)]
     public bool Bury { get; set; }
+    [NebulaeModel.Networking.WireOrder(5)]
+    public byte[] CollectionBefore { get; set; } = System.Array.Empty<byte>();
+    [NebulaeModel.Networking.WireOrder(6)]
+    public long CommandSequence { get; set; }
 }

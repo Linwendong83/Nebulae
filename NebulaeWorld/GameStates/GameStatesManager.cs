@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using System;
 using System.Collections.Generic;
@@ -16,7 +16,6 @@ internal class GameStatesManager : IDisposable
     public const float MinUPS = 1f;
     private static readonly HashSet<int> preservedFeatureKeys = new();
     private static readonly HashSet<int> preservedTutorialUnlocked = new();
-    private static int bufferLength;
 
     public static bool IsAdvisorOrTutorialFeatureKey(int featureId)
     {
@@ -140,12 +139,7 @@ internal class GameStatesManager : IDisposable
         // vanilla speed readout honest; the vanilla tool lerps toward its own target, so the
         // target is re-aimed as well to stop the two from fighting.
         var speed = simSpeed > 0.05f ? simSpeed : 1f;
-        FPSController.SimulateSpeed = speed;
-        var upsTool = UIRoot.instance?.uiGame?.upsTool;
-        if (upsTool != null)
-        {
-            upsTool.targetSimSpeed = speed;
-        }
+        ApplyWorldSimSpeed(speed);
 
         // We offset the tick received to account for the time it took to receive the packet
         var tickOffsetSinceSent = (long)Math.Round(unitsPerSecond * rtt / 2 / 1000);
@@ -164,8 +158,7 @@ internal class GameStatesManager : IDisposable
         var fixUps = ComputeFixUPS(diff, averageUPS, factor);
         FPSController.SetFixUPS(fixUps);
 
-        // FPSController only folds SimulateSpeed into Time.fixedDeltaTime while the local
-        // player is sailing in the running scene, so the compensation uses the same condition.
+        // Multiplayer applies the shared factor to all running peers, including the headless host.
         float speedFactor()
         {
             return IsSimulateSpeedActive(speed) ? speed : 1f;
@@ -175,7 +168,29 @@ internal class GameStatesManager : IDisposable
     private static bool IsSimulateSpeedActive(float speed)
     {
         return speed != 1f && GameMain.data != null && !DSPGame.IsMenuDemo && GameMain.isRunning && !GameMain.isLoading &&
-               !GameMain.inOtherScene && GameMain.mainPlayer != null && GameMain.mainPlayer.sailing && GameMain.mainPlayer.isAlive;
+               !GameMain.inOtherScene;
+    }
+
+    public static void ApplyWorldSimSpeed(float speed)
+    {
+        if (float.IsNaN(speed) || float.IsInfinity(speed) || speed < 0.1f || speed > 8f) return;
+        if (Multiplayer.Session != null) Multiplayer.Session.WorldSimSpeed = speed;
+        FPSController.SimulateSpeed = speed;
+        var tool = UIRoot.instance?.uiGame?.upsTool;
+        if (tool != null) tool.targetSimSpeed = speed;
+    }
+
+    public static void ChangeWorldSimSpeed(float speed)
+    {
+        if (float.IsNaN(speed) || float.IsInfinity(speed)) return;
+        speed = Math.Min(8f, Math.Max(0.1f, speed));
+        var session = Multiplayer.Session;
+        if (session.IsClient) session.Network.SendPacket(new NebulaeModel.Packets.GameStates.SimSpeedPacket(speed));
+        else
+        {
+            ApplyWorldSimSpeed(speed);
+            session.Server?.SendPacket(new NebulaeModel.Packets.GameStates.SimSpeedPacket(speed));
+        }
     }
 
     /// <summary>
@@ -185,21 +200,6 @@ internal class GameStatesManager : IDisposable
     internal static float ComputeFixUPS(float diff, float averageUPS, float speedFactor)
     {
         return Math.Max(MinUPS, Math.Min(MaxUPS, (diff + averageUPS) / speedFactor));
-    }
-
-    public static void UpdateBufferLength(int length)
-    {
-        if (length <= 0)
-        {
-            return;
-        }
-        bufferLength = length;
-    }
-
-    public static string LoadingMessage()
-    {
-        var progress = bufferLength * 100f / FragmentSize;
-        return string.Format("Downloading {0:n0} KB ({1:F1}%)".Translate(), FragmentSize / 1000, progress);
     }
 
     public void ImportGlobalGameData(GlobalGameDataResponse packet)
@@ -274,7 +274,7 @@ internal class GameStatesManager : IDisposable
             return;
         }
         ApplyBirthData(data);
-        InstallWorldClock();
+        InstallWorldClock(data);
         if (killBinaryData != null)
         {
             Multiplayer.Session.Kills.ApplySnapshot(killBinaryData);
@@ -314,9 +314,10 @@ internal class GameStatesManager : IDisposable
             }
 
             data.history.Init(data);
-            using (var reader = new BinaryUtils.Reader(historyBinaryData))
+            using (var reader = new BinaryUtils.Reader(historyBinaryData, 20))
             {
                 data.history.Import(reader.BinaryReader);
+                reader.RequireEnd();
             }
             historyBinaryData = null;
 
@@ -419,9 +420,10 @@ internal class GameStatesManager : IDisposable
         if (galacticTransportBinaryData != null)
         {
             data.galacticTransport.Init(data);
-            using (var reader = new BinaryUtils.Reader(galacticTransportBinaryData))
+            using (var reader = new BinaryUtils.Reader(galacticTransportBinaryData, 1))
             {
                 data.galacticTransport.Import(reader.BinaryReader);
+                reader.RequireEnd();
             }
             galacticTransportBinaryData = null;
         }
@@ -430,9 +432,10 @@ internal class GameStatesManager : IDisposable
             using (Multiplayer.Session.Enemies.IsIncomingRequest.On())
             {
                 data.spaceSector.isCombatMode = data.gameDesc.isCombatMode;
-                using (var reader = new BinaryUtils.Reader(spaceSectorBinaryData))
+                using (var reader = new BinaryUtils.Reader(spaceSectorBinaryData, 1))
                 {
                     SpaceSectorBootstrap.Import(data.spaceSector, reader.BinaryReader);
+                    reader.RequireEnd();
                 }
                 data.mainPlayer.mecha.CheckCombatModuleDataIsValidPatch();
             }
@@ -441,17 +444,19 @@ internal class GameStatesManager : IDisposable
         if (milestoneSystemBinaryData != null)
         {
             data.milestoneSystem.Init(data);
-            using (var reader = new BinaryUtils.Reader(milestoneSystemBinaryData))
+            using (var reader = new BinaryUtils.Reader(milestoneSystemBinaryData, 0))
             {
                 data.milestoneSystem.Import(reader.BinaryReader);
+                reader.RequireEnd();
             }
             milestoneSystemBinaryData = null;
         }
         if (trashSystemBinaryData != null)
         {
-            using (var reader = new BinaryUtils.Reader(trashSystemBinaryData))
+            using (var reader = new BinaryUtils.Reader(trashSystemBinaryData, 0))
             {
                 data.trashSystem.Import(reader.BinaryReader);
+                reader.RequireEnd();
             }
             // Wait until WarningDataPacket to assign warningId
             var container = data.trashSystem.container;
@@ -463,20 +468,24 @@ internal class GameStatesManager : IDisposable
         }
         if (galacticDigitalBinaryData != null)
         {
-            using (var reader = new BinaryUtils.Reader(galacticDigitalBinaryData))
+            using (var reader = new BinaryUtils.Reader(galacticDigitalBinaryData, 1))
             {
                 data.galacticDigital.Import(reader.BinaryReader);
+                reader.RequireEnd();
             }
             galacticDigitalBinaryData = null;
 
         }
     }
 
-    internal void InstallWorldClock()
+    internal void InstallWorldClock(GameData data = null)
     {
         if (initialSimulationTick < 0) return;
         GameMain.gameTick = initialSimulationTick;
         initialSimulationTick = -1;
+        // New clients generate orbital poses at t=0. Pose and clock must agree before
+        // choosing a planet or restoring an inertial (sailing) player position.
+        data?.galaxy?.UpdatePoses(GameMain.gameTime);
     }
 
 }

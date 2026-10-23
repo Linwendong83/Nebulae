@@ -28,7 +28,7 @@ internal sealed partial class FactoryProductManager : IDisposable
     private readonly InventoryReceiptGate receipts = new();
     private AuthorityEpoch epoch;
     private ConnectionEpoch connection;
-    private long pending;
+    private long pending, checkpointTicket;
     private (ObjectKey Key, FactoryProductIntent Intent) activeRequest;
     public bool InventoryPending => pending != 0;
     public Func<FactorySystem, int, IReadOnlyList<PlayerInventoryTransferLedger.Transfer>> CollectRefunds { get; set; }
@@ -40,7 +40,8 @@ internal sealed partial class FactoryProductManager : IDisposable
         if (epoch == current.Epoch && connection == current.Connection) return;
         epoch = current.Epoch; connection = current.Connection;
         lock (gate) { requests.Clear(); requestedSlots.Clear(); incoming.Clear(); results.Clear(); receipts.Clear(); }
-        sequences.Clear(); repairs.Clear(); repairTicks.Clear(); pending = 0;
+        sequences.Clear(); repairs.Clear(); repairTicks.Clear(); pending = checkpointTicket = 0;
+        fighterPorts.Clear(); fighterPortScan.Clear();
         Multiplayer.Session.InventoryTransfers.EnsureWorld();
     }
 
@@ -103,7 +104,10 @@ internal sealed partial class FactoryProductManager : IDisposable
     {
         EnsureWorld();
         var session = Multiplayer.Session;
-        if (!FactoryProductIntent.TryDecode(command.Packet.Payload, out var intent) || !command.Packet.TryGetTargetKey(out var key) || key.Kind != PoolKind.Entity)
+        if (!FactoryProductIntent.TryDecode(command.Packet.Payload, out var intent))
+            return new CommandOutcome(CommandResultCode.RejectedInvalid);
+        if (intent.Kind == FactoryInteractionKind.FighterPort) return ExecuteFighterPort(command, intent, player);
+        if (!command.Packet.TryGetTargetKey(out var key) || key.Kind != PoolKind.Entity)
             return new CommandOutcome(CommandResultCode.RejectedTarget);
         var machineFound = TryMachine(key, out var factory, out var id);
         var fractionator = !machineFound && TryFractionator(key, out factory, out id);
@@ -409,6 +413,13 @@ internal sealed partial class FactoryProductManager : IDisposable
     {
         EnsureWorld();
         if (!request.TryKey(epoch, out var key)) return null;
+        if (TryBattleBase(key, out var baseFactory, out var battleBase))
+        {
+            if (Multiplayer.Session.AuthorityRuntime.FactoryCombatHost?.TryGetEntityKey(baseFactory, key.NativeId, out var live) != true || live != key) return null;
+            var snapshot = FighterPortSnapshot(key, battleBase);
+            if (!fighterPorts.ContainsKey(key)) fighterPorts[key] = snapshot;
+            return snapshot;
+        }
         if (TryFractionator(key, out var fractionatorFactory, out var fractionatorId)) return FractionatorSnapshot(key, fractionatorFactory, fractionatorId);
         if (TryLauncher(key, out var launcherFactory, out var launcherStock)) return LauncherSnapshot(key, launcherFactory, launcherStock);
         if (!TryMachine(key, out var factory, out var id) ||
@@ -433,9 +444,12 @@ internal sealed partial class FactoryProductManager : IDisposable
     public void Receive(FactoryProductPacket packet)
     {
         EnsureWorld();
-        if (!packet.TryKey(epoch, out _) || packet.Sequence < 0 || packet.Message < (byte)FactoryProductMessage.Commit || packet.Message > (byte)FactoryProductMessage.Acceleration ||
-            packet.Counts == null || packet.Products == null || packet.OutputInc == null || packet.OutputInc.Length > 16 || packet.Counts.Length > 16 || packet.Products.Length > 16 ||
-            packet.Inputs == null || packet.Served == null || packet.IncServed == null || packet.Inputs.Length > 16 || packet.Served.Length > 16 || packet.IncServed.Length > 16) return;
+        var portSnapshot = packet.Message == (byte)FactoryProductMessage.FighterPortsSnapshot;
+        var max = portSnapshot ? 256 : 16;
+        if (!packet.TryKey(epoch, out _) || packet.Sequence < 0 || packet.Message < (byte)FactoryProductMessage.Commit || packet.Message > (byte)FactoryProductMessage.FighterPortsSnapshot ||
+            packet.Counts == null || packet.Products == null || packet.OutputInc == null || packet.OutputInc.Length > max || packet.Counts.Length > max || packet.Products.Length > max ||
+            packet.Inputs == null || packet.Served == null || packet.IncServed == null || packet.Filters == null || packet.Filters.Length > max ||
+            packet.Inputs.Length > max || packet.Served.Length > max || packet.IncServed.Length > max) return;
         lock (gate)
         {
             // Join replay is already byte-bounded. Keep those events until the entity baseline
@@ -461,10 +475,12 @@ internal sealed partial class FactoryProductManager : IDisposable
             var result = new ClientResult { Sequence = packet.Sequence, InventorySequence = packet.ResourceRevision };
             if ((CommandResultCode)packet.ResultCode != CommandResultCode.Applied)
             {
-                if ((CommandResultCode)packet.ResultCode is CommandResultCode.RejectedResource or CommandResultCode.RejectedStale)
+                if (activeRequest.Intent.Kind != FactoryInteractionKind.FighterPort && (CommandResultCode)packet.ResultCode is CommandResultCode.RejectedResource or CommandResultCode.RejectedStale)
                     if (repairs.Add(activeRequest.Key)) RequestRepair(activeRequest.Key);
                 if (activeRequest.Intent.Kind == FactoryInteractionKind.Deposit)
                     result.Credits.Enqueue(new PlayerInventoryTransferLedger.Transfer(activeRequest.Intent.Item, activeRequest.Intent.Count, activeRequest.Intent.Inc, activeRequest.Intent.Hand));
+                if (activeRequest.Intent.Kind == FactoryInteractionKind.FighterPort && activeRequest.Intent.Count > 0)
+                    result.Credits.Enqueue(new PlayerInventoryTransferLedger.Transfer(activeRequest.Intent.Item, activeRequest.Intent.Count, activeRequest.Intent.Inc, true));
             }
             else if (packet.ResultData?.Length > 0)
             {
@@ -492,6 +508,12 @@ internal sealed partial class FactoryProductManager : IDisposable
             lock (gate) { if (incoming.Count == 0) break; packet = incoming.Dequeue(); }
             if (!packet.TryKey(epoch, out var key)) continue;
             if (Multiplayer.Session.AuthorityRuntime.WorldReplica?.TryFindKey(PoolKind.Entity, key.Scope, key.NativeId, out var current) != true || current != key) continue;
+            if (packet.Message == (byte)FactoryProductMessage.FighterPortsSnapshot)
+            {
+                if (TryBattleBase(key, out _, out var battleBase) && (!sequences.TryGetValue(key, out var before) || packet.Sequence >= before) && ApplyFighterPortSnapshot(battleBase, packet))
+                { sequences[key] = packet.Sequence; repairs.Remove(key); repairTicks.Remove(key); }
+                continue;
+            }
             if (TryFractionator(key, out var fractionatorFactory, out var fractionatorId)) { ApplyFractionatorPacket(key, fractionatorFactory, fractionatorId, packet); continue; }
             if (TryLauncher(key, out var launcherFactory, out var launcherStock)) { ApplyLauncherPacket(key, launcherFactory, launcherStock, packet); continue; }
             if (!TryMachine(key, out var factory, out var id)) continue;
@@ -562,9 +584,28 @@ internal sealed partial class FactoryProductManager : IDisposable
                     requestedSlots.Remove((activeRequest.Key, activeRequest.Intent.Slot)); pending = 0; results.Dequeue();
                 }
             }
+        }
+    }
+
+    public void DispatchPending()
+    {
+        EnsureWorld();
+        lock (gate)
+        {
             if (pending != 0 || requests.Count == 0 || Multiplayer.Session.InventoryTransfers.Pending) return;
-            Multiplayer.Session.Life.Publish();
+            if (!Multiplayer.Session.Life.EnsureInventoryCheckpoint(ref checkpointTicket)) return;
+            checkpointTicket = 0;
             var request = requests.Dequeue();
+            if (request.Intent.Kind == FactoryInteractionKind.FighterPort && (request.Intent.NextRecipe & 3) != 2)
+            {
+                var player = GameMain.mainPlayer;
+                var item = player.inhandItemCount > 0 ? player.inhandItemId : 0;
+                var count = player.inhandItemCount;
+                var inc = player.inhandItemInc;
+                if (count > 0) player.TakeItemFromPlayer(ref item, ref count, out inc, false, null);
+                request = (request.Key, new FactoryProductIntent(FactoryInteractionKind.FighterPort, request.Intent.Recipe,
+                    request.Intent.Slot, count > 0 ? item : 0, count, inc, request.Intent.NextRecipe));
+            }
             if (request.Intent.Kind == FactoryInteractionKind.Deposit)
             {
                 var item = request.Intent.Item;
@@ -578,14 +619,17 @@ internal sealed partial class FactoryProductManager : IDisposable
                 request = (request.Key, new FactoryProductIntent(FactoryInteractionKind.Deposit, request.Intent.Recipe, request.Intent.Slot, item, count, inc, hand: request.Intent.Hand));
             }
             if (Multiplayer.Session.CombatAuthority.SendCommand(request.Key, FactoryProductIntent.Category, request.Intent.Encode(), out var sequence))
-            { activeRequest = request; pending = sequence; }
+            {
+                activeRequest = request; pending = sequence;
+                if (Multiplayer.Session.WorldPaused) Multiplayer.Session.Network.SendPacket(new NebulaeModel.Packets.GameStates.GamePauseStepRequest());
+            }
             else
             {
                 requestedSlots.Remove((request.Key, request.Intent.Slot));
-                if (request.Intent.Kind == FactoryInteractionKind.Deposit)
+                if (request.Intent.Kind == FactoryInteractionKind.Deposit || request.Intent.Kind == FactoryInteractionKind.FighterPort && request.Intent.Count > 0)
                 {
                     var item = request.Intent.Item; var count = request.Intent.Count; var inc = request.Intent.Inc;
-                    GameMain.mainPlayer.SendItemToPlayer(ref item, ref count, ref inc, !request.Intent.Hand, null);
+                    GameMain.mainPlayer.SendItemToPlayer(ref item, ref count, ref inc, request.Intent.Kind != FactoryInteractionKind.FighterPort && !request.Intent.Hand, null);
                 }
             }
         }
@@ -645,5 +689,5 @@ internal sealed partial class FactoryProductManager : IDisposable
         repairTicks[key] = GameMain.gameTick;
         Multiplayer.Session.Network.SendPacket(new FactoryProductPacket { Key = FactoryProductPacket.EncodeKey(key), Message = (byte)FactoryProductMessage.RequestSnapshot });
     }
-    public void Dispose() { lock (gate) { requests.Clear(); requestedSlots.Clear(); incoming.Clear(); results.Clear(); receipts.Clear(); } sequences.Clear(); repairs.Clear(); repairTicks.Clear(); pending = 0; }
+    public void Dispose() { lock (gate) { requests.Clear(); requestedSlots.Clear(); incoming.Clear(); results.Clear(); receipts.Clear(); } sequences.Clear(); repairs.Clear(); repairTicks.Clear(); fighterPorts.Clear(); fighterPortScan.Clear(); pending = 0; }
 }

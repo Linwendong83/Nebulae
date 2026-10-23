@@ -1,7 +1,7 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using NebulaeModel.DataStructures;
+using System.Diagnostics;
 using NebulaeModel.Networking;
 
 namespace NebulaeWorld.Planet;
@@ -14,15 +14,13 @@ internal sealed class HostPlanetPreparation
         public PlanetData Planet;
         public bool WasWanted;
         public long Started;
-        public bool ReadyRecorded;
         public readonly HashSet<INebulaeConnection> Prefetchers = new();
         public readonly Dictionary<INebulaeConnection, (Action Ready, Action<Exception> Failed)> Waiters = new();
     }
     private readonly Dictionary<int, Request> requests = new();
-    private readonly LoadingTimings timings;
     private readonly Action<PlanetData> load;
-    public HostPlanetPreparation(LoadingTimings timings, Action<PlanetData> load = null)
-    { this.timings = timings; this.load = load ?? (planet => planet.Load()); }
+    public HostPlanetPreparation(Action<PlanetData> load = null)
+    { this.load = load ?? (planet => planet.Load()); }
 
     public void Prepare(PlanetData planet, INebulaeConnection connection)
     {
@@ -55,7 +53,7 @@ internal sealed class HostPlanetPreparation
         created = !requests.TryGetValue(planet.id, out var request);
         if (created)
         {
-            request = new Request { Planet = planet, WasWanted = planet.wanted, Started = LoadingTimings.Now };
+            request = new Request { Planet = planet, WasWanted = planet.wanted, Started = Stopwatch.GetTimestamp() };
             requests.Add(planet.id, request);
         }
         return request;
@@ -82,7 +80,7 @@ internal sealed class HostPlanetPreparation
         if (requests.Count == 0) return;
         foreach (var request in requests.Values.ToArray())
         {
-            if (LoadingTimings.Elapsed(request.Started) > 120000)
+            if (Stopwatch.GetTimestamp() - request.Started > Stopwatch.Frequency * 120)
                 Finish(request, new TimeoutException($"Terrain preparation timed out on planet {request.Planet.id}"));
             else if (IsReady(request.Planet)) Finish(request, null);
         }
@@ -94,11 +92,6 @@ internal sealed class HostPlanetPreparation
 
     private void Finish(Request request, Exception error)
     {
-        if (!request.ReadyRecorded)
-        {
-            timings.Record("host-terrain-ready", LoadingTimings.Elapsed(request.Started));
-            request.ReadyRecorded = true;
-        }
         var waiters = request.Waiters.ToArray();
         request.Waiters.Clear();
         foreach (var waiter in waiters)

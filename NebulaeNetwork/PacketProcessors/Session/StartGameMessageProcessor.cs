@@ -60,10 +60,10 @@ internal class StartGameMessageProcessor : PacketProcessor<StartGameMessage>
         else if (packet.IsAllowedToStart)
         {
             Multiplayer.Session.JoinSync.BeginLocal();
-            Multiplayer.Session.Planets.BeginWorldLoad();
             ((LocalPlayer)Multiplayer.Session.LocalPlayer).IsHost = false;
             ((LocalPlayer)Multiplayer.Session.LocalPlayer).SetPlayerData(packet.LocalPlayerData, packet.IsNewPlayer);
             Multiplayer.Session.Goals.SetExistingPlayer(!packet.IsNewPlayer);
+            Multiplayer.Session.Authority.ConfirmHandshake();
 
             UIRoot.instance.uiGame.planetDetail.gameObject.SetActive(false);
             Multiplayer.Session.IsInLobby = false;
@@ -76,7 +76,7 @@ internal class StartGameMessageProcessor : PacketProcessor<StartGameMessage>
                 DSPGame.EndGame();
             }
             // Prepare gameDesc to later start in GlobalGameDataResponseProcessor
-            DSPGame.GameDesc = UIRoot.instance.galaxySelect.gameDesc;
+            DSPGame.GameDesc = NebulaeModel.Utils.NativeGameAccess.GetGalaxyDescription(UIRoot.instance.galaxySelect);
 
             UIRoot.instance.OpenLoadingUI();
         }

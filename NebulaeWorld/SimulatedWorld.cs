@@ -156,13 +156,14 @@ internal class SimulatedWorld : IDisposable
             }
 
             // Refresh Logistics Distributor traffic for player delivery package changes
+            Multiplayer.Session.CombatAuthority.InitializePersonalBaseline((PlayerData)player.Data);
             GameMain.mainPlayer.factory?.transport.RefreshDispenserTraffic();
 
             // Notify the server that we are done loading the game
             var clientCert = CryptoUtils.GetPublicKey(CryptoUtils.GetOrCreateUserCert());
             Multiplayer.Session.JoinSync.MarkLoaded();
             Multiplayer.Session.Network.SendPacket(new SyncComplete(clientCert)
-                { JoinGeneration = Multiplayer.Session.JoinSync.LocalGeneration });
+            { JoinGeneration = Multiplayer.Session.JoinSync.LocalGeneration });
             Multiplayer.Session.Network.SendPacket(new GameStateRequest());
 
             // Subscribe for the local star events
@@ -261,7 +262,8 @@ internal class SimulatedWorld : IDisposable
     {
         if (seatPlanet == null)
         {
-            GameMain.data.DetermineRelative();
+            GameMain.data.relativePos = GameMain.mainPlayer.uPosition;
+            GameMain.data.relativeRot = Quaternion.identity;
             return;
         }
         GameMain.data.relativePos = seatPlanet.uPosition;
@@ -303,6 +305,14 @@ internal class SimulatedWorld : IDisposable
         player.mecha.constructionModule.droneEnabled = true;
         player.mecha.constructionModule.droneConstructEnabled = true;
         player.mecha.constructionModule.droneRepairEnabled = true;
+        // Personal saves retain local pool slots. Resolve targets again in this connection's
+        // factory/claim generation instead of replaying queues from the previous connection.
+        var construction = player.mecha.constructionModule;
+        if (construction.buildTargets != null) Array.Clear(construction.buildTargets, 0, construction.buildTargets.Length);
+        if (construction.tmpTargets != null) Array.Clear(construction.tmpTargets, 0, construction.tmpTargets.Length);
+        if (construction.repairTargets != null) Array.Clear(construction.repairTargets, 0, construction.repairTargets.Length);
+        if (construction.autoReconstructTargets != null) Array.Clear(construction.autoReconstructTargets, 0, construction.autoReconstructTargets.Length);
+        construction.buildTargetTotalCount = construction.repairTargetTotalCount = construction.autoReconstructTargetTotalCount = 1;
 
         // Inventory Capacity level 7 will increase package columncount from 10 -> 12
         var packageRowCount = (player.package.size - 1) / player.GetPackageColumnCount() + 1;
@@ -328,6 +338,8 @@ internal class SimulatedWorld : IDisposable
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Style", "IDE0060:Remove unused parameter",
+        Justification = "Keep the existing public join notification signature compatible with callers.")]
     public void OnPlayerJoining(string username)
     {
         IsPlayerJoining = true;
@@ -379,9 +391,10 @@ internal class SimulatedWorld : IDisposable
     ///     broadcasting, every client runs it when the broadcast arrives, so all peers freeze
     ///     and resume on the same tick and no drift can accumulate.
     /// </summary>
-    public void SetWorldPause(bool paused)
+    public void SetWorldPause(bool paused, long stepTick = 0)
     {
         Multiplayer.Session.WorldPaused = paused;
+        Multiplayer.Session.WorldPauseStepTick = paused ? Math.Max(0, stepTick) : 0;
         GameMain.isFullscreenPaused = paused;
         SetPauseIndicator(paused || Multiplayer.Session.CanPause);
     }
@@ -392,8 +405,19 @@ internal class SimulatedWorld : IDisposable
     /// </summary>
     public void HostSetWorldPause(bool paused)
     {
-        SetWorldPause(paused);
-        Multiplayer.Session.Server?.SendPacket(new GamePausePacket(paused));
+        // Peers behind the host may finish only up to this pause boundary.
+        var stepTick = paused ? Math.Max(GameMain.gameTick, Multiplayer.Session.WorldPaused ? Multiplayer.Session.WorldPauseStepTick : 0) : 0;
+        SetWorldPause(paused, stepTick);
+        Multiplayer.Session.Server?.SendPacket(new GamePausePacket(paused, stepTick));
+    }
+
+    public void HostStepWorld()
+    {
+        var session = Multiplayer.Session;
+        if (!session.WorldPaused) return;
+        var limit = Math.Max(GameMain.gameTick, session.WorldPauseStepTick) + 1;
+        SetWorldPause(true, limit);
+        session.Server?.SendPacket(new GamePausePacket(true, limit));
     }
 
     /// <summary>
@@ -433,15 +457,16 @@ internal class SimulatedWorld : IDisposable
     ///     editor). Vanilla resumes the game when the window goes away, so in multiplayer the
     ///     same resume is requested from the host to keep every peer in step.
     /// </summary>
-    public static void SyncWorldPauseAfterWindowClosed()
+    public static void SyncWorldPauseAfterWindowClosed(bool preserveDuringFastTravel = true)
     {
         var session = Multiplayer.Session;
         if (session == null)
         {
             return;
         }
-        // Vanilla keeps the pause while the mecha is fast travelling between systems.
-        if (GameMain.mainPlayer.fastTravelling || !session.WorldPaused)
+        // A client must retain the broadcast flag until its resume request is accepted.
+        GameMain.isFullscreenPaused = session.WorldPaused;
+        if (preserveDuringFastTravel && GameMain.mainPlayer?.fastTravelling == true || !session.WorldPaused)
         {
             return;
         }

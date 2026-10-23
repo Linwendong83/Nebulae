@@ -47,7 +47,8 @@ internal class PlayerAction_Build_Patch
                 FactoryManager.GetObjectProtoId(__instance.factory, objId),
                 Multiplayer.Session.Factories.PacketAuthor == SessionSentinels.AUTHOR_NONE
                     ? Multiplayer.Session.LocalPlayer.Id
-                    : Multiplayer.Session.Factories.PacketAuthor));
+                    : Multiplayer.Session.Factories.PacketAuthor)
+            { CollectionBefore = NebulaeModel.DataStructures.VegetableCollectionState.Capture(NebulaeWorld.Player.VegetationAccess.Collection(GameMain.mainPlayer)) });
         }
 
         return Multiplayer.Session.LocalPlayer.IsHost || Multiplayer.Session.Factories.IsIncomingRequest.Value;

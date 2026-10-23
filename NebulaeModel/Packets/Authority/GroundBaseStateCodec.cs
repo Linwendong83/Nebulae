@@ -7,6 +7,7 @@ namespace NebulaeModel.Packets.Authority;
 internal sealed class GroundBaseState
 {
     public int EnemyId, RuinId, Incoming, Buildings, Units;
+    public long RuinGeneration;
     public int HiveAstroId, RelayEnemyId;
     public byte RemovalFlags; // Native CheckBaseCanRemoved: core (1), other buildings (2), formations (4).
     public bool CoreAlive;
@@ -27,6 +28,7 @@ internal static class GroundBaseStateCodec
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
         writer.Write(state.EnemyId); writer.Write(state.RuinId);
+        writer.Write(state.RuinGeneration);
         writer.Write(state.CoreAlive);
         writer.Write(state.RemovalFlags); writer.Write(state.HiveAstroId); writer.Write(state.RelayEnemyId);
         writer.Write((ushort)state.Evolution.Length); writer.Write(state.Evolution);
@@ -48,6 +50,7 @@ internal static class GroundBaseStateCodec
         using var stream = new MemoryStream(payload, false);
         using var reader = new NebulaeModel.Authority.AuthorityFieldReader(stream, payload);
         var state = new GroundBaseState { EnemyId = reader.ReadInt32(), RuinId = reader.ReadInt32() };
+        state.RuinGeneration = reader.ReadInt64();
         state.CoreAlive = reader.ReadBoolean();
         state.RemovalFlags = reader.ReadByte(); state.HiveAstroId = reader.ReadInt32(); state.RelayEnemyId = reader.ReadInt32();
         var evolutionLength = reader.ReadUInt16();
@@ -74,7 +77,7 @@ internal static class GroundBaseStateCodec
 
     private static void Validate(GroundBaseState state)
     {
-        if (state == null || state.EnemyId <= 0 || state.RuinId < 0 || state.Incoming < 0 || state.RemovalFlags > 7 ||
+        if (state == null || state.EnemyId <= 0 || state.RuinId < 0 || state.RuinGeneration < 0 || state.Incoming < 0 || state.RemovalFlags > 7 ||
             state.RelayEnemyId < 0 || (state.HiveAstroId != 0 && !NebulaeModel.Authority.AuthorityScope.IsSectorAstro(state.HiveAstroId)) ||
             state.Buildings < 0 || state.Units < 0 || state.Evolution == null || state.Evolution.Length > MaxEvolutionBytes ||
             !Finite(state.X) || !Finite(state.Y) || !Finite(state.Z) || state.Forms?.Length != 3)

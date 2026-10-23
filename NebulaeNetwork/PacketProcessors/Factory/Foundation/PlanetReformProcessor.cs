@@ -1,6 +1,7 @@
 ﻿#region
 
 using NebulaeModel.Networking;
+using NebulaeModel.DataStructures;
 using NebulaeModel.Packets;
 using NebulaeModel.Packets.Factory.Foundation;
 using NebulaeWorld;
@@ -12,31 +13,42 @@ internal class PlanetReformProcessor : PacketProcessor<PlanetReformPacket>
 {
     protected override void ProcessPacket(PlanetReformPacket packet, NebulaeConnection conn)
     {
-        using (Multiplayer.Session.Planets.IsIncomingRequest.On())
+        var planet = GameMain.galaxy.PlanetById(packet.PlanetId);
+        if (planet?.factory == null || packet.CollectionBefore == null || packet.CollectionBefore.Length > VegetableCollectionState.MaxBytes) return;
+        ushort author = 0;
+        if (IsHost)
         {
-            var planet = GameMain.galaxy.PlanetById(packet.PlanetId);
-            if (planet?.factory == null)
+            var player = Players.Get(conn, EConnectionStatus.Connected);
+            if (player?.Data.LocalPlanetId != packet.PlanetId) return;
+            author = player.Id;
+            if (!Multiplayer.Session.Vegetation.AcceptCommand(author, packet.CommandSequence)) return;
+            packet.CollectionBefore = VegetableCollectionState.Capture(Multiplayer.Session.Vegetation.GetRemote(author));
+        }
+        var factories = Multiplayer.Session.Factories;
+        var previousAuthor = factories.PacketAuthor; var previousPlanet = factories.TargetPlanet;
+        var previousSpecify = GameMain.gpuiManager.specifyPlanet;
+        if (!IsHost) Multiplayer.Session.Vegetation.BeginReplay(packet.CollectionBefore);
+        try
+        {
+            using (Multiplayer.Session.Planets.IsIncomingRequest.On())
+            using (factories.IsIncomingRequest.On())
             {
-                return;
+                factories.PacketAuthor = author; factories.TargetPlanet = packet.PlanetId;
+                factories.AddPlanetTimer(packet.PlanetId); GameMain.gpuiManager.specifyPlanet = planet;
+                if (packet.IsReform) planet.factory.PlanetReformAll(packet.Type, packet.Color, packet.Bury);
+                else planet.factory.PlanetReformRevert();
             }
-            Multiplayer.Session.Factories.TargetPlanet = packet.PlanetId;
-            Multiplayer.Session.Factories.AddPlanetTimer(packet.PlanetId);
-            var pData = GameMain.gpuiManager.specifyPlanet;
-            GameMain.gpuiManager.specifyPlanet = planet;
-
-            if (packet.IsReform)
-            {
-                // Reform whole planet
-                planet.factory.PlanetReformAll(packet.Type, packet.Color, packet.Bury);
-            }
-            else
-            {
-                // Revert whole planet
-                planet.factory.PlanetReformRevert();
-            }
-
-            GameMain.gpuiManager.specifyPlanet = pData;
-            Multiplayer.Session.Factories.TargetPlanet = SessionSentinels.PLANET_NONE;
+        }
+        finally
+        {
+            factories.PacketAuthor = previousAuthor; factories.TargetPlanet = previousPlanet;
+            GameMain.gpuiManager.specifyPlanet = previousSpecify;
+            if (!IsHost) Multiplayer.Session.Vegetation.EndReplay();
+        }
+        if (IsHost)
+        {
+            Multiplayer.Session.Server.SendPacketToStarExclude(packet, planet.star.id, conn);
+            Multiplayer.Session.Vegetation.CaptureRemote(author);
         }
     }
 }

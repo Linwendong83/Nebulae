@@ -58,9 +58,16 @@ internal sealed class PlayerWeaponSample
         {
             var s = new PlayerWeaponSample
             {
-                Shot = new PlayerShotId(r.ReadUInt16(), r.ReadUInt64(), r.ReadInt64()), Part = r.ReadInt32(), Ordinal = r.ReadInt32(),
-                Event = (PlayerWeaponEvent)r.ReadByte(), Kind = (BattleEffectKind)r.ReadByte(),
-                Tick = r.ReadInt64(), ResourceRevision = r.ReadInt64(), Star = r.ReadInt32(), Astro = r.ReadInt32(), Subtype = r.ReadInt32()
+                Shot = new PlayerShotId(r.ReadUInt16(), r.ReadUInt64(), r.ReadInt64()),
+                Part = r.ReadInt32(),
+                Ordinal = r.ReadInt32(),
+                Event = (PlayerWeaponEvent)r.ReadByte(),
+                Kind = (BattleEffectKind)r.ReadByte(),
+                Tick = r.ReadInt64(),
+                ResourceRevision = r.ReadInt64(),
+                Star = r.ReadInt32(),
+                Astro = r.ReadInt32(),
+                Subtype = r.ReadInt32()
             };
             var key = r.ReadBytes(AuthorityLimits.ObjectKeyBytes);
             s.Target = ObjectKeyCodec.ReadRaw(key, 0);

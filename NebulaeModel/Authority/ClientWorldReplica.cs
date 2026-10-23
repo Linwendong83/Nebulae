@@ -14,11 +14,10 @@ namespace NebulaeModel.Authority;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The three identities a replica deals with are kept apart by construction:
+/// Host identity and the local component binding are kept apart:
 /// <see cref="Key"/> carries the host's pool slot and generation and is the only thing replication
 /// speaks; <see cref="LocalComponentId"/> is the client's own component/skill pool slot, rebound by
-/// the adapter and never accepted from the wire; <see cref="LocalRendererId"/> is a purely local
-/// GPU handle. Canonical state is the host's facts and nothing else writes it.
+/// the adapter and never accepted from the wire. Canonical state is the host's facts.
 /// </para>
 /// </remarks>
 internal sealed class ReplicaObjectMirror
@@ -45,9 +44,6 @@ internal sealed class ReplicaObjectMirror
 
     /// <summary>Client-local component pool slot, or 0 while unbound. Adapter-owned.</summary>
     public int LocalComponentId { get; internal set; }
-
-    /// <summary>Client-local renderer handle, or 0 while unbound. Always local, never synced.</summary>
-    public int LocalRendererId { get; internal set; }
 }
 
 /// <summary>
@@ -771,7 +767,6 @@ internal sealed class ClientWorldReplica
             if (existing != null)
             {
                 mirror.LocalComponentId = existing.LocalComponentId;
-                mirror.LocalRendererId = existing.LocalRendererId;
             }
             mirrors[member.Key] = mirror;
         }
@@ -966,14 +961,6 @@ internal sealed class ClientWorldReplica
     {
         if (!mirrors.TryGetValue(key, out var mirror)) return false;
         mirror.LocalComponentId = componentId;
-        return true;
-    }
-
-    /// <summary>Records a client-local renderer handle for one mirrored object.</summary>
-    public bool SetLocalRendererBinding(ObjectKey key, int rendererId)
-    {
-        if (!mirrors.TryGetValue(key, out var mirror)) return false;
-        mirror.LocalRendererId = rendererId;
         return true;
     }
 

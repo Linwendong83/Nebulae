@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System;
 using NebulaeModel.DataStructures;
 using UnityEngine;
@@ -24,87 +24,74 @@ internal sealed class FactoryModelLoader
     public void Step(PlanetData planet, WorkBudget budget)
     {
         var stage = PlanetManager.LoadingStage;
-        var initialStage = stage;
         if (stage > PlanetModelingManager.Debug_LoadingPlanetFactoryMain_MaxStage) return;
         if (!progress.TryGetValue(planet.id, out var work)) progress.Add(planet.id, work = new Progress());
         var factory = planet.factory;
-        var start = LoadingTimings.Now;
-        try
+        while (stage < 8)
         {
-            while (stage < 8)
+            var end = stage switch
             {
-                var end = stage switch
-                {
-                    1 => factory.vegeCursor,
-                    2 => factory.veinCursor,
-                    3 => factory.prebuildCursor,
-                    4 => factory.entityCursor,
-                    5 => factory.craftCursor,
-                    6 => factory.enemyCursor,
-                    7 => factory.ruinCursor,
-                    _ => 1
-                };
-                while (work.Cursor < end)
-                {
-                    buildObject(planet, stage, work.Cursor++);
-                    if (budget.Expired && work.Cursor < end) return;
-                }
-                planet.NotifyFactingStageComplete(stage);
-                PlanetManager.LoadingStage = stage + 1;
-                work.Cursor = 1;
-                // Stage notifications only publish the completed stage; they do not
-                // require a new Unity frame. Share the original budget across stages.
-                if (budget.Expired) return;
-                stage++;
-                if (stage > PlanetModelingManager.Debug_LoadingPlanetFactoryMain_MaxStage) return;
-            }
-
-            while (true)
+                1 => factory.vegeCursor,
+                2 => factory.veinCursor,
+                3 => factory.prebuildCursor,
+                4 => factory.entityCursor,
+                5 => factory.craftCursor,
+                6 => factory.enemyCursor,
+                7 => factory.ruinCursor,
+                _ => 1
+            };
+            while (work.Cursor < end)
             {
-                switch (work.FinalStep)
-                {
-                    case 0: factory.cargoTraffic.CreateRenderingBatches(); break;
-                    case 1:
-                        var gpuStarted = LoadingTimings.Now;
-                        planet.factoryModel.gpuiManager.SyncAllGPUBuffer();
-                        manager.Timings.Record("gpu-upload", LoadingTimings.Elapsed(gpuStarted));
-                        break;
-                    case 2: planet.factoryModel.RefreshPowerNodes(); break;
-                    case 3:
-                        planet.factoryModel.RefreshTurrets();
-                        planet.NotifyFactingStageComplete(8);
-                        break;
-                    case 4: factory.LocalizeEntities(); break;
-                    case 5:
-                        var terrainStart = LoadingTimings.Now;
-                        try
-                        {
-                            if (!work.TerrainPrepared)
-                            {
-                                manager.ApplyTerrain(planet);
-                                work.TerrainPrepared = true;
-                            }
-                            while (work.Mesh < planet.dirtyFlags.Length)
-                            {
-                                var mesh = work.Mesh++;
-                                if (planet.dirtyFlags[mesh]) planet.UpdateDirtyMesh(mesh);
-                                if (budget.Expired && work.Mesh < planet.dirtyFlags.Length) return;
-                            }
-                        }
-                        finally { manager.Timings.Record("terrain-refresh", LoadingTimings.Elapsed(terrainStart)); }
-                        break;
-                    default:
-                        planet.NotifyFactoryLoaded();
-                        PlanetManager.LoadingStage = 0;
-                        PlanetManager.LoadingPlanet = null;
-                        progress.Remove(planet.id);
-                        return;
-                }
-                work.FinalStep++;
-                if (budget.Expired) return;
+                buildObject(planet, stage, work.Cursor++);
+                if (budget.Expired && work.Cursor < end) return;
             }
+            planet.NotifyFactingStageComplete(stage);
+            PlanetManager.LoadingStage = stage + 1;
+            work.Cursor = 1;
+            // Stage notifications only publish the completed stage; they do not
+            // require a new Unity frame. Share the original budget across stages.
+            if (budget.Expired) return;
+            stage++;
+            if (stage > PlanetModelingManager.Debug_LoadingPlanetFactoryMain_MaxStage) return;
         }
-        finally { manager.Timings.Record("model-stage-" + initialStage, LoadingTimings.Elapsed(start)); }
+
+        while (true)
+        {
+            switch (work.FinalStep)
+            {
+                case 0: factory.cargoTraffic.CreateRenderingBatches(); break;
+                case 1:
+                    planet.factoryModel.gpuiManager.SyncAllGPUBuffer();
+                    break;
+                case 2: planet.factoryModel.RefreshPowerNodes(); break;
+                case 3:
+                    planet.factoryModel.RefreshTurrets();
+                    planet.NotifyFactingStageComplete(8);
+                    break;
+                case 4: factory.LocalizeEntities(); break;
+                case 5:
+                    if (!work.TerrainPrepared)
+                    {
+                        manager.ApplyTerrain(planet);
+                        work.TerrainPrepared = true;
+                    }
+                    while (work.Mesh < planet.dirtyFlags.Length)
+                    {
+                        var mesh = work.Mesh++;
+                        if (planet.dirtyFlags[mesh]) planet.UpdateDirtyMesh(mesh);
+                        if (budget.Expired && work.Mesh < planet.dirtyFlags.Length) return;
+                    }
+                    break;
+                default:
+                    planet.NotifyFactoryLoaded();
+                    PlanetManager.LoadingStage = 0;
+                    PlanetManager.LoadingPlanet = null;
+                    progress.Remove(planet.id);
+                    return;
+            }
+            work.FinalStep++;
+            if (budget.Expired) return;
+        }
     }
 
     private static void BuildObject(PlanetData planet, int stage, int id)

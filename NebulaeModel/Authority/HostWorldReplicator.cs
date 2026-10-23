@@ -1,8 +1,7 @@
-#region
+﻿#region
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using NebulaeModel.Packets.Authority;
 
 #endregion
@@ -48,6 +47,13 @@ internal interface IHostIncrementalWorldView
 internal interface IHostSnapshotWorldView
 {
     bool TryReadSnapshotState(ObjectKey key, out byte[] state);
+}
+
+/// <summary>Scratch native references live for one parked-worker capture, never for an entire tick.</summary>
+internal interface IHostCaptureBatchWorldView
+{
+    void BeginCapture(ScopeKey scope);
+    void EndCapture();
 }
 
 /// <summary>Receives the packets the replicator produces for one subscriber.</summary>
@@ -106,8 +112,6 @@ internal sealed class HostWorldReplicator
     private long oversizedStatesRefused;
     private long coldScopeFrames;
     private long packetsSent;
-    private long synchronousCaptureBytes;
-    private bool capturingFrame;
     private long baselineCounter;
     private long subscriptionEpochCounter;
     private long snapshotsSent;
@@ -130,10 +134,8 @@ internal sealed class HostWorldReplicator
     /// </param>
     /// <param name="logCapacity">Retained events per scope before a lagging subscriber needs a
     /// baseline.</param>
-    /// <param name="meter">Performance meter to feed. A private one is created when omitted.</param>
     public HostWorldReplicator(AuthorityEpoch epoch, IHostWorldView worldView, IReplicationSink sink,
-        int logCapacity = 4096, AuthorityPerfMeter meter = null,
-        IHostDeathView deathView = null)
+        int logCapacity = 4096, IHostDeathView deathView = null)
     {
         if (!epoch.IsValid) throw new ArgumentException("HostWorldReplicator needs a valid epoch.", nameof(epoch));
         this.epoch = epoch;
@@ -141,15 +143,11 @@ internal sealed class HostWorldReplicator
         this.sink = sink ?? throw new ArgumentNullException(nameof(sink));
         this.logCapacity = logCapacity;
         this.deathView = deathView;
-        Metrics = meter ?? new AuthorityPerfMeter("host");
         Revisions = new ObjectRevisionTracker();
     }
 
     /// <summary>Revision minting for this world. One source, per key with its generation.</summary>
     public ObjectRevisionTracker Revisions { get; }
-
-    /// <summary>Capture/apply/traffic counters for this world's replication.</summary>
-    public AuthorityPerfMeter Metrics { get; }
 
     /// <summary>Only absolute combat-state samples are paced. Membership and death stay per-frame.</summary>
     public int StateIntervalTicks { get; set; } = 1;
@@ -475,49 +473,15 @@ internal sealed class HostWorldReplicator
     /// </remarks>
     public void CaptureFrame(long hostTick)
     {
-        var started = Stopwatch.GetTimestamp();
         framesCaptured++;
         lastCaptureTick = hostTick;
-
-        var packetsBefore = packetsSent;
-        var bytesBefore = synchronousCaptureBytes;
-        capturingFrame = true;
-        try
+        foreach (var pair in scopes)
         {
-
-            foreach (var pair in scopes)
-            {
-                // Keep inactive cursors for reconnect continuity, but do not scan worlds nobody reads.
-                if (!HasActiveSubscriber(pair.Value)) continue;
-                var stage = Stopwatch.GetTimestamp();
-                CaptureScope(pair.Value, hostTick);
-                Metrics.Stages.Record("capture.scan", ElapsedMs(stage));
-                stage = Stopwatch.GetTimestamp();
-                DeliverScope(pair.Value);
-                Metrics.Stages.Record("capture.delivery", ElapsedMs(stage));
-                stage = Stopwatch.GetTimestamp();
-                TrimCoveredLog(pair.Value);
-                Metrics.Stages.Record("capture.log-trim", ElapsedMs(stage));
-            }
-
+            if (!HasActiveSubscriber(pair.Value)) continue;
+            CaptureScope(pair.Value, hostTick);
+            DeliverScope(pair.Value);
+            TrimCoveredLog(pair.Value);
         }
-        finally
-        {
-            capturingFrame = false;
-            Metrics.RecordHostCapture(hostTick, ElapsedMs(started), (int)(packetsSent - packetsBefore),
-                synchronousCaptureBytes - bytesBefore, RetainedEventCount());
-        }
-    }
-
-    /// <summary>Events still retained in the logs: the queue depth a lagging subscriber would face.</summary>
-    private int RetainedEventCount()
-    {
-        var total = 0;
-        foreach (var state in scopes.Values)
-        {
-            total += state.LogCount;
-        }
-        return total;
     }
 
     /// <summary>Sends one chunk of a baseline image, addressed by its index in that image.</summary>
@@ -532,9 +496,6 @@ internal sealed class HostWorldReplicator
             ControlHeader(AuthorityFamily.SnapshotChunk, lastCaptureTick), scope,
             baselineId, subscriptionEpoch, index, chunk));
     }
-
-    private static double ElapsedMs(long startedTimestamp) =>
-        (Stopwatch.GetTimestamp() - startedTimestamp) * 1000.0 / Stopwatch.Frequency;
 
     /// <summary>
     /// Applies a subscriber's snapshot acknowledgement: the baseline was installed (or refused) and
@@ -723,6 +684,18 @@ internal sealed class HostWorldReplicator
     private bool CaptureScope(ScopeReplicationState scope, long hostTick, List<ObjectKey> fullMembers = null,
         bool seedOnly = false, int? snapshotStarId = null)
     {
+        var batch = worldView as IHostCaptureBatchWorldView;
+        try
+        {
+            batch?.BeginCapture(scope.Scope);
+            return CaptureScopeCore(scope, hostTick, fullMembers, seedOnly, snapshotStarId);
+        }
+        finally { batch?.EndCapture(); }
+    }
+
+    private bool CaptureScopeCore(ScopeReplicationState scope, long hostTick, List<ObjectKey> fullMembers,
+        bool seedOnly, int? snapshotStarId)
+    {
         var filtered = Filters(scope.Scope);
         if (filtered)
         {
@@ -811,7 +784,6 @@ internal sealed class HostWorldReplicator
                 : worldView.TryReadState(key, out canonical);
             // Counted before the read's outcome is known: a member the adapter cannot read yet still
             // costs the pass a lookup, and a skipped read is the saving a cadence change produces.
-            Metrics.RecordStateRead();
             if (!read) continue;
             if (canonical.Length > AuthorityLimits.StateRecordMaxBytes)
             {
@@ -832,7 +804,6 @@ internal sealed class HostWorldReplicator
             {
                 Append(scope, new ScopeEvent(scope.NextLogSequence, ScopeEventKind.State, key, revision, hostTick,
                     canonical, scope.BaselineId, record.Interest));
-                Metrics.RecordStatePublished();
             }
             (worldView as IHostIncrementalWorldView)?.StateSampled(key);
         }
@@ -989,18 +960,10 @@ internal sealed class HostWorldReplicator
             var owned = states.ToArray();
             var header = Header(AuthorityFamily.WorldState, cursor, packetTick, 0);
             var scopeKey = scope.Scope; var baseline = cursor.BaselineId; var subscriptionEpoch = cursor.SubscriptionEpoch;
-            AuthorityWorldStatePacket Build() => DeferredAuthorityStates.Build(owned, header, scopeKey, baseline, subscriptionEpoch, Metrics, patches);
+            AuthorityWorldStatePacket Build() => DeferredAuthorityStates.Build(owned, header, scopeKey, baseline, subscriptionEpoch, patches);
             if (sink is IDeferredReplicationSink deferred)
             {
-                var capturedInFrame = capturingFrame;
-                deferred.SendWorldStates(subscriberId, () =>
-                {
-                    var packet = Build();
-                    var bytes = AuthorityWireSize.Of(packet);
-                    Metrics.RecordPacketSent(packet.Family, bytes);
-                    if (capturedInFrame) Metrics.RecordDeferredCaptureBytes(bytes);
-                    return packet;
-                });
+                deferred.SendWorldStates(subscriberId, Build);
                 packetsSent++;
                 cursor.NextStreamSequence++;
             }
@@ -1016,13 +979,8 @@ internal sealed class HostWorldReplicator
 
     private void Send(ushort subscriberId, AuthorityEnvelopePacket packet)
     {
-        // The stream sequence lives in the header and was assigned there; sending consumes it. The
-        // wire estimate is taken here, at the one place every packet passes through, so the traffic
-        // counters cannot drift from what was actually handed to the transport.
+        // Sending consumes the stream sequence assigned in the header.
         packetsSent++;
-        var bytes = AuthorityWireSize.Of(packet);
-        Metrics.RecordPacketSent(packet.Family, bytes);
-        if (capturingFrame) synchronousCaptureBytes += bytes;
         sink.Send(subscriberId, packet);
         AdvanceStreamSequence(subscriberId, packet);
     }

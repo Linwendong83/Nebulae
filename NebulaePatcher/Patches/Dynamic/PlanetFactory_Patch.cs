@@ -55,6 +55,7 @@ internal class PlanetFactory_patch
         // PacketAuthor is the player who placed it; the host executes that request locally.
         if (Multiplayer.Session.LocalPlayer.IsHost)
         {
+            Multiplayer.Session.BuildDispatch.Instances.Created(__instance, __result);
             var author = Multiplayer.Session.Factories.PacketAuthor == SessionSentinels.AUTHOR_NONE
                 ? Multiplayer.Session.LocalPlayer.Id
                 : Multiplayer.Session.Factories.PacketAuthor;
@@ -91,7 +92,11 @@ internal class PlanetFactory_patch
             ? Multiplayer.Session.LocalPlayer.Id
             : Multiplayer.Session.Factories.PacketAuthor;
         var entityId = Multiplayer.Session.LocalPlayer.IsHost ? FactoryManager.GetNextEntityId(__instance) : -1;
-        Multiplayer.Session.Network.SendPacket(new BuildEntityRequest(__instance.planetId, prebuildId, author, entityId));
+        Multiplayer.Session.Network.SendPacket(new BuildEntityRequest(__instance.planetId, prebuildId, author, entityId)
+        {
+            InstanceGeneration = Multiplayer.Session.BuildDispatch.Instances.Get(__instance, prebuildId),
+            CollectionBefore = NebulaeModel.DataStructures.VegetableCollectionState.Capture(NebulaeWorld.Player.VegetationAccess.Collection(GameMain.mainPlayer))
+        });
 
         return Multiplayer.Session.LocalPlayer.IsHost || Multiplayer.Session.Factories.IsIncomingRequest.Value;
     }
@@ -137,12 +142,28 @@ internal class PlanetFactory_patch
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(PlanetFactory.FlattenTerrainReform))]
-    public static void FlattenTerrainReform_Prefix(Vector3 center, float radius, int reformSize,
+    public static void FlattenTerrainReform_Prefix(PlanetFactory __instance, Vector3 center, float radius, int reformSize,
         bool veinBuried, float fade0)
     {
-        if (Multiplayer.IsActive && !Multiplayer.Session.Factories.IsIncomingRequest.Value)
+        if (Multiplayer.IsActive && !Multiplayer.Session.Factories.IsIncomingRequest.Value &&
+            (!Multiplayer.Session.Vegetation.IsBulkAction || Multiplayer.Session.Vegetation.ReformTool != null))
         {
-            var packet = new FoundationBuildUpdatePacket(center, radius, reformSize, veinBuried, fade0);
+            var vegetation = Multiplayer.Session.Vegetation;
+            var tool = vegetation.ReformTool ?? GameMain.mainPlayer?.controller?.actionBuild?.reformTool;
+            var circle = vegetation.ReformIsCircle ?? (tool != null && center != tool.reformCenterPoint);
+            var packet = new FoundationBuildUpdatePacket(__instance, tool, center, radius, reformSize, veinBuried, fade0,
+                circle)
+            {
+                CollectionBefore = NebulaeModel.DataStructures.VegetableCollectionState.Capture(NebulaeWorld.Player.VegetationAccess.Collection(GameMain.mainPlayer)),
+                PitRuinId = circle ? (vegetation.ReformPitId > 0 ? vegetation.ReformPitId : NebulaePatcher.Patches.Transpilers.FoundationTool_Transpiler.PitId(tool)) : 0
+            };
+            if (packet.PitRuinId > 0)
+            {
+                var runtime = Multiplayer.Session.AuthorityRuntime;
+                if (Multiplayer.Session.IsServer) packet.PitRuinGeneration = runtime?.RuinHost?.Generation(__instance.planetId, packet.PitRuinId) ?? 0;
+                else if (runtime?.WorldReplica?.TryFindKey(NebulaeModel.Authority.PoolKind.Ruin, __instance.planetId, packet.PitRuinId, out var pitKey) == true)
+                    packet.PitRuinGeneration = pitKey.Generation;
+            }
             if (Multiplayer.Session.LocalPlayer.IsHost)
                 Multiplayer.Session.Network.SendPacketToLocalStar(packet);
             else Multiplayer.Session.Network.SendPacket(packet);
@@ -159,12 +180,14 @@ internal class PlanetFactory_patch
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(PlanetFactory.RestoreTerrainReform))]
-    public static void RestoreTerrainReform_Prefix(Vector3 center, float radius, int reformSize,
+    public static void RestoreTerrainReform_Prefix(PlanetFactory __instance, Vector3 center, float radius, int reformSize,
         bool veinBuried, float fade0)
     {
         if (Multiplayer.IsActive && !Multiplayer.Session.Factories.IsIncomingRequest.Value)
         {
-            var packet = new FoundationBuildUpdatePacket(center, radius, reformSize, veinBuried, fade0, true);
+            var tool = GameMain.mainPlayer?.controller?.actionBuild?.reformTool;
+            var packet = new FoundationBuildUpdatePacket(__instance, tool, center, radius, reformSize, veinBuried, fade0, false, true)
+            { CollectionBefore = NebulaeModel.DataStructures.VegetableCollectionState.Capture(NebulaeWorld.Player.VegetationAccess.Collection(GameMain.mainPlayer)) };
             if (Multiplayer.Session.LocalPlayer.IsHost)
                 Multiplayer.Session.Network.SendPacketToLocalStar(packet);
             else Multiplayer.Session.Network.SendPacket(packet);
@@ -181,66 +204,78 @@ internal class PlanetFactory_patch
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(PlanetFactory.PlanetReformAll))]
-    public static void PlanetReformAll_Prefix(PlanetFactory __instance, int type, int color, bool bury)
+    public static void PlanetReformAll_Prefix(PlanetFactory __instance, int type, int color, bool bury, out bool __state)
     {
+        __state = Multiplayer.IsActive && Multiplayer.Session.Planets.EnableVeinPacket;
         if (!Multiplayer.IsActive)
         {
             return;
         }
         if (!Multiplayer.Session.Planets.IsIncomingRequest)
         {
-            Multiplayer.Session.Network.SendPacketToLocalStar(new PlanetReformPacket(__instance.planetId, true, type, color,
-                bury));
+            var packet = new PlanetReformPacket(__instance.planetId, true, type, color, bury)
+            { CollectionBefore = NebulaeModel.DataStructures.VegetableCollectionState.Capture(GameMain.mainPlayer.vegetableCollection) };
+            if (Multiplayer.Session.IsServer) Multiplayer.Session.Network.SendPacketToLocalStar(packet);
+            else Multiplayer.Session.Network.SendPacket(packet);
         }
         // Stop VegeMinedPacket from sending
         Multiplayer.Session.Planets.EnableVeinPacket = false;
+        Multiplayer.Session.Vegetation.EnterBulkAction();
     }
 
-    [HarmonyPostfix]
+    [HarmonyFinalizer]
     [HarmonyPatch(nameof(PlanetFactory.PlanetReformAll))]
-    public static void PlanetReformAll_Postfix()
+    public static void PlanetReformAll_Postfix(bool __state)
     {
         if (Multiplayer.IsActive)
         {
-            Multiplayer.Session.Planets.EnableVeinPacket = true;
+            Multiplayer.Session.Planets.EnableVeinPacket = __state;
+            Multiplayer.Session.Vegetation.LeaveBulkAction();
         }
     }
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(PlanetFactory.PlanetReformRevert))]
-    public static void PlanetReformRevert_Prefix(PlanetFactory __instance)
+    public static void PlanetReformRevert_Prefix(PlanetFactory __instance, out bool __state)
     {
+        __state = Multiplayer.IsActive && Multiplayer.Session.Planets.EnableVeinPacket;
         if (!Multiplayer.IsActive)
         {
             return;
         }
         if (!Multiplayer.Session.Planets.IsIncomingRequest)
         {
-            Multiplayer.Session.Network.SendPacketToLocalStar(new PlanetReformPacket(__instance.planetId, false));
+            var packet = new PlanetReformPacket(__instance.planetId, false)
+            { CollectionBefore = NebulaeModel.DataStructures.VegetableCollectionState.Capture(GameMain.mainPlayer.vegetableCollection) };
+            if (Multiplayer.Session.IsServer) Multiplayer.Session.Network.SendPacketToLocalStar(packet);
+            else Multiplayer.Session.Network.SendPacket(packet);
         }
         // Stop VegeMinedPacket from sending
         Multiplayer.Session.Planets.EnableVeinPacket = false;
+        Multiplayer.Session.Vegetation.EnterBulkAction();
     }
 
-    [HarmonyPostfix]
+    [HarmonyFinalizer]
     [HarmonyPatch(nameof(PlanetFactory.PlanetReformRevert))]
-    public static void PlanetReformRevert_Postfix()
+    public static void PlanetReformRevert_Postfix(bool __state)
     {
         if (Multiplayer.IsActive)
         {
-            Multiplayer.Session.Planets.EnableVeinPacket = true;
+            Multiplayer.Session.Planets.EnableVeinPacket = __state;
+            Multiplayer.Session.Vegetation.LeaveBulkAction();
         }
     }
 
     [HarmonyPostfix]
     [HarmonyPatch(nameof(PlanetFactory.AddVegeData))]
-    public static void AddVegeData_Postfix(PlanetFactory __instance, VegeData vege)
+    public static void AddVegeData_Postfix(PlanetFactory __instance, VegeData vege, int __result)
     {
         if (!Multiplayer.IsActive || Multiplayer.Session.Planets.IsIncomingRequest ||
             Multiplayer.Session.Vegetation.IsBulkAction)
         {
             return;
         }
+        vege.id = __result;
         using BinaryUtils.Writer writer = new();
         vege.Export(writer.BinaryWriter);
         var packet = new VegeAddPacket(__instance.planetId, false, writer.CloseAndGetBytes(),

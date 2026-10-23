@@ -1,6 +1,6 @@
 ﻿namespace NebulaeModel.Packets.GameStates;
 
-internal enum MetadataMessage : byte { Request, Quote, Commit, Result, Query, Cancel, Acknowledge }
+internal enum MetadataMessage : byte { Request, Quote, Commit, Result, Query, Cancel, Acknowledge, RespawnCommit }
 
 [NebulaeModel.Networking.PacketId(13344715135070519922UL)]
 internal class MetadataOperationPacket

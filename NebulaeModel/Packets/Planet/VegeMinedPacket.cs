@@ -1,7 +1,7 @@
 ﻿namespace NebulaeModel.Packets.Planet;
 
 [NebulaeModel.Networking.PacketId(10475894585919202692UL)]
-internal class VegeMinedPacket
+internal class VegeMinedPacket : NebulaeModel.Networking.IVegetationOperation
 {
     public VegeMinedPacket() { }
 
@@ -24,4 +24,6 @@ internal class VegeMinedPacket
     public bool IsVein { get; set; }
     [NebulaeModel.Networking.WireOrder(4)]
     public bool IsCollected { get; set; }
+    [NebulaeModel.Networking.WireOrder(5)]
+    public long CommandSequence { get; set; }
 }

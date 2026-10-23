@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -45,20 +45,6 @@ internal sealed class JoinSyncManager : IDisposable
     private long localProgress, reportedProgress;
     private double lastProgressReport;
     private NebulaeConnection localConnection;
-    private double joinStarted;
-    public double VisibleMilliseconds { get; private set; } = -1;
-    public double InteractiveMilliseconds { get; private set; } = -1;
-    public double CompleteMilliseconds { get; private set; } = -1;
-    private long receivedWireBytes;
-    public long ReceivedWireBytes => Interlocked.Read(ref receivedWireBytes);
-    public void BeginAttempt()
-    {
-        joinStarted = Now;
-        VisibleMilliseconds = InteractiveMilliseconds = CompleteMilliseconds = -1;
-        Interlocked.Exchange(ref receivedWireBytes, 0);
-    }
-    public void RecordTraffic(int bytes) => Interlocked.Add(ref receivedWireBytes, bytes);
-    private double ElapsedMilliseconds => (Now - joinStarted) * 1000;
     public bool HasJoiningPeers { get { lock (gate) return buffers.Count != 0; } }
 
     /// <summary>Unity main thread only. Workers finish the preceding frame and stay parked;
@@ -116,7 +102,8 @@ internal sealed class JoinSyncManager : IDisposable
             completions[connection] = complete;
             // Replay may refer to another player's mecha (trash, logistics). Install the roster first.
             connection.SendPacket(new SyncComplete(Multiplayer.Session.Server.Players.GetAllPlayerData(
-                Multiplayer.IsDedicated ? null : Multiplayer.Session.LocalPlayer.Data)) { JoinGeneration = generation });
+                Multiplayer.IsDedicated ? null : Multiplayer.Session.LocalPlayer.Data))
+            { JoinGeneration = generation });
             SendPending(connection, buffer);
             buffer.SealInitialReplay();
             connection.SendPacket(new JoinSyncBarrier { Generation = generation, Sequence = buffer.SentSequence });
@@ -130,8 +117,10 @@ internal sealed class JoinSyncManager : IDisposable
         {
             connection.SendPacket(new JoinSyncBatch
             {
-                Generation = buffer.Generation, FirstSequence = sequence,
-                Scopes = batch.Select(c => c.Scope).ToArray(), Packets = batch.Select(c => c.Data).ToArray()
+                Generation = buffer.Generation,
+                FirstSequence = sequence,
+                Scopes = batch.Select(c => c.Scope).ToArray(),
+                Packets = batch.Select(c => c.Data).ToArray()
             });
             sequence += batch.Length;
         }
@@ -154,7 +143,8 @@ internal sealed class JoinSyncManager : IDisposable
             if (!completions.TryGetValue(connection, out var complete)) return;
             completions.Remove(connection);
             complete();
-            connection.SendPacket(new GamePausePacket(Multiplayer.Session.WorldPaused));
+            connection.SendPacket(new GamePausePacket(Multiplayer.Session.WorldPaused, Multiplayer.Session.WorldPauseStepTick));
+            connection.SendPacket(new SimSpeedPacket(Multiplayer.Session.WorldSimSpeed));
             connection.SendPacket(new SyncComplete(Multiplayer.Session.Server.Players.GetAllPlayerData(
                 Multiplayer.IsDedicated ? null : Multiplayer.Session.LocalPlayer.Data))
             { JoinGeneration = buffer.Generation, JoinSequence = buffer.SentSequence, IsFinal = true });
@@ -202,7 +192,6 @@ internal sealed class JoinSyncManager : IDisposable
 
     public void BeginLocal()
     {
-        if (joinStarted == 0) BeginAttempt();
         view?.Dispose();
         DataTransfer.Clear();
         worldDataReceived = false;
@@ -339,7 +328,7 @@ internal sealed class JoinSyncManager : IDisposable
 
     public static bool HasReplicaAdapter(PoolKind kind) => kind is PoolKind.Entity or PoolKind.Turret or
         PoolKind.GroundEnemy or PoolKind.GroundCraft or PoolKind.SpaceEnemy or PoolKind.SpaceCraft or
-        PoolKind.Base or PoolKind.HiveSummary;
+        PoolKind.Base or PoolKind.HiveSummary or PoolKind.Ruin;
 
     public void UpdateClient()
     {
@@ -354,13 +343,11 @@ internal sealed class JoinSyncManager : IDisposable
         }
         if (Now - lastLocalProgress >= JoinSyncBuffer.TimeoutSeconds)
         { FailLocal(new TimeoutException("Joining stopped making progress. Please reconnect.")); return; }
-        if (!barrierAcknowledged)
+        // The goal picker closes the loading splash until its selection starts the world.
+        // Keep checking progress and timeouts without covering that required input.
+        if (!barrierAcknowledged && Multiplayer.Session.Goals?.AwaitingSelection != true)
         {
             (view ??= new JoinSyncView()).Update(LocalLoaded, LocalLoaded ? null : LoadingProgress.Format(key => key.Translate()));
-            if (LocalLoaded && VisibleMilliseconds < 0)
-            {
-                VisibleMilliseconds = ElapsedMilliseconds;
-            }
         }
         if (!LocalLoaded || barrier < 0) return;
         WaitForSimulation();
@@ -383,7 +370,6 @@ internal sealed class JoinSyncManager : IDisposable
         if (!finalReceived) return;
         LocalPending = false;
         DataTransfer.Clear();
-        CompleteMilliseconds = ElapsedMilliseconds;
         Multiplayer.Session.Network.SendPacket(new GameStateRequest());
     }
 
@@ -395,7 +381,6 @@ internal sealed class JoinSyncManager : IDisposable
         if (!LocalPending || !LocalLoaded || localFailed || barrier < 0 || !authorityReady || !productsReady) return false;
         enqueueAck();
         barrierAcknowledged = true;
-        InteractiveMilliseconds = ElapsedMilliseconds;
         lastLocalProgress = Now;
         return true;
     }

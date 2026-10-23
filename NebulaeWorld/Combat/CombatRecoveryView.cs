@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Reflection;
@@ -12,6 +12,7 @@ internal sealed class CombatRecoveryView
     private static readonly MethodInfo clone = typeof(object).GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic);
     private readonly ConcurrentDictionary<Mecha, Entry> entries = new();
     private readonly Func<long> clock;
+    private long nextLifeVersion;
     public CombatRecoveryView(Func<long> clock = null) { this.clock = clock ?? (() => GameMain.gameTick); }
     private long Now => clock();
     private readonly Dictionary<Mecha, List<(long Tick, long Cost, int Cooldown)>> hits = new();
@@ -31,25 +32,53 @@ internal sealed class CombatRecoveryView
         public Mecha Presentation;
         public double CoreSpent;
         public long Tick, Baseline;
+        public long LifeVersion;
+        public int DeathCount;
         public double LaserCorrection, CorrectionPerTick;
         public long CorrectionTick, ChargingSince, LaserCapacity;
         public long? LocalRechargeTick;
         public bool DisplayCharging, ChargingTarget, Alive;
     }
-    public Mecha Get(Mecha actual)
+    private Entry GetEntry(Mecha actual)
     {
         if (!entries.TryGetValue(actual, out var entry))
         {
-            entry = new Entry { Value = (Mecha)clone.Invoke(actual, null), Tick = Now, Baseline = Now };
-            entry.Value.energyShieldResistHistory = actual.energyShieldResistHistory == null ? new long[60] : (long[])actual.energyShieldResistHistory.Clone();
-            ResetPresentation(entry, actual, Now);
-            entry = entries.GetOrAdd(actual, entry);
+            entry = entries.GetOrAdd(actual, CreateEntry(actual, Now, System.Threading.Interlocked.Increment(ref nextLifeVersion)));
         }
-        if (entry.LaserCapacity != actual.laserEnergyCapacity || entry.Alive != Alive(actual))
+        if (!SameLife(entry, actual))
+        {
+            // Respawn restores the native mecha before another host checkpoint arrives. Every
+            // predicted value and local hit/recharge event belongs to the previous life.
+            hits.Remove(actual);
+            entries[actual] = entry = CreateEntry(actual, Now, System.Threading.Interlocked.Increment(ref nextLifeVersion));
+        }
+        if (entry.LaserCapacity != actual.laserEnergyCapacity)
             ResetPresentation(entry, actual, Now);
+        return entry;
+    }
+    public Mecha Get(Mecha actual)
+    {
+        var entry = GetEntry(actual);
         entry.Value.coreEnergy = Math.Max(0, actual.coreEnergy - entry.CoreSpent);
         entry.Value.energyShieldBurstProgress = actual.energyShieldBurstProgress;
         return entry.Value;
+    }
+    public long GetLifeVersion(Mecha actual) => GetEntry(actual).LifeVersion;
+    private static bool SameLife(Entry entry, Mecha actual) => entry != null &&
+        entry.DeathCount == (actual.player?.deathCount ?? 0) && entry.Alive == Alive(actual);
+    private static Entry CreateEntry(Mecha actual, long now, long lifeVersion)
+    {
+        var entry = new Entry
+        {
+            Value = (Mecha)clone.Invoke(actual, null),
+            Tick = now,
+            Baseline = now,
+            LifeVersion = lifeVersion,
+            DeathCount = actual.player?.deathCount ?? 0
+        };
+        entry.Value.energyShieldResistHistory = actual.energyShieldResistHistory == null ? new long[60] : (long[])actual.energyShieldResistHistory.Clone();
+        ResetPresentation(entry, actual, now);
+        return entry;
     }
     private static bool Alive(Mecha actual) => actual.player?.isAlive == true && actual.hp > 0;
     private static void ResetPresentation(Entry entry, Mecha actual, long now)
@@ -118,13 +147,14 @@ internal sealed class CombatRecoveryView
         var now = Now;
         var baseline = hostTick ?? now;
         entries.TryGetValue(actual, out var previous);
-        var continuous = previous != null && previous.LaserCapacity == actual.laserEnergyCapacity && previous.Alive == Alive(actual);
+        var sameLife = SameLife(previous, actual);
+        var continuous = sameLife && previous.LaserCapacity == actual.laserEnergyCapacity;
         var shownLaser = continuous ? PresentedLaser(previous, actual, now) : 0;
         var shownCharging = continuous && PresentedCharging(previous, now);
-        var localRecharge = previous?.LocalRechargeTick;
-        entries.TryRemove(actual, out _);
-        Get(actual);
-        var entry = entries[actual];
+        var localRecharge = sameLife ? previous.LocalRechargeTick : null;
+        if (!sameLife) hits.Remove(actual);
+        var entry = CreateEntry(actual, now, sameLife ? previous.LifeVersion : System.Threading.Interlocked.Increment(ref nextLifeVersion));
+        entries[actual] = entry;
         entry.Baseline = baseline;
         // A checkpoint describes the end of its host tick, not the time it arrived.
         // Replay recovery and unacknowledged actions on that same timeline.

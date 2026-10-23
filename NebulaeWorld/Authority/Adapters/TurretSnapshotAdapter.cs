@@ -163,6 +163,7 @@ internal sealed class TurretSnapshotAdapter : IHostWorldView, IHostIncrementalWo
     public static TurretState Capture(PlanetFactory f, int id)
     {
         ref var t = ref f.defenseSystem.turrets.buffer[id];
+        var target = t.target; target.type = ETargetType.Enemy;
         var completedTick = Multiplayer.Session?.AuthorityRuntime?.CompletedSimulationTick ?? 0;
         return new TurretState
         {
@@ -174,7 +175,8 @@ internal sealed class TurretSnapshotAdapter : IHostWorldView, IHostIncrementalWo
             Flags = (byte)((t.isAiming ? 1 : 0) | (t.isLockingTarget ? 2 : 0) | (t.activeSearch ? 4 : 0)),
             TargetId = t.target.id,
             TargetAstro = t.target.astroId,
-            TargetType = (byte)t.target.type,
+            TargetType = (byte)ETargetType.Enemy,
+            TargetGeneration = NebulaeWorld.Combat.EnemyTargetIdentity.TryResolve(target, out var targetKey) ? targetKey.Generation : 0,
             ItemId = t.itemId,
             ItemCount = t.itemCount,
             ItemInc = t.itemInc,

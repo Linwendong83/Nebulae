@@ -214,6 +214,13 @@ namespace NebulaeModel.DataStructures
             destination.mecha.fighterStorage = UpdateStorage(destination.mecha.fighterStorage, FighterStorage);
             destination.mecha.groundCombatModule = GroundCombatModule;
             destination.mecha.spaceCombatModule = SpaceCombatModule;
+            // Disk checkpoints may have been read while the menu world still existed.
+            // Init-time sector/history references belong to that world and can already be freed.
+            if (GameMain.data != null)
+            {
+                GroundCombatModule?.AfterImport(GameMain.data);
+                SpaceCombatModule?.AfterImport(GameMain.data);
+            }
         }
 
         public static StorageComponent UpdateStorage(StorageComponent destination, StorageComponent source)

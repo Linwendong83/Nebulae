@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using HarmonyLib;
 using NebulaeModel.Packets.Authority;
+using NebulaeWorld.Combat;
 using UnityEngine;
 
 namespace NebulaeWorld.Authority.Adapters;
@@ -83,9 +84,10 @@ internal static class SpaceEnemyPresentation
     private static void BindBuilding(SpaceSector sector, EnemyDFHiveSystem hive, int id, in SpaceEnemyState state)
     {
         var index = state.BuilderIndex;
-        if (index <= 0 || hive.pbuilders == null || index >= hive.pbuilders.Length) return;
+        var patterns = HivePatternStorage.Read(hive);
+        if (index <= 0 || patterns == null || index >= patterns.Length) return;
         ref var enemy = ref sector.enemyPool[id];
-        ref var pattern = ref hive.pbuilders[index];
+        ref var pattern = ref patterns[index];
         var added = enemy.builderId <= 0 || enemy.builderId >= hive.builders.cursor || hive.builders.buffer[enemy.builderId].enemyId != id;
         if (added) enemy.builderId = hive.builders.Add().id;
         ref var builder = ref hive.builders.buffer[enemy.builderId];
@@ -182,11 +184,12 @@ internal static class SpaceEnemyPresentation
         if (enemy.builderId > 0 && enemy.builderId < hive.builders.cursor && hive.builders.buffer[enemy.builderId].enemyId == id)
         {
             var index = hive.builders.buffer[enemy.builderId].builderIndex;
-            if (index > 0 && index < hive.pbuilders.Length && hive.pbuilders[index].instId == id)
+            var patterns = HivePatternStorage.Read(hive);
+            if (index > 0 && index < patterns.Length && patterns[index].instId == id)
             {
-                hive.pbuilders[index].instId = hive.pbuilders[index].instBuilderId = 0;
+                patterns[index].instId = patterns[index].instBuilderId = 0;
                 builderRemoved(hive)?.Invoke(index);
-                var pattern = hive.pbuilders[index];
+                var pattern = patterns[index];
                 if (pattern.protoId == 8109 && hive.antSegments != null)
                     for (var segment = pattern.antSegOffset; segment < pattern.antSegOffset + (int)(pattern.length / 25f + 1f); segment++) hive.antSegments[segment] = 0;
             }

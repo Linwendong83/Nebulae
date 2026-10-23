@@ -12,10 +12,26 @@ internal class UIDeepProfilerSettings_Patch
 {
     [HarmonyPrefix]
     [HarmonyPatch(nameof(UIDeepProfilerSettings.OnGameStatusButtonClick))]
-    public static bool OnGameStatusButtonClick_Prefix()
+    public static bool OnGameStatusButtonClick_Prefix(bool ___event_lock)
     {
-        // The profiler's game-status toggle is a diagnostic freeze. In multiplayer the pause is a
-        // host-authoritative world state, so a local toggle must not write the flag.
-        return !Multiplayer.IsActive;
+        if (!Multiplayer.IsActive || !Multiplayer.Session.IsClient) return true;
+        if (!___event_lock) SimulatedWorld.RequestWorldPause();
+        return false;
+    }
+
+    [HarmonyPostfix, HarmonyPatch(nameof(UIDeepProfilerSettings.OnGameStatusButtonClick))]
+    public static void OnGameStatusButtonClick_Postfix()
+    {
+        if (Multiplayer.IsActive) SimulatedWorld.SyncWorldPauseAfterToggle();
+    }
+}
+
+[HarmonyPatch(typeof(UIDeepProfiler), "_OnClose")]
+internal static class UIDeepProfilerClose_Patch
+{
+    [HarmonyPostfix]
+    public static void Postfix()
+    {
+        if (Multiplayer.IsActive) SimulatedWorld.SyncWorldPauseAfterWindowClosed(false);
     }
 }

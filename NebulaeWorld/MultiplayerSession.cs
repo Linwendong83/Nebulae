@@ -1,4 +1,4 @@
-#region
+﻿#region
 
 using System;
 using NebulaeModel.Contracts;
@@ -82,7 +82,14 @@ internal class MultiplayerSession : IDisposable
         Warning = new WarningManager();
         Authority = new AuthoritySessionState();
         AuthorityRuntime = new AuthoritySession(Authority) { RequireGamePools = true };
-        AuthorityRuntime.AfterClientFrame = _ => { Turrets.TickClient(); FactoryProducts.TickClient(); Research.TickClient(); PlayerWeapons.TickClient(); DarkFogTurrets.Tick(); FleetCommands.Tick(); Enemies.TickClientHivePreview(); };
+        AuthorityRuntime.AfterClientFrame = _ =>
+        {
+            Life.ServiceCheckpoint();
+            Turrets.TickClient(); FactoryProducts.TickClient(); Research.TickClient(); ManualBuilds.TickClient();
+            Life.ServiceCheckpoint();
+            Turrets.DispatchPending(); FactoryProducts.DispatchPending(); Research.DispatchPending(); ManualBuilds.DispatchPending();
+            PlayerWeapons.TickClient(); DarkFogTurrets.Tick(); FleetCommands.Tick(); Enemies.TickClientHivePreview();
+        };
         // The authority rule guard needs to see this session's mode and apply window; installing here keeps
         // every caller (game patches, packet processors, world managers) on one decision point.
         AuthorityGuardWiring.Install();
@@ -102,6 +109,7 @@ internal class MultiplayerSession : IDisposable
     public BattleVisualManager BattleVisuals { get; set; }
     public BattleImpactCapture Impacts { get; set; }
     public PlayerLifeManager Life { get; set; }
+    public ManualBuildManager ManualBuilds { get; } = new();
     public EnemyManager Enemies { get; set; }
     public EnemyMotionPresentation EnemyMotion { get; set; }
     public StorageManager Storage { get; set; }
@@ -156,6 +164,8 @@ internal class MultiplayerSession : IDisposable
     ///     re-enable the ESC-menu pause, which stays a host-only escape hatch.
     /// </summary>
     public bool WorldPaused { get; set; }
+    public long WorldPauseStepTick { get; set; }
+    public float WorldSimSpeed { get; set; } = 1f;
 
     // A hosted session always has its human host in the world; a headless server is nobody's
     // mecha and must not reserve a player slot in the count.
@@ -307,7 +317,6 @@ internal class MultiplayerSession : IDisposable
         {
             return;
         }
-
         Log.Info("==== Game load completed ====");
         if (IsServer) SaveManager.EnsureServerDataLoaded();
         if (IsServer) SaveManager.BindWorldIdentity(GameMain.data);
@@ -318,7 +327,6 @@ internal class MultiplayerSession : IDisposable
             Goals.PrepareHostProfile();
         }
         IsGameLoaded = true;
-        Planets.CompleteWorldLoad();
         if (IsServer) Metadata.Initialize();
 
         // A loaded host world gets its authority identity here, once, so every peer keys its
@@ -340,6 +348,8 @@ internal class MultiplayerSession : IDisposable
                 var crafts = new CraftSnapshotAdapter(epoch);
                 AuthorityRuntime.CraftHost = crafts;
                 var darkFog = new DarkFogSnapshotAdapter(epoch);
+                var ruins = new RuinSnapshotAdapter(epoch);
+                AuthorityRuntime.RuinHost = ruins;
                 Turrets.BeginHostWorld(epoch);
                 var worldView = new CompositeHostWorldView(
                     entities,
@@ -347,6 +357,7 @@ internal class MultiplayerSession : IDisposable
                     spaceEnemies,
                     crafts,
                     darkFog,
+                    ruins,
                     Turrets.HostView);
                 CombatAuthority.TargetWorld = worldView;
                 AuthorityRuntime.HostExecutor = CombatAuthority;
@@ -358,6 +369,7 @@ internal class MultiplayerSession : IDisposable
                 AuthorityRuntime.AfterHostFrame = tick =>
                 {
                     CombatAuthority.CompleteFrame(tick);
+                    FactoryProducts.TickHostFighterPorts(tick);
                     // Workers are parked here; projectile pools must not be sampled mid-tick.
                     PlayerWeapons.HostFrame();
                     BattleVisuals.GameTick();

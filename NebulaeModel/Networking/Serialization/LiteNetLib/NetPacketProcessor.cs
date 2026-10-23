@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using NebulaeModel.Contracts;
 using NebulaeModel.Networking;
@@ -175,16 +175,6 @@ namespace NebulaeModel.Networking.Serialization
                     throw new ParseException("Malformed packet payload");
                 onReceive(reference, (TUserData)userData);
             });
-        }
-
-        /// <summary>
-        /// Remove any subscriptions by type
-        /// </summary>
-        /// <typeparam name="T">Packet type</typeparam>
-        /// <returns>true if remove is success</returns>
-        public bool RemoveSubscription<T>()
-        {
-            return _callbacks.Remove(GetPacketId<T>());
         }
     }
 }

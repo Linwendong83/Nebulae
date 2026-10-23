@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 
@@ -89,7 +89,10 @@ internal sealed class BattleVisualFrame
                 End = r.ReadBoolean(),
                 Subtype = r.ReadInt32(),
                 Life = r.ReadInt32(),
-                SourceAstroId = r.ReadInt32(), OriginKind = (BattleEffectKind)r.ReadByte(), SourceObjectId = r.ReadInt32(), SourceGeneration = r.ReadInt64()
+                SourceAstroId = r.ReadInt32(),
+                OriginKind = (BattleEffectKind)r.ReadByte(),
+                SourceObjectId = r.ReadInt32(),
+                SourceGeneration = r.ReadInt64()
             };
             var length = r.ReadInt32();
             if (effect.Kind > BattleEffectKind.LancerPlasma || effect.OriginKind > BattleEffectKind.LancerPlasma || effect.SourceObjectId < 0 || effect.SourceGeneration < 0 || effect.Id <= 0 || effect.Generation <= 0 || effect.Tick < 0 || effect.Life < 0 || effect.Life > 360000 || effect.SourceAstroId < 0 ||

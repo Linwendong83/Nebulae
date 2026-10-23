@@ -20,6 +20,8 @@ internal sealed class ResearchContributionManager : IDisposable
     private AuthorityCommandResultPacket result;
     private bool needsCheckpoint = true;
     private bool takebackPending;
+    private long checkpointTicket;
+    public bool HasUnsettled { get { lock (gate) return buffer.Hashes > 0; } }
     public bool InventoryPending => pending != 0;
 
     private void EnsureWorld()
@@ -30,13 +32,13 @@ internal sealed class ResearchContributionManager : IDisposable
         {
             epoch = identity.Epoch; connection = identity.Connection;
             buffer.Clear(); pending = lastDispatch = 0; result = null; needsCheckpoint = true;
-            takebackPending = false;
+            takebackPending = false; checkpointTicket = 0;
         }
     }
     public bool CanTick(GameHistoryData history)
     {
         EnsureWorld();
-        if (!Multiplayer.Session.Authority.IsActive) return false;
+        if (!Multiplayer.Session.Authority.IsActive || Multiplayer.Session.Life?.BlocksInventory == true || Multiplayer.Session.Life?.IsExiting == true) return false;
         lock (gate)
             if (takebackPending || buffer.Hashes > 0 && (!history.autoManageLabItems || history.currentTech == 0)) return false;
         var tech = LDB.techs.Select(history.currentTech);
@@ -67,6 +69,17 @@ internal sealed class ResearchContributionManager : IDisposable
             else GameMain.mainPlayer.mecha.lab.ManageTakeback();
         }
     }
+    public bool BeforeTakeback()
+    {
+        EnsureWorld();
+        lock (gate)
+        {
+            if (buffer.Hashes == 0) return true;
+            takebackPending = true;
+            return false;
+        }
+    }
+
     public void ReceiveResult(AuthorityCommandResultPacket packet)
     {
         lock (gate)
@@ -93,6 +106,14 @@ internal sealed class ResearchContributionManager : IDisposable
             {
                 GameMain.mainPlayer.mecha.lab.ManageTakeback(); takebackPending = false;
             }
+        }
+    }
+
+    public void DispatchPending()
+    {
+        EnsureWorld();
+        lock (gate)
+        {
             var batch = buffer.Peek();
             if (pending != 0 || batch == null || Multiplayer.Session.InventoryTransfers.Pending) return;
             var history = GameMain.history;
@@ -100,9 +121,11 @@ internal sealed class ResearchContributionManager : IDisposable
             var changed = history.currentTech != batch.Tech || state.curLevel != batch.Level;
             var completing = state.hashNeeded - state.hashUploaded <= buffer.Outstanding(batch.Tech, batch.Level);
             if (!changed && !completing && GameMain.gameTick - lastDispatch < BatchTicks) return;
-            if (needsCheckpoint) Multiplayer.Session.Life.Publish();
+            if (needsCheckpoint && !Multiplayer.Session.Life.EnsureInventoryCheckpoint(ref checkpointTicket, allowExit: true)) return;
+            if (Multiplayer.Session.Life.BlocksInventory) return;
             if (!Multiplayer.Session.CombatAuthority.SendCommand(default, ResearchContributionIntent.Category, batch.Intent.Encode(), out var sequence)) return;
-            buffer.Begin(); pending = sequence; lastDispatch = GameMain.gameTick; needsCheckpoint = false;
+            if (Multiplayer.Session.WorldPaused) Multiplayer.Session.Network.SendPacket(new NebulaeModel.Packets.GameStates.GamePauseStepRequest());
+            buffer.Begin(); pending = sequence; lastDispatch = GameMain.gameTick; needsCheckpoint = false; checkpointTicket = 0;
         }
     }
 

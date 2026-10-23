@@ -2,6 +2,7 @@
 
 using HarmonyLib;
 using NebulaeModel.Logger;
+using NebulaeModel.Packets.GameStates;
 using NebulaeWorld;
 
 #endregion
@@ -26,6 +27,12 @@ internal class GameMain_Patch
     [HarmonyPatch(nameof(GameMain.DetermineGameTickRate))]
     public static void DetermineGameTickRate_Postfix(ref int __result)
     {
+        if (Multiplayer.IsActive && Multiplayer.Session.WorldPaused)
+        {
+            __result = Multiplayer.Session.JoinSync?.CanSimulate != false &&
+                GameMain.gameTick < Multiplayer.Session.WorldPauseStepTick ? 1 : 0;
+            return;
+        }
         // Once the local baseline exists, execute real steps while join synchronization runs to
         // catch the host clock. Holding those steps would deadlock tick-stamped replica tails.
         if (Multiplayer.Session?.JoinSync?.LocalPending == true)
@@ -38,5 +45,15 @@ internal class GameMain_Patch
         {
             __result = 1;
         }
+    }
+
+    [HarmonyPrefix, HarmonyPatch(nameof(GameMain.UnlockFullscreenPauseOneFrame))]
+    public static bool UnlockFullscreenPauseOneFrame_Prefix()
+    {
+        if (!Multiplayer.IsActive) return true;
+        if (Multiplayer.Session.IsClient)
+            Multiplayer.Session.Network.SendPacket(new GamePauseStepRequest());
+        else Multiplayer.Session.World.HostStepWorld();
+        return false;
     }
 }

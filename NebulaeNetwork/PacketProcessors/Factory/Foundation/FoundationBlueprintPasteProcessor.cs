@@ -39,10 +39,12 @@ internal class FoundationBlueprintPasteProcessor : PacketProcessor<FoundationBlu
             var player = Players.Get(conn, EConnectionStatus.Connected);
             if (player == null || player.Data.LocalPlanetId != packet.PlanetId) return;
             author = player.Id;
+            if (!Multiplayer.Session.Vegetation.AcceptCommand(author, packet.CommandSequence)) return;
             collector = Multiplayer.Session.Vegetation.GetRemote(author);
             if (collector == null) return;
         }
 
+        using var context = new NebulaeWorld.Factory.FactoryOperationScope();
         var specifyPlanet = GameMain.gpuiManager.specifyPlanet;
         try
         {

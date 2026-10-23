@@ -3,6 +3,7 @@ using System.Linq;
 using NebulaeModel.DataStructures;
 using NebulaeModel.Networking;
 using NebulaeModel.Networking.Serialization;
+using NebulaeModel.Packets.Session;
 using NebulaeWorld;
 
 namespace NebulaeModel.Packets;
@@ -22,7 +23,19 @@ internal abstract class PacketProcessor<T> : IRuntimePacketProcessor where T : c
     public void Register(NetPacketProcessor processor, bool isHost)
     {
         IsHost = isHost;
-        processor.SubscribeReusable<T, NebulaeConnection>(ProcessPacket);
+        processor.SubscribeReusable<T, NebulaeConnection>((packet, conn) =>
+        {
+            // Admission belongs to each connection, including peers joining an already live host.
+            if (isHost)
+            {
+                if (conn == null || (!conn.HandshakeCompleted && typeof(T) != typeof(LobbyRequest) &&
+                                     typeof(T) != typeof(ServerStatusRequest)))
+                    throw new ParseException("Packet requires a completed handshake");
+                if (conn.HandshakeCompleted && typeof(T) == typeof(LobbyRequest))
+                    throw new ParseException("Handshake already completed");
+            }
+            ProcessPacket(packet, conn);
+        });
     }
 
     protected abstract void ProcessPacket(T packet, NebulaeConnection conn);

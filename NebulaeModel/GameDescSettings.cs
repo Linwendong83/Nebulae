@@ -34,7 +34,7 @@ internal static class GameDescSettings
         }
 
         var starCount = customFile.Bind("Basic", "starCount", 64,
-            "Number of Stars").Value;
+            $"Number of Stars ({GalaxyLimits.MinStars} to {GalaxyLimits.MaxStars}; negative keeps the default)").Value;
         if (starCount >= 0)
         {
             gameDesc.starCount = starCount;

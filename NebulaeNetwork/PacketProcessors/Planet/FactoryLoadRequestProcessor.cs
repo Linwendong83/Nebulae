@@ -1,4 +1,4 @@
-#region
+﻿#region
 
 using NebulaeModel.Networking;
 using NebulaeModel.Packets;
@@ -34,7 +34,6 @@ internal class FactoryLoadRequestProcessor : PacketProcessor<FactoryLoadRequest>
     {
         NebulaeWorld.GameStates.JoinSyncManager.WaitForSimulation();
         Multiplayer.Session.Ships.FlushLifecycle();
-        var started = NebulaeModel.DataStructures.LoadingTimings.Now;
         var factory = GameMain.data.GetOrCreateFactory(planet);
         GameMain.galaxy.astrosFactory[planet.id] = factory;
         OnPlanetFactoryLoad(planet);
@@ -56,7 +55,6 @@ internal class FactoryLoadRequestProcessor : PacketProcessor<FactoryLoadRequest>
             }
             Multiplayer.Session.JoinSync.Checkpoint(conn, planet.id);
         }
-        Multiplayer.Session.Planets.Timings.Record("factory-export", NebulaeModel.DataStructures.LoadingTimings.Elapsed(started));
 
         // Update syncing player data (Connected player will be update by movement packets)
         var player = Multiplayer.Session.Server.Players.Get(conn, EConnectionStatus.Syncing);

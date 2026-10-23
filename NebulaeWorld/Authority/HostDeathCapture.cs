@@ -99,14 +99,14 @@ internal sealed class HostDeathCapture
 
     /// <summary>
     /// Opens one death transaction per queued key. Runs at the frame boundary, before the
-    /// replicator's scan, so the tombstone and the task release precede the frame's published despawn.
+    /// replicator's scan, so the tombstone precedes the frame's published despawn.
     /// </summary>
     public void Drain(long hostTick)
     {
         while (pending.TryDequeue(out var key))
         {
             Interlocked.Decrement(ref pendingCount);
-            var receipt = ledger.OpenDeath(key, hostTick, finalRevision: 0);
+            var receipt = ledger.OpenDeath(key, hostTick);
             if (receipt.Saturated)
             {
                 Interlocked.Increment(ref saturatedTotal);

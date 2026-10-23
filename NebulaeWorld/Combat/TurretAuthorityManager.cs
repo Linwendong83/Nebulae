@@ -20,6 +20,8 @@ internal sealed class TurretAuthorityManager : IDisposable
     private AuthorityEpoch clientEpoch;
     private ConnectionEpoch clientConnection;
     private SkillSystem importedSkills;
+    private readonly Queue<(ObjectKey Key, TurretIntent Intent)> requests = new();
+    private long checkpointTicket;
     public bool InventoryPending => pending.Values.Any(x => x.IsInventory);
     public void BeginHostWorld(AuthorityEpoch epoch)
     {
@@ -105,33 +107,48 @@ internal sealed class TurretAuthorityManager : IDisposable
     public bool Request(int planet, int turret, TurretIntent intent)
     {
         EnsureClientWorld();
-        if (pending.Count >= 64 || intent.IsInventory && Multiplayer.Session.InventoryTransfers.Pending) return false;
+        if (pending.Count + requests.Count >= 64 || Multiplayer.Session.Life?.IsExiting == true) return false;
         var session = Multiplayer.Session;
         var factory = GameMain.galaxy?.PlanetById(planet)?.factory;
         if (factory?.defenseSystem?.turrets == null || turret <= 0 || turret >= factory.defenseSystem.turrets.cursor) return false;
         var entity = factory.defenseSystem.turrets.buffer[turret].entityId;
         if (session.AuthorityRuntime.WorldReplica?.TryFindKey(PoolKind.Turret, planet, entity, out var key) != true) return false;
+        if (intent.IsInventory) { requests.Enqueue((key, intent)); return true; }
         if (!session.CombatAuthority.SendCommand(key, TurretIntent.Category, intent.Encode(), out var sequence)) return false;
         pending[sequence] = intent; return true;
     }
     public bool Deposit(int planet, int turret, int item, int wanted)
     {
         EnsureClientWorld();
-        if (Multiplayer.Session.InventoryTransfers.Pending) return false;
-        // Publish before reserving, and suppress later checkpoints until the receipt settles it.
-        Multiplayer.Session.Life.Publish();
-        var package = GameMain.mainPlayer.package;
-        var count = Math.Min(100, Math.Min(wanted, package.GetItemCount(item)));
-        if (count <= 0) return false;
-        package.TakeTailItems(ref item, ref count, out var inc);
-        if (Request(planet, turret, new TurretIntent(TurretIntentKind.Deposit, item, count, inc))) return true;
-        package.AddItemStacked(item, count, inc, out _); return false;
+        return Request(planet, turret, new TurretIntent(TurretIntentKind.Deposit, item, Math.Min(100, wanted)));
+    }
+
+    public void DispatchPending()
+    {
+        EnsureClientWorld();
+        var session = Multiplayer.Session;
+        if (requests.Count == 0 || session.InventoryTransfers.Pending) return;
+        if (!session.Life.EnsureInventoryCheckpoint(ref checkpointTicket)) return;
+        checkpointTicket = 0;
+        var request = requests.Dequeue();
+        var intent = request.Intent;
+        if (intent.Kind == TurretIntentKind.Deposit)
+        {
+            var item = intent.Argument; var count = Math.Min(intent.Count, GameMain.mainPlayer.package.GetItemCount(item));
+            if (count <= 0) return;
+            GameMain.mainPlayer.package.TakeTailItems(ref item, ref count, out var inc);
+            intent = new TurretIntent(intent.Kind, item, count, inc);
+        }
+        if (session.CombatAuthority.SendCommand(request.Key, TurretIntent.Category, intent.Encode(), out var sequence))
+            pending[sequence] = intent;
+        else if (intent.Kind == TurretIntentKind.Deposit)
+            GameMain.mainPlayer.package.AddItemStacked(intent.Argument, intent.Count, intent.Inc, out _);
     }
     private void EnsureClientWorld()
     {
         var session = Multiplayer.Session;
         if (clientEpoch == session.Authority.Epoch && clientConnection == session.Authority.Connection) return;
-        pending.Clear(); lock (gate) { results.Clear(); receiptGate.Clear(); }
+        pending.Clear(); requests.Clear(); checkpointTicket = 0; lock (gate) { results.Clear(); receiptGate.Clear(); }
         clientEpoch = session.Authority.Epoch; clientConnection = session.Authority.Connection; Multiplayer.Session.InventoryTransfers.EnsureWorld(); importedSkills = null;
     }
     public void ReceiveResult(AuthorityCommandResultPacket packet)

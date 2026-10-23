@@ -59,12 +59,12 @@ namespace NebulaeModel.Networking
 
             public BinaryReader BinaryReader => br;
 
-            public Reader(byte[] bytes, int? header = null)
+            public Reader(byte[] bytes, int? header = null, bool byteHeader = false)
             {
                 ms = new MemoryStream(bytes);
                 ls = LZ4Stream.Decode(ms);
                 bs = new BufferedStream(ls, BUFFER_SIZE);
-                br = header.HasValue ? new HeaderReader(bs, header.Value) : new BinaryReader(bs);
+                br = header.HasValue ? new HeaderReader(bs, header.Value, byteHeader) : new BinaryReader(bs);
             }
 
             public void RequireEnd()
@@ -82,14 +82,25 @@ namespace NebulaeModel.Networking
             }
         }
 
-        private sealed class HeaderReader(Stream stream, int header) : BinaryReader(stream)
+        private sealed class HeaderReader(Stream stream, int header, bool byteHeader) : BinaryReader(stream)
         {
             private bool headerRead;
 
             public override int ReadInt32()
             {
                 var value = base.ReadInt32();
-                if (!headerRead)
+                if (!byteHeader && !headerRead)
+                {
+                    if (value != header) throw new ParseException("Invalid binary payload header");
+                    headerRead = true;
+                }
+                return value;
+            }
+
+            public override byte ReadByte()
+            {
+                var value = base.ReadByte();
+                if (byteHeader && !headerRead)
                 {
                     if (value != header) throw new ParseException("Invalid binary payload header");
                     headerRead = true;

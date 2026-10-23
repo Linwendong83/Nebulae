@@ -1,6 +1,5 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using NebulaeModel.Authority;
 using NebulaeModel.Networking.Serialization;
@@ -44,9 +43,7 @@ internal sealed class StateDeltaChannel
 
     public byte[] Prepare(byte[] bytes)
     {
-        var start = Stopwatch.GetTimestamp();
-        try { lock (sendGate) return stopped ? null : Encode(bytes, 0); }
-        finally { StateDeltaMetrics.RecordEncoding(Stopwatch.GetTimestamp() - start); }
+        lock (sendGate) return stopped ? null : Encode(bytes, 0);
     }
 
     public byte[] Receive(byte[] bytes)
@@ -79,12 +76,10 @@ internal sealed class StateDeltaChannel
             if (encoded.Length < bytes.Length)
             {
                 outgoing.Put(state, previous.Baseline, previous.Revision + 1, routes);
-                StateDeltaMetrics.Record(bytes.Length, encoded.Length, true);
                 return encoded;
             }
         }
         outgoing.Put(state, AuthoritySnapshotCodec.Hash(bytes), 1, routes);
-        StateDeltaMetrics.Record(bytes.Length, bytes.Length, false);
         return bytes;
     }
 
@@ -245,7 +240,6 @@ internal sealed class StateDeltaChannel
             while (lru.Count >= 65536 || Bytes + entry.Cost > maxBytes) Remove(lru.First.Value);
             if (entry.Node == null) entry.Node = new LinkedListNode<string>(state.CacheKey);
             lru.AddLast(entry.Node); entries.Add(state.CacheKey, entry); Bytes += entry.Cost;
-            StateDeltaMetrics.RecordCache(Bytes);
         }
         public void Clear() { entries.Clear(); lru.Clear(); Bytes = 0; }
     }

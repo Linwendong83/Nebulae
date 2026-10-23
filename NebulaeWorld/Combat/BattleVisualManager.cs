@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using NebulaeModel.Networking;
@@ -239,8 +239,11 @@ internal sealed class BattleVisualManager : IDisposable
             writer.Flush();
             var caster = item switch
             {
-                LocalLaserOneShot p => p.caster.id, LocalGeneralProjectile p => p.caster.id,
-                SpaceLaserOneShot p => p.caster.id, GeneralProjectile p => p.caster.id, _ => 0
+                LocalLaserOneShot p => p.caster.id,
+                LocalGeneralProjectile p => p.caster.id,
+                SpaceLaserOneShot p => p.caster.id,
+                GeneralProjectile p => p.caster.id,
+                _ => 0
             };
             stream.Capture(kind, i, generation, tick, effectLife, source, scratch.GetBuffer(), (int)scratch.Length, caster);
         }

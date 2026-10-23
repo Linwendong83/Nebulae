@@ -1,4 +1,4 @@
-#region
+﻿#region
 
 using NebulaeModel.Contracts;
 using NebulaeModel.Networking;
@@ -13,8 +13,14 @@ internal class HandshakeResponseProcessor : PacketProcessor<HandshakeResponse>
 {
     protected override void ProcessPacket(HandshakeResponse packet, NebulaeConnection conn)
     {
+        if (IsHost) return;
+        var combatSettings = new CombatSettings();
+        using (var p = new BinaryUtils.Reader(packet.CombatSettingsData, 0))
+        {
+            combatSettings.Import(p.BinaryReader);
+            p.RequireEnd();
+        }
         Multiplayer.Session.JoinSync.BeginLocal();
-        Multiplayer.Session.Planets.BeginWorldLoad();
         ((LocalPlayer)Multiplayer.Session.LocalPlayer).IsHost = false;
         ((LocalPlayer)Multiplayer.Session.LocalPlayer).SetPlayerData(packet.LocalPlayerData, packet.IsNewPlayer);
         Multiplayer.Session.Goals.SetExistingPlayer(!packet.IsNewPlayer);
@@ -31,10 +37,7 @@ internal class HandshakeResponseProcessor : PacketProcessor<HandshakeResponse>
         gameDesc.goalLevel = (EGoalLevel)packet.GoalLevel;
         gameDesc.isSandboxMode = packet.IsSandboxMode;
         gameDesc.savedThemeIds = packet.SavedThemeIds;
-        using (var p = new BinaryUtils.Reader(packet.CombatSettingsData))
-        {
-            gameDesc.combatSettings.Import(p.BinaryReader);
-        }
+        gameDesc.combatSettings = combatSettings;
         //Request global part of GameData from host
         Multiplayer.Session.Network.SendPacket(new GlobalGameDataRequest());
         if (DSPGame.Game != null)

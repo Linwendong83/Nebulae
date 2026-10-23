@@ -352,6 +352,9 @@ internal class Server : IServer
         {
             NebulaeWorld.GameStates.JoinSyncManager.WaitForSimulation();
             Multiplayer.Session.Ships.FlushLifecycle();
+            Multiplayer.Session.FactoryProducts.TickHostFighterPorts(GameMain.gameTick, true);
+            Multiplayer.Session.CombatAuthority.PumpPausedCheckpoints();
+            Multiplayer.Session.CombatAuthority.FlushFighterPorts();
             Multiplayer.Session.AuthorityRuntime?.PumpHostSubscriptions();
         }
 

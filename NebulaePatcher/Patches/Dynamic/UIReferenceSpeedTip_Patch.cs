@@ -3,6 +3,7 @@
 using System;
 using HarmonyLib;
 using NebulaeModel.Packets.Statistics;
+using NebulaeModel.Utils;
 using NebulaeWorld;
 #pragma warning disable IDE0301 // Simplify collection initialization
 
@@ -17,6 +18,7 @@ internal class UIReferenceSpeedTip_Patch
     [HarmonyPatch(nameof(UIReferenceSpeedTip.AddEntryDataWithFactory))]
     public static bool AddEntryDataWithFactory_Prefix(UIReferenceSpeedTip __instance)
     {
+        GalaxyLimits.EnsureReferenceCapacity(__instance);
         // Client will use server response to update loadedEntryDatas and loadedSubTipDatas
         return !Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost || Multiplayer.Session.Statistics.LocalReferences.CanCalculate(__instance.astroFilter);
     }
@@ -39,6 +41,7 @@ internal class UIReferenceSpeedTip_Patch
     [HarmonyPatch(nameof(UIReferenceSpeedTip.SetSubTip))]
     public static void SetSubTip_Prefix(UIReferenceSpeedTip __instance, int _productionProtoId)
     {
+        GalaxyLimits.EnsureReferenceCapacity(__instance);
         if (!Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost) return;
 
         // Client: Send request to server when setting a valid subtip

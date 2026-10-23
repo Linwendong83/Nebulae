@@ -55,6 +55,7 @@ internal sealed class JoinPacketPolicy
         Register<NebulaeModel.Packets.Factory.Belt.ConnectToSpraycoaterPacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.BuildDroneLaunchPacket>(null);
         Register<NebulaeModel.Packets.Factory.BuildEntityRequest>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.PrebuildInstancePacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.BuildTargetAssignmentPacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.BuildTargetAssignmentReplyPacket>(null);
         Register<NebulaeModel.Packets.Factory.BuildTargetBaseReleaseAckPacket>(null);
@@ -110,6 +111,7 @@ internal sealed class JoinPacketPolicy
         Register<NebulaeModel.Packets.GameHistory.GameHistoryUnlockTechPacket>(_ => 0);
         Register<NebulaeModel.Packets.GameStates.FragmentInfo>(null);
         Register<NebulaeModel.Packets.GameStates.GamePausePacket>(_ => 0);
+        Register<NebulaeModel.Packets.GameStates.GamePauseStepRequest>(null);
         Register<NebulaeModel.Packets.GameStates.GameStateRequest>(null);
         Register<NebulaeModel.Packets.GameStates.GameStateSaveInfoPacket>(_ => 0);
         Register<NebulaeModel.Packets.GameStates.GameStateUpdate>(null);
@@ -125,12 +127,9 @@ internal sealed class JoinPacketPolicy
         Register<NebulaeModel.Packets.Logistics.ControlPanel.FacilityRowsSubscription>(null);
         Register<NebulaeModel.Packets.Logistics.ControlPanel.LCPAdvancedMinerEntryUpdate>(null);
         Register<NebulaeModel.Packets.Logistics.ControlPanel.LCPDispenserEntryUpdate>(null);
-        Register<NebulaeModel.Packets.Logistics.ControlPanel.LCPFilterResultsRequest>(null);
-        Register<NebulaeModel.Packets.Logistics.ControlPanel.LCPFilterResultsResponse>(null);
         Register<NebulaeModel.Packets.Logistics.ControlPanel.LCPObjectEntryEntityInfo>(null);
         Register<NebulaeModel.Packets.Logistics.ControlPanel.LCPObjectEntryRequest>(null);
         Register<NebulaeModel.Packets.Logistics.ControlPanel.LCPStationEntryUpdate>(null);
-        Register<NebulaeModel.Packets.Logistics.ControlPanel.LCPStationNameSearchPacket>(null);
         Register<NebulaeModel.Packets.Logistics.ControlPanel.LCPStationRouteResultsPacket>(null);
         Register<NebulaeModel.Packets.Logistics.DispenserAddTakePacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Logistics.DispenserCourierPacket>(null);
@@ -167,7 +166,6 @@ internal sealed class JoinPacketPolicy
         Register<NebulaeModel.Packets.Players.PlayerMapPosition>(null);
         Register<NebulaeModel.Packets.Players.PlayerMechaArmor>(null);
         Register<NebulaeModel.Packets.Players.PlayerMechaDIYArmor>(null);
-        Register<NebulaeModel.Packets.Players.PlayerMechaStat>(null);
         Register<NebulaeModel.Packets.Players.PlayerMovement>(null);
         Register<NebulaeModel.Packets.Players.PlayerMovementDisplay>(null);
         Register<NebulaeModel.Packets.Players.PlayerSandCount>(null);

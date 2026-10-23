@@ -4,6 +4,7 @@ using HarmonyLib;
 using NebulaeModel.Authority;
 using NebulaeWorld;
 using NebulaeWorld.Authority;
+using NebulaeWorld.Combat;
 
 namespace NebulaePatcher.Patches.Authority;
 
@@ -17,25 +18,34 @@ internal static class TurretAuthority_Patch
     public static bool Internal_Prefix(ref TurretComponent __instance, PlanetFactory factory)
     {
         if (!CanSimulate(factory, __instance.entityId)) return false;
-        if (WorldSimulation.IsClient && __instance.target.id > 0)
-        {
-            var pool = __instance.target.astroId == factory.planet.astroId ? factory.enemyPool : factory.sector.enemyPool;
-            if (__instance.target.id >= pool.Length || pool[__instance.target.id].id != __instance.target.id)
-            {
-                __instance.target = default;
-                __instance.isAiming = __instance.isLockingTarget = false;
-            }
-        }
+        if (Multiplayer.IsActive) EnemyTargetIdentity.Validate(factory, ref __instance);
         return true;
     }
     [HarmonyPrefix, HarmonyPatch(typeof(TurretComponent), nameof(TurretComponent.Aim))]
-    public static bool Aim_Prefix(ref TurretComponent __instance, PlanetFactory factory) => CanSimulate(factory, __instance.entityId);
+    public static bool Aim_Prefix(ref TurretComponent __instance, PlanetFactory factory) => CanSimulate(factory, __instance.entityId) &&
+        (!Multiplayer.IsActive || EnemyTargetIdentity.Validate(factory, ref __instance));
     [HarmonyPrefix, HarmonyPatch(typeof(TurretComponent), nameof(TurretComponent.Shoot))]
-    public static bool Shoot_Prefix(ref TurretComponent __instance, PlanetFactory factory) => CanSimulate(factory, __instance.entityId);
+    public static bool Shoot_Prefix(ref TurretComponent __instance, PlanetFactory factory) => CanSimulate(factory, __instance.entityId) &&
+        (!Multiplayer.IsActive || EnemyTargetIdentity.Validate(factory, ref __instance));
     [HarmonyPrefix, HarmonyPatch(typeof(TurretComponent), nameof(TurretComponent.PostGameTick))]
     public static bool Post_Prefix(ref TurretComponent __instance, PlanetFactory factory) => CanSimulate(factory, __instance.entityId);
     [HarmonyPrefix, HarmonyPatch(typeof(TurretComponent), nameof(TurretComponent.Search))]
-    public static bool Search_Prefix(ref TurretComponent __instance, PlanetFactory factory) => CanSimulate(factory, __instance.entityId);
+    public static bool Search_Prefix(ref TurretComponent __instance, PlanetFactory factory)
+    {
+        if (!CanSimulate(factory, __instance.entityId)) return false;
+        if (Multiplayer.IsActive) __instance.target.type = ETargetType.Enemy;
+        return true;
+    }
+
+    [HarmonyPostfix, HarmonyPatch(typeof(TurretComponent), nameof(TurretComponent.Search))]
+    public static void Search_Postfix(ref TurretComponent __instance, PlanetFactory factory)
+    {
+        if (Multiplayer.IsActive && CanSimulate(factory, __instance.entityId))
+        {
+            EnemyTargetIdentity.Observe(factory, __instance);
+            EnemyTargetIdentity.Validate(factory, ref __instance);
+        }
+    }
 
     [HarmonyPrefix, HarmonyPatch(typeof(TurretComponent), nameof(TurretComponent.DeterminActiveEnemyUnits))]
     public static bool Activation_Prefix(ref bool __result)

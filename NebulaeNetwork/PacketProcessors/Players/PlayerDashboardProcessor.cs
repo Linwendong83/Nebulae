@@ -29,7 +29,10 @@ internal class PlayerDashboardProcessor : PacketProcessor<PlayerDashboardPacket>
                 // and PlanetManager.PreservedDashboardData), so it must be read back without LZ4 decompression.
                 using var ms = new MemoryStream(packet.DashboardData);
                 using var reader = new BinaryReader(ms);
+                BinaryUtils.RequireHeader(reader, 0);
                 GameMain.data.statistics.charts.Import(reader);
+                if (ms.Position != ms.Length)
+                    throw new InvalidDataException("Trailing dashboard data");
                 NebulaeWorld.GameStates.LocalPlayerPreferences.SaveDashboard();
                 var dashboard = UIRoot.instance?.uiGame?.dashboard;
                 if (dashboard != null)

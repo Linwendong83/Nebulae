@@ -18,7 +18,7 @@ namespace NebulaeWorld;
 internal static class SaveManager
 {
     private const string FILE_EXTENSION = ".server";
-    private const ushort REVISION = 12;
+    private const ushort REVISION = 13;
     public static string WorldId { get; private set; } = Guid.NewGuid().ToString("N");
 
     public static void SetWorldId(string worldId)
@@ -206,7 +206,6 @@ internal static class SaveManager
                 loadedServerIdentity = true;
             }
             else TryReadLegacyIdentity(path);
-            if (revision < REVISION) BackupLegacySave(saveName);
 
             var playerNum = netDataReader.GetInt();
             if (playerNum < 0 || playerNum > ushort.MaxValue) throw new InvalidDataException("Invalid player count");
@@ -269,48 +268,6 @@ internal static class SaveManager
                 // or disable saving. Leave the original file untouched for recovery.
                 Log.Warn("Legacy authority archive was not imported: " + path + ": " + error.Message);
             }
-        }
-    }
-
-    private static void BackupLegacySave(string saveName)
-    {
-        var backupRoot = Path.Combine(LegacyDataMigration.DataDirectory(GameConfig.gameSaveFolder), "compat-backups",
-            Path.GetFileName(saveName) + ".pre-v10");
-        var marker = Path.Combine(backupRoot, "complete");
-        if (File.Exists(marker)) return;
-        Directory.CreateDirectory(backupRoot);
-        foreach (var extension in new[] { ".dsv", FILE_EXTENSION, ".server.world-id", ".server.server.authority", ".server.authority" })
-        {
-            var source = Path.Combine(GameConfig.gameSaveFolder, saveName + extension);
-            if (File.Exists(source)) File.Copy(source, Path.Combine(backupRoot, Path.GetFileName(source)), true);
-        }
-        var worldFolder = Path.Combine(LegacyDataMigration.DataDirectory(GameConfig.gameSaveFolder), WorldId);
-        CopyDirectory(worldFolder, Path.Combine(backupRoot, "world"));
-        var propertyRoot = LegacyDataMigration.DataDirectory(GameConfig.propertyFolder);
-        if (Directory.Exists(propertyRoot))
-        {
-            foreach (var identityFolder in Directory.GetDirectories(propertyRoot))
-            {
-                var source = Path.Combine(identityFolder, WorldId + ".transactions");
-                if (!File.Exists(source)) continue;
-                var destination = Path.Combine(backupRoot, "properties", Path.GetFileName(identityFolder));
-                Directory.CreateDirectory(destination);
-                File.Copy(source, Path.Combine(destination, Path.GetFileName(source)), true);
-            }
-        }
-        AtomicFile.Write(marker, System.Text.Encoding.UTF8.GetBytes("complete"));
-        Log.Info($"Preserved pre-v10 multiplayer save in {backupRoot}");
-    }
-
-    private static void CopyDirectory(string source, string destination)
-    {
-        if (!Directory.Exists(source)) return;
-        foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
-        {
-            var relative = file.Substring(source.Length).TrimStart(Path.DirectorySeparatorChar);
-            var target = Path.Combine(destination, relative);
-            Directory.CreateDirectory(Path.GetDirectoryName(target));
-            File.Copy(file, target, true);
         }
     }
 

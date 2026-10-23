@@ -3,7 +3,7 @@
 namespace NebulaeModel.Packets.Factory.Foundation;
 
 [NebulaeModel.Networking.PacketId(4323145100503440832UL)]
-internal class FoundationBlueprintPastePacket
+internal class FoundationBlueprintPastePacket : NebulaeModel.Networking.IVegetationOperation
 {
     public FoundationBlueprintPastePacket() { }
 
@@ -20,7 +20,7 @@ internal class FoundationBlueprintPastePacket
             LevelChangesValues[index] = pair.Value;
             index++;
         }
-        ReformData = reformData;
+        ReformData = (byte[])reformData.Clone();
         ReformGridIds = [];
     }
 
@@ -38,7 +38,7 @@ internal class FoundationBlueprintPastePacket
             index++;
         }
         ReformData = [];
-        ReformGridIds = reformGridIds;
+        ReformGridIds = (int[])reformGridIds.Clone();
         ReformType = reformType;
         ReformColor = reformColor;
     }
@@ -57,4 +57,6 @@ internal class FoundationBlueprintPastePacket
     public int ReformType { get; set; }
     [NebulaeModel.Networking.WireOrder(6)]
     public int ReformColor { get; set; }
+    [NebulaeModel.Networking.WireOrder(7)]
+    public long CommandSequence { get; set; }
 }

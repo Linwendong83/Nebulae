@@ -27,7 +27,7 @@ internal static partial class PacketStateRegistry
         State<NebulaeModel.Packets.Combat.CombatTruceUpdatePacket>(new[] { 0 });
         Add<NebulaeModel.Packets.Combat.Mecha.PlayerLifePacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Combat.PlayerWeaponPacket>(PacketSyncKind.Operation);
-        State<NebulaeModel.Packets.Factory.Assembler.FactoryProductPacket>(new[] { 0, 1 }, p => p.Message == (byte)NebulaeModel.Packets.Factory.Assembler.FactoryProductMessage.Snapshot);
+        State<NebulaeModel.Packets.Factory.Assembler.FactoryProductPacket>(new[] { 0, 1 }, p => p.Message is (byte)NebulaeModel.Packets.Factory.Assembler.FactoryProductMessage.Snapshot or (byte)NebulaeModel.Packets.Factory.Assembler.FactoryProductMessage.FighterPortsSnapshot);
         Add<NebulaeModel.Packets.Factory.BattleBase.BattleBaseSettingUpdatePacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.Belt.BeltReverseRequestPacket>(PacketSyncKind.Control);
         Add<NebulaeModel.Packets.Factory.Belt.BeltSignalIconPacket>(PacketSyncKind.Operation);
@@ -39,6 +39,7 @@ internal static partial class PacketStateRegistry
         Add<NebulaeModel.Packets.Factory.Belt.ConnectToSpraycoaterPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.BuildDroneLaunchPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.BuildEntityRequest>(PacketSyncKind.Control);
+        Add<NebulaeModel.Packets.Factory.PrebuildInstancePacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.BuildTargetAssignmentPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.BuildTargetAssignmentReplyPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.BuildTargetBaseReleaseAckPacket>(PacketSyncKind.Operation);
@@ -93,6 +94,7 @@ internal static partial class PacketStateRegistry
         Add<NebulaeModel.Packets.GameHistory.GameHistoryUnlockTechPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.GameStates.FragmentInfo>(PacketSyncKind.Operation);
         State<NebulaeModel.Packets.GameStates.GamePausePacket>(System.Array.Empty<int>());
+        Add<NebulaeModel.Packets.GameStates.GamePauseStepRequest>(PacketSyncKind.Control);
         Add<NebulaeModel.Packets.GameStates.GameStateRequest>(PacketSyncKind.Control);
         State<NebulaeModel.Packets.GameStates.GameStateSaveInfoPacket>(System.Array.Empty<int>());
         State<NebulaeModel.Packets.GameStates.GameStateUpdate>(System.Array.Empty<int>());
@@ -108,12 +110,9 @@ internal static partial class PacketStateRegistry
         Add<NebulaeModel.Packets.Logistics.ControlPanel.FacilityRowsSubscription>(PacketSyncKind.Control);
         State<NebulaeModel.Packets.Logistics.ControlPanel.LCPAdvancedMinerEntryUpdate>(new[] { 0 });
         State<NebulaeModel.Packets.Logistics.ControlPanel.LCPDispenserEntryUpdate>(new[] { 0 });
-        Add<NebulaeModel.Packets.Logistics.ControlPanel.LCPFilterResultsRequest>(PacketSyncKind.Control);
-        Add<NebulaeModel.Packets.Logistics.ControlPanel.LCPFilterResultsResponse>(PacketSyncKind.Snapshot);
         State<NebulaeModel.Packets.Logistics.ControlPanel.LCPObjectEntryEntityInfo>(new[] { 5, 2, 4 });
         Add<NebulaeModel.Packets.Logistics.ControlPanel.LCPObjectEntryRequest>(PacketSyncKind.Control);
         State<NebulaeModel.Packets.Logistics.ControlPanel.LCPStationEntryUpdate>(new[] { 0 });
-        Add<NebulaeModel.Packets.Logistics.ControlPanel.LCPStationNameSearchPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Logistics.ControlPanel.LCPStationRouteResultsPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Logistics.DispenserAddTakePacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Logistics.DispenserCourierPacket>(PacketSyncKind.Operation);
@@ -150,13 +149,12 @@ internal static partial class PacketStateRegistry
         State<NebulaeModel.Packets.Players.PlayerMapPosition>(new[] { 0 });
         State<NebulaeModel.Packets.Players.PlayerMechaArmor>(new[] { 0 });
         State<NebulaeModel.Packets.Players.PlayerMechaDIYArmor>(System.Array.Empty<int>());
-        Add<NebulaeModel.Packets.Players.PlayerMechaStat>(PacketSyncKind.Operation);
         State<NebulaeModel.Packets.Players.PlayerMovement>(new[] { 0 });
         State<NebulaeModel.Packets.Players.PlayerMovementDisplay>(new[] { 0 });
         State<NebulaeModel.Packets.Players.PlayerSandCount>(System.Array.Empty<int>());
         Add<NebulaeModel.Packets.Players.PlayerSandGained>(PacketSyncKind.Operation);
         State<NebulaeModel.Packets.Players.PlayerUpdateLocalStarId>(new[] { 0 });
-        State<NebulaeModel.Packets.Players.VegetableCollectionSnapshotPacket>(new[] { 1 });
+        Add<NebulaeModel.Packets.Players.VegetableCollectionSnapshotPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Routers.PlanetBroadcastPacket>(PacketSyncKind.Router);
         Add<NebulaeModel.Packets.Routers.StarBroadcastPacket>(PacketSyncKind.Router);
         Add<NebulaeModel.Packets.Session.GlobalGameDataRequest>(PacketSyncKind.Control);

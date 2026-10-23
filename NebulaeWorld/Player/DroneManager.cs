@@ -3,7 +3,6 @@
 using System;
 using System.Collections.Generic;
 using NebulaeModel.DataStructures;
-using NebulaeModel.Packets.Players;
 using UnityEngine;
 using Random = UnityEngine.Random;
 #pragma warning disable IDE1006 // Naming Styles
@@ -31,32 +30,33 @@ internal class DroneManager : IDisposable
         GC.SuppressFinalize(this);
     }
 
-    public void EjectMechaDroneFromOtherPlayer(PlayerEjectMechaDronePacket packet)
+    public void EjectMechaDroneFromOtherPlayer(ushort playerId, int planetId, int targetObjectId,
+        int next1ObjectId, int next2ObjectId, int next3ObjectId, int dronePriority)
     {
         RefreshCachedPositions();
 
-        var ejectPos = GetPlayerEjectPosition(packet.PlayerId);
-        var factory = GameMain.galaxy.PlanetById(packet.PlanetId).factory;
-        var targetPos = factory.constructionSystem._obj_hpos(packet.TargetObjectId, ref ejectPos);
+        var ejectPos = GetPlayerEjectPosition(playerId);
+        var factory = GameMain.galaxy.PlanetById(planetId).factory;
+        var targetPos = factory.constructionSystem._obj_hpos(targetObjectId, ref ejectPos);
         var initialVector = ejectPos + ejectPos.normalized * 4.5f +
                       ((targetPos - ejectPos).normalized + Random.insideUnitSphere) * 1.5f;
         // Use custom CreateDrone to store in separate pool
-        ref var ptr = ref CreateDrone(factory, ejectPos, Quaternion.LookRotation(initialVector), Vector3.zero, packet.PlayerId);
+        ref var ptr = ref CreateDrone(factory, ejectPos, Quaternion.LookRotation(initialVector), Vector3.zero, playerId);
         ptr.stage = 1;
-        ptr.priority = packet.DronePriority;
-        ptr.targetObjectId = packet.TargetObjectId;
-        ptr.nextTarget1ObjectId = packet.Next1ObjectId;
-        ptr.nextTarget2ObjectId = packet.Next2ObjectId;
-        ptr.nextTarget3ObjectId = packet.Next3ObjectId;
+        ptr.priority = dronePriority;
+        ptr.targetObjectId = targetObjectId;
+        ptr.nextTarget1ObjectId = next1ObjectId;
+        ptr.nextTarget2ObjectId = next2ObjectId;
+        ptr.nextTarget3ObjectId = next3ObjectId;
         ptr.targetPos = targetPos;
         ptr.initialVector = initialVector;
         ptr.progress = 0f;
-        ptr.owner = packet.PlanetId; // Use drone.owner field to store planetId
+        ptr.owner = planetId; // Use drone.owner field to store planetId
 
-        if (packet.TargetObjectId > 0) // Repair
+        if (targetObjectId > 0) // Repair
         {
-            ref var entity = ref factory.entityPool[packet.TargetObjectId];
-            if (entity.id != packet.TargetObjectId || entity.constructStatId == 0)
+            ref var entity = ref factory.entityPool[targetObjectId];
+            if (entity.id != targetObjectId || entity.constructStatId == 0)
             {
                 return;
             }

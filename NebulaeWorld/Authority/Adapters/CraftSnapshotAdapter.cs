@@ -49,9 +49,6 @@ internal sealed class CraftSnapshotAdapter : IHostWorldView, IHostIncrementalWor
         public readonly Dictionary<int, ObjectKey> Live = [];
         public readonly ReplicationCandidateIndex Candidates = new();
     }
-    public long MembershipScans { get; private set; }
-    public long SlotsExamined { get; private set; }
-    public long IncrementalFrames { get; private set; }
 
     public long UnreadableScopes { get; private set; }
     public long CorruptReferences { get; private set; }
@@ -143,7 +140,6 @@ internal sealed class CraftSnapshotAdapter : IHostWorldView, IHostIncrementalWor
         var pool = factory.craftPool;
         for (var id = 1; id < factory.craftCursor; id++)
         {
-            SlotsExamined++;
             // Native construction owns these crafts, including client-local drone logic ids.
             // Replacing them with display-only authority shells would disconnect active drones.
             if (id >= pool.Length || pool[id].id != id ||
@@ -154,8 +150,7 @@ internal sealed class CraftSnapshotAdapter : IHostWorldView, IHostIncrementalWor
         }
         tracker.EndScan();
         Prune(PoolKind.GroundCraft, planetId, tracker);
-        index.Initialized = true; MembershipScans++;
-        index.Candidates.Rebuild(factory.craftPool, clock(), members);
+        index.Initialized = true; index.Candidates.Rebuild(factory.craftPool, clock(), members);
         return true;
     }
 
@@ -172,7 +167,6 @@ internal sealed class CraftSnapshotAdapter : IHostWorldView, IHostIncrementalWor
         var pool = sector.craftPool;
         for (var id = 1; id < sector.craftCursor; id++)
         {
-            SlotsExamined++;
             if (id >= pool.Length || pool[id].id != id) continue;
             var generation = spaceTracker.ObserveOccupied(id);
             var key = ObjectKey.Create(epoch, PoolKind.SpaceCraft, AuthorityScope.Sector, id, generation);
@@ -180,8 +174,7 @@ internal sealed class CraftSnapshotAdapter : IHostWorldView, IHostIncrementalWor
         }
         spaceTracker.EndScan();
         Prune(PoolKind.SpaceCraft, 0, spaceTracker);
-        index.Initialized = true; MembershipScans++;
-        index.Candidates.Rebuild(sector.craftPool, clock(), members);
+        index.Initialized = true; index.Candidates.Rebuild(sector.craftPool, clock(), members);
         return true;
     }
 
@@ -374,7 +367,6 @@ internal sealed class CraftSnapshotAdapter : IHostWorldView, IHostIncrementalWor
             var pool = owner is PlanetFactory factory ? factory.craftPool : ((SpaceSector)owner).craftPool;
             if (!index.Initialized || !index.Candidates.Read(pool, index.Live.Count, hostTick, candidates, removed)) return false;
             candidates.Sort((left, right) => left.NativeId.CompareTo(right.NativeId));
-            IncrementalFrames++;
             return true;
         }
     }

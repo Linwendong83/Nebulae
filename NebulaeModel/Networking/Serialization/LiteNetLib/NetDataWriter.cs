@@ -50,42 +50,6 @@ namespace NebulaeModel.Networking.Serialization
             _autoResize = autoResize;
         }
 
-        /// <summary>
-        /// Creates NetDataWriter from existing ByteArray
-        /// </summary>
-        /// <param name="bytes">Source byte array</param>
-        /// <param name="copy">Copy array to new location or use existing</param>
-        public static NetDataWriter FromBytes(byte[] bytes, bool copy)
-        {
-            if (copy)
-            {
-                var netDataWriter = new NetDataWriter(true, bytes.Length);
-                netDataWriter.Put(bytes);
-                return netDataWriter;
-            }
-            return new NetDataWriter(true, 0) { _data = bytes, _position = bytes.Length };
-        }
-
-        /// <summary>
-        /// Creates NetDataWriter from existing ByteArray (always copied data)
-        /// </summary>
-        /// <param name="bytes">Source byte array</param>
-        /// <param name="offset">Offset of array</param>
-        /// <param name="length">Length of array</param>
-        public static NetDataWriter FromBytes(byte[] bytes, int offset, int length)
-        {
-            var netDataWriter = new NetDataWriter(true, bytes.Length);
-            netDataWriter.Put(bytes, offset, length);
-            return netDataWriter;
-        }
-
-        public static NetDataWriter FromString(string value)
-        {
-            var netDataWriter = new NetDataWriter();
-            netDataWriter.Put(value);
-            return netDataWriter;
-        }
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void ResizeIfNeed(int newSize)
         {

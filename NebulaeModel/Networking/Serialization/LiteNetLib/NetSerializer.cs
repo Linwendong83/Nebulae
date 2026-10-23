@@ -561,7 +561,6 @@ namespace NebulaeModel.Networking.Serialization
             _registeredTypes.Add(typeof(T), new CustomTypeStatic<T>(writer, reader));
         }
 
-        private NetDataWriter _writer;
         protected readonly int _maxStringLength;
         protected readonly Dictionary<Type, CustomType> _registeredTypes = new Dictionary<Type, CustomType>();
 
@@ -682,29 +681,6 @@ namespace NebulaeModel.Networking.Serialization
             return value;
         }
 
-
-        /// <summary>
-        /// Reads packet with known type
-        /// </summary>
-        /// <param name="reader">NetDataReader with packet</param>
-        /// <returns>Returns packet if packet in reader is matched type</returns>
-        /// <exception cref="InvalidTypeException"><typeparamref name="T"/>'s fields are not supported, or it has no fields</exception>
-        public T Deserialize<T>(NetDataReader reader) where T : class, new()
-        {
-            var info = RegisterInternal<T>();
-            var result = new T();
-            try
-            {
-                info.Read(result, reader);
-                if (!reader.EndOfData) throw new ParseException("Trailing packet payload bytes");
-            }
-            catch
-            {
-                return null;
-            }
-            return result;
-        }
-
         /// <summary>
         /// Reads packet with known type (non alloc variant)
         /// </summary>
@@ -736,20 +712,6 @@ namespace NebulaeModel.Networking.Serialization
         public void Serialize<T>(NetDataWriter writer, T obj) where T : class, new()
         {
             RegisterInternal<T>().Write(obj, writer);
-        }
-
-        /// <summary>
-        /// Serialize object to byte array
-        /// </summary>
-        /// <param name="obj">Object to serialize</param>
-        /// <returns>byte array with serialized data</returns>
-        public byte[] Serialize<T>(T obj) where T : class, new()
-        {
-            if (_writer == null)
-                _writer = new NetDataWriter();
-            _writer.Reset();
-            Serialize(_writer, obj);
-            return _writer.CopyData();
         }
     }
 }

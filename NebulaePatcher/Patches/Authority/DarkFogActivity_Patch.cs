@@ -22,17 +22,17 @@ internal static class DarkFogActivity_Patch
     [HarmonyPrefix, HarmonyPatch(typeof(EnemyDFGroundSystem), nameof(EnemyDFGroundSystem.IsBasePit))]
     internal static bool IsBasePit(EnemyDFGroundSystem __instance, int baseId, ref bool __result)
     {
-        if (!Multiplayer.IsActive || !Multiplayer.Session.IsClient ||
-            !Multiplayer.Session.AuthorityRuntime.DarkFogReplica.BaseAlive.TryGetValue((__instance.factory.planetId, baseId), out var alive)) return true;
-        __result = !alive; return false;
+        if (!Multiplayer.IsActive || !Multiplayer.Session.IsClient) return true;
+        __result = Multiplayer.Session.AuthorityRuntime.DarkFogReplica.BaseAlive.TryGetValue((__instance.factory.planetId, baseId), out var alive) && !alive;
+        return false;
     }
 
     [HarmonyPrefix, HarmonyPatch(typeof(EnemyDFGroundSystem), nameof(EnemyDFGroundSystem.CheckBaseCanRemoved))]
     internal static bool CanRemove(EnemyDFGroundSystem __instance, int baseId, ref int __result)
     {
-        if (!Multiplayer.IsActive || !Multiplayer.Session.IsClient ||
-            !Multiplayer.Session.AuthorityRuntime.DarkFogReplica.BaseRemovalFlags.TryGetValue((__instance.factory.planetId, baseId), out var flags)) return true;
-        __result = flags; return false;
+        if (!Multiplayer.IsActive || !Multiplayer.Session.IsClient) return true;
+        __result = Multiplayer.Session.AuthorityRuntime.DarkFogReplica.BaseRemovalFlags.TryGetValue((__instance.factory.planetId, baseId), out var flags) ? flags : 1;
+        return false;
     }
 
     [HarmonyPrefix, HarmonyPatch(typeof(DFGBaseComponent), nameof(DFGBaseComponent.GetRelay))]

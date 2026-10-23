@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using NebulaeModel.DataStructures;
 using NebulaeModel.Logger;
@@ -15,29 +15,70 @@ internal sealed class PlayerLifeManager : IDisposable
     private long lastCheckpoint;
     private int lastStage = -1;
     private readonly Dictionary<ushort, long> received = new();
-    private readonly HashSet<ushort> refusedSnapshotPlayers = new();
 
-    public bool RecordSnapshotRefusal(ushort playerId) => refusedSnapshotPlayers.Add(playerId);
+    private long requestedTicket, pendingTicket, nextTicket, acceptedTicket, exitTicket;
+    private long requiredCombatRevision = -1;
+    private bool exiting;
+    private Action afterExitCheckpoint;
+    public bool BlocksInventory => requestedTicket != 0 || pending != null;
+    public bool IsExiting => exiting;
+    internal long AcceptedTicket => acceptedTicket;
+
+    public long RequestCheckpoint()
+    {
+        if (requestedTicket == 0) requestedTicket = ++nextTicket;
+        return requestedTicket;
+    }
+
+    public bool EnsureInventoryCheckpoint(ref long ticket, bool allowExit = false)
+    {
+        if (Multiplayer.Session.IsServer) return true;
+        if (exiting && !allowExit) return false;
+        if (ticket == 0) ticket = RequestCheckpoint();
+        return acceptedTicket >= ticket && requestedTicket == 0 && pending == null;
+    }
 
     public void Publish()
     {
-        if (!Multiplayer.Session.IsGameLoaded || Multiplayer.Session.IsDedicated || Multiplayer.Session.JoinSync?.CanInteract == false) return;
-        if (Multiplayer.Session.IsClient && Multiplayer.Session.InventoryTransfers.Pending) return;
+        RequestCheckpoint();
+        ServiceCheckpoint();
+    }
+
+    // Called before result draining and after it, so a continuous request stream cannot
+    // occupy every idle frame between receipts and starve the personal checkpoint.
+    public void ServiceCheckpoint()
+    {
+        var session = Multiplayer.Session;
+        if (!session.IsGameLoaded || session.IsDedicated || session.JoinSync?.CanInteract == false) return;
+        var now = DateTime.UtcNow.Ticks;
+        if (requestedTicket == 0 && pending == null && now - lastCheckpoint >= TimeSpan.TicksPerSecond * 5)
+            RequestCheckpoint();
+        if (pending != null)
+        {
+            if (now - lastSend >= TimeSpan.TicksPerSecond * 2) Send();
+            return;
+        }
+        if (requestedTicket == 0 || session.IsClient && session.InventoryTransfers.Pending) return;
+        if (requiredCombatRevision >= 0 && session.CombatAuthority.LastAppliedRevision <= requiredCombatRevision) return;
+        requiredCombatRevision = -1;
         var bytes = MetadataTransactionManager.CapturePlayer();
-        var data = (PlayerData)Multiplayer.Session.LocalPlayer.Data;
-        Multiplayer.Session.CombatAuthority.RememberPersonalCheckpoint(data.Life.Revision);
-        lastCheckpoint = DateTime.UtcNow.Ticks;
+        var data = (PlayerData)session.LocalPlayer.Data;
+        session.CombatAuthority.RememberPersonalCheckpoint(data.Life.Revision);
+        pendingTicket = requestedTicket; requestedTicket = 0;
         pending = new PlayerLifePacket
         {
             PlayerId = data.PlayerId,
             Life = data.Life,
             PlayerSnapshot = bytes,
-            CombatRevision = Multiplayer.Session.CombatAuthority.LastAppliedRevision,
-            CoreEnergyDebitAcknowledged = Multiplayer.Session.CombatAuthority.CoreDebitAcknowledged,
-            LastCombatCommand = Multiplayer.Session.CombatAuthority.LastAppliedCommand,
-            InventoryTransferSequence = Multiplayer.Session.InventoryTransfers.ClientSequence,
-            DebitItemsAcknowledged = Multiplayer.Session.CombatAuthority.DebitItemsAcknowledged,
-            DebitTotalsAcknowledged = Multiplayer.Session.CombatAuthority.DebitTotalsAcknowledged
+            EpochHigh = session.Authority.Epoch.High,
+            EpochLow = session.Authority.Epoch.Low,
+            ConnectionEpoch = session.Authority.Connection.Value,
+            CombatRevision = session.CombatAuthority.LastAppliedRevision,
+            CoreEnergyDebitAcknowledged = session.CombatAuthority.CoreDebitAcknowledged,
+            LastCombatCommand = session.CombatAuthority.LastAppliedCommand,
+            InventoryTransferSequence = session.InventoryTransfers.ClientSequence,
+            DebitItemsAcknowledged = session.CombatAuthority.DebitItemsAcknowledged,
+            DebitTotalsAcknowledged = session.CombatAuthority.DebitTotalsAcknowledged
         };
         lastStage = data.Life.RespawnStage;
         Send();
@@ -49,49 +90,83 @@ internal sealed class PlayerLifeManager : IDisposable
         lastSend = DateTime.UtcNow.Ticks;
         if (Multiplayer.Session.IsServer)
         {
-            StoreServer((PlayerData)Multiplayer.Session.LocalPlayer.Data, pending.PlayerSnapshot);
             pending.PlayerSnapshot = Array.Empty<byte>();
             Multiplayer.Session.Server.SendPacket(pending);
-            pending = null;
+            acceptedTicket = pendingTicket; pending = null; lastCheckpoint = lastSend;
         }
         else Multiplayer.Session.Network.SendPacket(pending);
     }
 
-    public void Acknowledge(long revision)
+    public void Acknowledge(PlayerLifePacket receipt)
     {
-        if (pending?.Life.Revision <= revision) pending = null;
+        if (pending == null || receipt.Life.Revision != pending.Life.Revision) return;
+        var status = (CheckpointReceiptStatus)receipt.ReceiptStatus;
+        if (status is CheckpointReceiptStatus.Accepted or CheckpointReceiptStatus.Duplicate)
+        {
+            if (receipt.AcceptedRevision < pending.Life.Revision) return;
+            acceptedTicket = Math.Max(acceptedTicket, pendingTicket);
+            pending = null; lastCheckpoint = DateTime.UtcNow.Ticks;
+        }
+        else if (status is CheckpointReceiptStatus.Retry or CheckpointReceiptStatus.Rejected)
+        {
+            requestedTicket = requestedTicket == 0 ? pendingTicket : Math.Max(requestedTicket, pendingTicket);
+            requiredCombatRevision = (CheckpointRejectReason)receipt.RejectReason == CheckpointRejectReason.CombatBaseline
+                ? Multiplayer.Session.CombatAuthority.LastAppliedRevision : -1;
+            pending = null;
+            if (status == CheckpointReceiptStatus.Rejected)
+                Log.Warn("Personal checkpoint refused: " + (CheckpointRejectReason)receipt.RejectReason);
+        }
+    }
+
+    public void BeginExit(Action completed)
+    {
+        exiting = true; afterExitCheckpoint = completed;
+        Multiplayer.Session.Research.TakeBackAfterPending();
     }
 
     public void GameTick()
     {
         if (!Multiplayer.Session.IsGameLoaded || Multiplayer.Session.IsDedicated) return;
         var action = GameMain.mainPlayer.controller.actionDeath;
-        if (!GameMain.mainPlayer.isAlive && action.respawning && action.respawnStage != lastStage) Publish();
-        else if (pending != null && DateTime.UtcNow.Ticks - lastSend > TimeSpan.TicksPerSecond * 2) Send();
-        else if (DateTime.UtcNow.Ticks - lastCheckpoint >= TimeSpan.TicksPerSecond * 5) Publish();
+        if (!GameMain.mainPlayer.isAlive && action.respawning && action.respawnStage != lastStage) RequestCheckpoint();
+        ServiceCheckpoint();
+        if (exiting && !Multiplayer.Session.Research.HasUnsettled && !Multiplayer.Session.InventoryTransfers.Pending)
+        {
+            if (exitTicket == 0) exitTicket = RequestCheckpoint();
+            if (afterExitCheckpoint != null && acceptedTicket >= exitTicket && pending == null && requestedTicket == 0)
+            {
+                var completed = afterExitCheckpoint; afterExitCheckpoint = null;
+                NebulaeModel.Utils.UnityDispatchQueue.RunOnMainThread(completed);
+            }
+        }
     }
 
-    public static bool StoreServer(PlayerData player, byte[] snapshot, long commandAck = 0, double debitAck = 0,
+    internal static CheckpointReceiptStatus StoreServerResult(PlayerData player, byte[] snapshot,
+        out CheckpointRejectReason reason, long commandAck = 0, double debitAck = 0,
         int[] itemAcks = null, int[] debitAcks = null, long combatRevision = 0, long inventoryTransferSequence = 0)
     {
-        // Only the processor for an authenticated connection may call this. Personal inventory,
-        // energy and life still have a local game adapter; the authority sidecar stores none of
-        // them. Persist their latest checkpoint in the same .server save as the world.
+        reason = CheckpointRejectReason.None;
         var checkpoint = TryReadSnapshot(snapshot);
+        if (checkpoint?.Mecha?.Inventory == null || checkpoint.PlayerId != player.PlayerId)
+        { reason = CheckpointRejectReason.InvalidSnapshot; return CheckpointReceiptStatus.Rejected; }
+        if (checkpoint.Life.Revision <= player.Life.Revision) return CheckpointReceiptStatus.Duplicate;
         itemAcks ??= Array.Empty<int>(); debitAcks ??= Array.Empty<int>();
         if (Multiplayer.Session?.IsServer == true &&
-            !Multiplayer.Session.CombatAuthority.ValidateCheckpoint(player.PlayerId, commandAck, debitAck, itemAcks, debitAcks)) return false;
-        var requestedRespawn = checkpoint?.Life?.IsAlive == true;
-        var personalFight = checkpoint?.Mecha?.FightData;
-        if (player.CombatAuthoritative && !Multiplayer.Session.CombatAuthority.ValidatePersonalStocks(player.PlayerId, combatRevision, personalFight)) return false;
-        if (checkpoint?.Mecha?.Inventory == null) return false;
-        if (Multiplayer.Session?.IsServer == true && !Multiplayer.Session.InventoryTransfers.Replay(player.PlayerId, inventoryTransferSequence, checkpoint.Mecha)) return false;
-        if (!player.TryApplyPersonalSnapshot(checkpoint)) return false;
+            !Multiplayer.Session.CombatAuthority.ValidateCheckpoint(player.PlayerId, commandAck, debitAck, itemAcks, debitAcks))
+        { reason = CheckpointRejectReason.InvalidLedger; return CheckpointReceiptStatus.Retry; }
+        var requestedRespawn = checkpoint.Life.IsAlive;
+        var personalFight = checkpoint.Mecha.FightData;
+        if (player.CombatAuthoritative && !Multiplayer.Session.CombatAuthority.ValidatePersonalStocks(player.PlayerId, combatRevision, personalFight))
+        { reason = CheckpointRejectReason.CombatBaseline; return CheckpointReceiptStatus.Retry; }
+        if (Multiplayer.Session?.IsServer == true && !Multiplayer.Session.InventoryTransfers.Replay(player.PlayerId, inventoryTransferSequence, checkpoint.Mecha))
+        { reason = CheckpointRejectReason.InvalidLedger; return CheckpointReceiptStatus.Retry; }
+        if (!player.TryApplyPersonalSnapshot(checkpoint))
+        { reason = CheckpointRejectReason.InvalidSnapshot; return CheckpointReceiptStatus.Rejected; }
         if (Multiplayer.Session?.IsServer == true && player.CombatAuthoritative)
             Multiplayer.Session.CombatAuthority.AcceptCheckpoint(player.PlayerId, player, checkpoint, commandAck, debitAck,
                 itemAcks, debitAcks, requestedRespawn, personalFight, combatRevision);
         if (Multiplayer.Session?.IsServer == true) Multiplayer.Session.InventoryTransfers.Acknowledge(player.PlayerId, inventoryTransferSequence);
-        return true;
+        return CheckpointReceiptStatus.Accepted;
     }
 
     /// <summary>Loads saved life state. Snapshots with an incompatible PlayerData layout are treated as absent
@@ -102,8 +177,9 @@ internal sealed class PlayerLifeManager : IDisposable
         try
         {
             var snapshot = new PlayerData();
-            snapshot.Deserialize(new NetDataReader(bytes));
-            return snapshot;
+            var reader = new NetDataReader(bytes);
+            snapshot.Deserialize(reader);
+            return reader.AvailableBytes == 0 ? snapshot : null;
         }
         catch (Exception e)
         {
@@ -198,33 +274,37 @@ internal sealed class PlayerLifeManager : IDisposable
         using (Multiplayer.Session.World.GetRemotePlayersModels(out var models))
         {
             if (!models.TryGetValue(playerId, out var model)) return;
-            received[playerId] = life.Revision;
             using var scope = new RemoteWreckageScope(model);
             var player = model.PlayerInstance;
-            if (!life.IsAlive && player.isAlive)
+            // The combat channel (or the host actor) may already have changed player.isAlive.
+            // Model transitions follow their own last presented state, which cannot alias Life.
+            if (!life.IsAlive && (model.RespawnVisual.IsAlive || model.RespawnVisual.DeathCount != life.DeathCount))
             {
+                player.mechaArmorModel.ClearWreckages();
                 player.mecha.Kill();
                 player.mechaArmorModel.Kill();
             }
-            else if (life.IsAlive && !player.isAlive)
+            else if (life.IsAlive && (!model.RespawnVisual.IsAlive || !player.isAlive))
             {
                 player.mechaArmorModel.ClearWreckages();
-                player.mecha.Respawn();
+                // Preserve combat facts if that channel has already applied this respawn.
+                if (!player.isAlive) player.mecha.Respawn();
                 player.mechaArmorModel.Respawn();
             }
             player.isAlive = life.IsAlive;
             player.deathCount = life.DeathCount;
             player.timeSinceKilled = life.TimeSinceKilled;
             player.invincibleTicks = life.InvincibleTicks;
-            if (model.RespawnVisual.Observe(model.Life, life)) player.mechaArmorModel.PrepareRespawn();
+            if (model.RespawnVisual.Observe(life)) player.mechaArmorModel.PrepareRespawn();
             model.Life = life;
+            received[playerId] = life.Revision;
         }
     }
 
     public static void TickRemote(RemotePlayerModel model)
     {
         var life = model.Life;
-        if (model.PlayerInstance.isAlive) return;
+        if (model.RespawnVisual.IsAlive) return;
         using var scope = new RemoteWreckageScope(model);
         var armor = model.PlayerInstance.mechaArmorModel;
         if (life.RespawnMode == 2) armor.WreckagesRespawnLogic(model.RespawnVisual.Advance());
@@ -238,8 +318,8 @@ internal sealed class PlayerLifeManager : IDisposable
     public void Remove(ushort playerId) => received.Remove(playerId);
     public void Dispose()
     {
+        afterExitCheckpoint = null;
         pending = null; received.Clear();
-        refusedSnapshotPlayers.Clear();
         PlayerLifeData.CurrentTransactionId = "";
         PlayerLifeData.CurrentRedeployItemsDropped = false;
     }

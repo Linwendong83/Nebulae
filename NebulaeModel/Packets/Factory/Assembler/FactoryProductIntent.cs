@@ -2,7 +2,7 @@ using System;
 
 namespace NebulaeModel.Packets.Factory.Assembler;
 
-internal enum FactoryInteractionKind : byte { Withdraw, Deposit, Recipe, Acceleration, InputWithdraw }
+internal enum FactoryInteractionKind : byte { Withdraw, Deposit, Recipe, Acceleration, InputWithdraw, FighterPort }
 
 internal readonly struct FactoryProductIntent
 {
@@ -32,6 +32,12 @@ internal readonly struct FactoryProductIntent
         if (bytes?.Length != 26 || bytes[25] > 1) return false;
         intent = new FactoryProductIntent((FactoryInteractionKind)bytes[0], BitConverter.ToInt32(bytes, 1), BitConverter.ToInt32(bytes, 5),
             BitConverter.ToInt32(bytes, 9), BitConverter.ToInt32(bytes, 13), BitConverter.ToInt32(bytes, 17), BitConverter.ToInt32(bytes, 21), bytes[25] == 1);
+        if (intent.Kind == FactoryInteractionKind.FighterPort)
+            return (intent.Recipe == -5 || intent.Recipe == -6) && intent.Slot >= 0 && intent.Slot < 8 * 256 &&
+                intent.Slot % 256 < 64 && intent.Item >= 0 && intent.Count >= 0 && intent.Inc >= 0 &&
+                (long)intent.Inc <= (long)intent.Count * 10 && intent.NextRecipe >= 0 && intent.NextRecipe < 16 &&
+                (intent.NextRecipe & 3) <= 2 && !intent.Hand &&
+                ((intent.NextRecipe & 3) == 2 ? intent.Count == 0 && intent.Inc == 0 : (intent.Count == 0) == (intent.Item == 0));
         if (intent.Kind > FactoryInteractionKind.InputWithdraw || intent.Recipe < -4 || intent.Inc < 0 || (long)intent.Inc > (long)intent.Count * 10) return false;
         if (intent.Recipe <= -3 && (intent.Kind is not (FactoryInteractionKind.Withdraw or FactoryInteractionKind.Deposit) || intent.Slot != 0)) return false;
         if (intent.Recipe == -2 && (intent.Kind is not (FactoryInteractionKind.Withdraw or FactoryInteractionKind.Deposit) || intent.Kind == FactoryInteractionKind.Deposit && !intent.Hand)) return false;

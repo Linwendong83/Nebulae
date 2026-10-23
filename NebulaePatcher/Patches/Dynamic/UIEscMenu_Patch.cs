@@ -39,16 +39,32 @@ internal class UIEscMenu_Patch
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(UIEscMenu.OnButton5Click))]
-    public static void OnButton5Click_Prefix()
+    public static bool OnButton5Click_Prefix(UIEscMenu __instance)
     {
+        if (DeferClientExit(() => __instance.OnButton5Click())) return false;
         QuitGame();
+        return true;
     }
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(UIEscMenu.OnButton6Click))]
-    public static void OnButton6Click_Prefix()
+    public static bool OnButton6Click_Prefix(UIEscMenu __instance)
     {
+        if (DeferClientExit(() => __instance.OnButton6Click())) return false;
         QuitGame();
+        return true;
+    }
+
+    private static bool DeferClientExit(System.Action complete)
+    {
+        if (!Multiplayer.IsActive || !Multiplayer.Session.IsClient || GameMain.mainPlayer?.mecha == null) return false;
+        if (!Multiplayer.Session.Life.IsExiting)
+        {
+            UIRealtimeTip.Popup("Saving personal progress...".Translate());
+            NebulaeWorld.GameStates.LocalPlayerPreferences.SaveDashboard();
+            Multiplayer.Session.Life.BeginExit(() => { QuitGame(); complete(); });
+        }
+        return true;
     }
 
     private static void QuitGame()
@@ -65,8 +81,6 @@ internal class UIEscMenu_Patch
         else if (GameMain.mainPlayer?.mecha != null)
         {
             NebulaeWorld.GameStates.LocalPlayerPreferences.SaveDashboard();
-            GameMain.mainPlayer.mecha.lab.ManageTakeback(); // Refund items to player package
-            Thread.Sleep(100); // Wait for async packet send
         }
         PlanetFactory_Transpiler.CheckPopupPresent.Clear();
         PlanetFactory_Transpiler.FaultyVeins.Clear();

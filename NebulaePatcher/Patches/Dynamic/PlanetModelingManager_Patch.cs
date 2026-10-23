@@ -45,7 +45,6 @@ internal class PlanetModelingManager_Patch
         }
         planet.factoryLoading = true;
         var begin = manager.Loads.Begin(planet.id, planet.factory == null);
-        manager.BeginLoad(planet.id);
 
         // do this here to match the patch in GPUInstancingManager_Patch.cs
         // as we sync entity placement in realtime when players change something
@@ -67,9 +66,8 @@ internal class PlanetModelingManager_Patch
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(PlanetModelingManager.LoadingPlanetFactoryMain))]
-    public static bool LoadingFactory_Prefix(PlanetData planet, out long __state)
+    public static bool LoadingFactory_Prefix(PlanetData planet)
     {
-        __state = NebulaeModel.DataStructures.LoadingTimings.Now;
         if (!Multiplayer.IsActive || Multiplayer.Session.IsServer || NebulaeWorld.Planet.PlanetManager.LoadingStage == 0) return true;
         Multiplayer.Session.Planets.ModelLoader.Step(planet,
             new NebulaeModel.DataStructures.WorkBudget(Multiplayer.Session.JoinSync.CanInteract && Multiplayer.Session.IsGameLoaded ? 4 : 12));
@@ -78,10 +76,9 @@ internal class PlanetModelingManager_Patch
 
     [HarmonyPostfix]
     [HarmonyPatch(nameof(PlanetModelingManager.LoadingPlanetFactoryMain))]
-    public static void LoadingFactory_Postfix(PlanetData planet, long __state)
+    public static void LoadingFactory_Postfix(PlanetData planet)
     {
         if (!Multiplayer.IsActive) return;
-        Multiplayer.Session.Planets.Timings.Record("factory-step", NebulaeModel.DataStructures.LoadingTimings.Elapsed(__state));
         if (planet.factoryLoaded) Multiplayer.Session.Planets.CompleteFactory(planet);
     }
 

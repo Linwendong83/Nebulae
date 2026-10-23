@@ -51,6 +51,7 @@ internal class BuildToolManager : IDisposable
         {
             return;
         }
+        using var context = new FactoryOperationScope(pab, buildTool);
         Multiplayer.Session.Factories.TargetPlanet = packet.PlanetId;
         Multiplayer.Session.Factories.PacketAuthor = packet.AuthorId;
 
@@ -88,8 +89,11 @@ internal class BuildToolManager : IDisposable
 
         //Set temporary Local Planet / Factory data that are needed for original methods CheckBuildConditions() and CreatePrebuilds()
         buildTool.factory = planet.factory;
+        buildTool.planet = planet;
         pab.factory = planet.factory;
+        pab.planet = planet; pab.planetAux = planet.aux;
         pab.noneTool.factory = planet.factory;
+        pab.noneTool.planet = planet;
         if (Multiplayer.Session.LocalPlayer.IsHost)
         {
             // Only the server needs to set these
@@ -104,6 +108,12 @@ internal class BuildToolManager : IDisposable
             GameMain.mainPlayer.mecha.buildArea = float.MaxValue;
             canBuild = CheckBuildingConnections(buildTool.buildPreviews, planet.factory.entityPool,
                 planet.factory.prebuildPool);
+            if (canBuild)
+            {
+                var previews = incomingBlueprintEvent && packet.TryGetBuildPreviews(out var blueprintPreviews)
+                    ? blueprintPreviews : buildTool.buildPreviews;
+                canBuild = GeothermalPlacement.Validate(planet.factory, previews);
+            }
             if (!canBuild)
             {
                 Log.Warn($"CreatePrebuildsRequest: request do not pass connections test on planet {planet.id}");

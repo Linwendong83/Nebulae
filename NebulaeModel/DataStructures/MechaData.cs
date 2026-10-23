@@ -14,6 +14,9 @@ internal class MechaData : IMechaData
 {
     private const int HandMarker = 0x48414E44;
     private const int ResearchMarker = 0x4C414250;
+    private const int FuelMarker = 0x4655454C;
+    public int ReactorItemId { get; set; }
+    public int ReactorItemInc { get; set; }
     public Dictionary<int, int> ResearchPoints { get; } = new();
     public int HandItem { get; set; }
     public int HandCount { get; set; }
@@ -30,6 +33,8 @@ internal class MechaData : IMechaData
         SandCount = player.sandCount;
         CoreEnergy = player.mecha.coreEnergy;
         ReactorEnergy = player.mecha.reactorEnergy;
+        ReactorItemId = player.mecha.reactorItemId;
+        ReactorItemInc = player.mecha.reactorItemInc;
         ReactorStorage = player.mecha.reactorStorage;
         WarpStorage = player.mecha.warpStorage;
         Forge = player.mecha.forge;
@@ -93,6 +98,7 @@ internal class MechaData : IMechaData
             wr.Write(HandMarker); wr.Write(HandItem); wr.Write(HandCount); wr.Write(HandInc);
             wr.Write(ResearchMarker); wr.Write(ResearchPoints.Count);
             foreach (var item in ResearchPoints) { wr.Write(item.Key); wr.Write(item.Value); }
+            wr.Write(FuelMarker); wr.Write(ReactorItemId); wr.Write(ReactorItemInc);
         }
         var export = ms.ToArray();
         writer.Put(export.Length);
@@ -101,6 +107,7 @@ internal class MechaData : IMechaData
 
     public void Deserialize(INetDataReader reader)
     {
+        ReactorItemId = ReactorItemInc = 0;
         TechBonuses = new PlayerTechBonuses();
         TechBonuses.Deserialize(reader);
         SandCount = reader.GetLong();
@@ -132,6 +139,7 @@ internal class MechaData : IMechaData
         ConstructionModule.Import(br);
         ReadHand(br);
         ReadResearch(br);
+        ReadFuel(br);
     }
 
     private void ReadHand(BinaryReader reader)
@@ -148,7 +156,7 @@ internal class MechaData : IMechaData
         ResearchPoints.Clear();
         if (reader.BaseStream.Length - reader.BaseStream.Position < 8 || reader.ReadInt32() != ResearchMarker) throw new InvalidDataException("Invalid personal research checkpoint.");
         var entries = reader.ReadInt32();
-        if (entries < 0 || entries > 512 || reader.BaseStream.Length - reader.BaseStream.Position != (long)entries * 8) throw new InvalidDataException("Invalid research inventory length.");
+        if (entries < 0 || entries > 512 || reader.BaseStream.Length - reader.BaseStream.Position < (long)entries * 8) throw new InvalidDataException("Invalid research inventory length.");
         for (var i = 0; i < entries; i++)
         {
             var item = reader.ReadInt32(); var points = reader.ReadInt32();
@@ -165,6 +173,16 @@ internal class MechaData : IMechaData
         ReadHand(reader);
         if (reader.BaseStream.Position == reader.BaseStream.Length) return;
         ReadResearch(reader);
+        if (reader.BaseStream.Position < reader.BaseStream.Length) ReadFuel(reader);
+    }
+
+    private void ReadFuel(BinaryReader reader)
+    {
+        if (reader.BaseStream.Length - reader.BaseStream.Position != 12 || reader.ReadInt32() != FuelMarker)
+            throw new InvalidDataException("Invalid reactor checkpoint.");
+        ReactorItemId = reader.ReadInt32(); ReactorItemInc = reader.ReadInt32();
+        if (ReactorItemId < 0 || ReactorItemInc < 0 || ReactorItemInc > 10 || ReactorItemId == 0 && ReactorItemInc != 0)
+            throw new InvalidDataException("Invalid reactor fuel.");
     }
 
     private StorageComponent HandStorage(int item)
@@ -197,6 +215,7 @@ internal class MechaData : IMechaData
 
     private void InitializePayload()
     {
+        ReactorItemId = ReactorItemInc = 0;
         FightData = new MechaFightData();
         Inventory = new StorageComponent(4);
         DeliveryPackage = new DeliveryPackage();
@@ -229,6 +248,8 @@ internal class MechaData : IMechaData
         }
         destination.mecha.coreEnergy = CoreEnergy;
         destination.mecha.reactorEnergy = ReactorEnergy;
+        destination.mecha.reactorItemId = ReactorItemId;
+        destination.mecha.reactorItemInc = ReactorItemInc;
         destination.mecha.forge = Forge;
         destination.mecha.reactorStorage = ReactorStorage;
         destination.mecha.warpStorage = WarpStorage;
@@ -246,6 +267,7 @@ internal class MechaData : IMechaData
 
     public void Import(INetDataReader reader, int revision)
     {
+        ReactorItemId = ReactorItemInc = 0;
         TechBonuses = new PlayerTechBonuses();
         if (revision >= 8) TechBonuses.Deserialize(reader);
         else TechBonuses.Import(reader, revision);

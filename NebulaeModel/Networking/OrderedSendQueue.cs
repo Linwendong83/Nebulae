@@ -1,7 +1,7 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
-using NebulaeModel.DataStructures;
 
 namespace NebulaeModel.Networking;
 
@@ -19,10 +19,6 @@ internal sealed class OrderedSendQueue
     private readonly Func<byte[][], byte[]> combine;
     private readonly Func<byte[], bool> canCombine;
     private bool preparing, sending, stopped, failed;
-    private long serializedBytes, wireBytes;
-    public long SerializedBytes => Interlocked.Read(ref serializedBytes);
-    public long WireBytes => Interlocked.Read(ref wireBytes);
-    public LoadingTimings Timings { get; } = new();
     internal bool PreparationBacklogged
     {
         get { lock (packets) return packets.Count >= 8 && ready.Count == 0; }
@@ -118,7 +114,6 @@ internal sealed class OrderedSendQueue
                 }
                 else
                 {
-                    var materializeStarted = LoadingTimings.Now;
                     var packet = pending.Factory == null ? pending.Bytes : pending.Factory();
                     if (packet != null && combine != null && pending.Groupable && packet.Length < RealtimePacketBatch.MaxBytes)
                     {
@@ -136,7 +131,6 @@ internal sealed class OrderedSendQueue
                         }
                         if (group.Count > 1) packet = combine(group.ToArray());
                     }
-                    Timings.Record("materialize", LoadingTimings.Elapsed(materializeStarted));
                     framed = packet == null ? null : Prepare(packet);
                 }
                 if (framed == null) continue;
@@ -163,7 +157,6 @@ internal sealed class OrderedSendQueue
         try
         {
             lock (packets) { if (stopped) return; }
-            Interlocked.Add(ref wireBytes, bytes.Length);
             send(bytes, Complete);
         }
         catch (Exception error) { Fail(error); }
@@ -171,11 +164,7 @@ internal sealed class OrderedSendQueue
 
     private byte[] Prepare(byte[] packet)
     {
-        var start = LoadingTimings.Now;
-        var framed = prepare(packet);
-        if (framed != null) Interlocked.Add(ref serializedBytes, packet.Length);
-        Timings.Record("compression", LoadingTimings.Elapsed(start));
-        return framed;
+        return prepare(packet);
     }
 
     private void Complete(bool success)
@@ -211,12 +200,12 @@ internal sealed class OrderedSendQueue
 
     public bool Flush(int timeoutMilliseconds)
     {
-        var start = LoadingTimings.Now;
+        var start = Stopwatch.GetTimestamp();
         lock (packets)
         {
             while (preparing || sending || packets.Count > 0 || ready.Count > 0 || batch != null)
             {
-                var remaining = timeoutMilliseconds - (int)LoadingTimings.Elapsed(start);
+                var remaining = timeoutMilliseconds - (int)((Stopwatch.GetTimestamp() - start) * 1000 / Stopwatch.Frequency);
                 if (remaining <= 0 || !Monitor.Wait(packets, remaining)) return false;
             }
             return !failed && !stopped;

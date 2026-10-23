@@ -1,4 +1,6 @@
 {
+  "Saving personal progress...": "正在保存个人进度…",
+  "More": "更多",
   "Synchronizing world changes ({0})": "正在同步世界变化（{0}）",
   "Receiving star cluster data": "正在接收星区数据",
   "Receiving star cluster data {0:F1}/{1:F1} MB": "正在接收星区数据 {0:F1}/{1:F1} MB",
@@ -268,7 +270,6 @@
   " (Host)": "（服务器）",
   " (Client)": "（客户端）",
   "Ping: {0}ms": "延迟：{0} 毫秒",
-  "Downloading {0:n0} KB ({1:F1}%)": "正在下载 {0:n0} KB（{1:F1}%）",
   "(Desync) PrebuildId mismatch {0} != {1} on planet {2}. Please reconnect!": "（不同步）行星 {2} 上的预建造 ID 不一致：{0} != {1}。请重新连接！",
   "DestructEntityRequest rejected on planet {0} for object {1}: {2} != {3}": "行星 {0} 上对象 {1} 的拆除请求被拒绝：{2} != {3}",
   "UpgradeEntityRequest rejected on planet {0} for object {1}: {2} != {3}": "行星 {0} 上对象 {1} 的升级请求被拒绝：{2} != {3}",

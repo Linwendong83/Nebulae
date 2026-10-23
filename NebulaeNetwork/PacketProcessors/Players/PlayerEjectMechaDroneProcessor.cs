@@ -12,9 +12,7 @@ internal class PlayerEjectMechaDroneProcessor : PacketProcessor<PlayerEjectMecha
 {
     protected override void ProcessPacket(PlayerEjectMechaDronePacket packet, NebulaeConnection conn)
     {
-        // Builds must use the generation-checked BuildDroneLaunch protocol.
-        if (packet.TargetObjectId <= 0 || packet.Next1ObjectId != 0 ||
-            packet.Next2ObjectId != 0 || packet.Next3ObjectId != 0) return;
+        if (packet.TargetObjectId <= 0) return;
         if (IsHost)
         {
             var sender = Players.Get(conn);
@@ -25,6 +23,7 @@ internal class PlayerEjectMechaDroneProcessor : PacketProcessor<PlayerEjectMecha
         if (factory == null || packet.TargetObjectId >= factory.entityCursor ||
             factory.entityPool[packet.TargetObjectId].id != packet.TargetObjectId) return;
 
-        Multiplayer.Session.Drones.EjectMechaDroneFromOtherPlayer(packet);
+        Multiplayer.Session.Drones.EjectMechaDroneFromOtherPlayer(packet.PlayerId, packet.PlanetId,
+            packet.TargetObjectId, 0, 0, 0, packet.DronePriority);
     }
 }

@@ -1,10 +1,17 @@
 using NebulaeModel.Networking;
 using NebulaeModel.Packets;
 using NebulaeModel.Packets.Factory;
-using NebulaeModel.Packets.Players;
 using NebulaeWorld;
 
 namespace NebulaeNetwork.PacketProcessors.Factory;
+internal sealed class PrebuildInstanceProcessor : PacketProcessor<PrebuildInstancePacket>
+{
+    protected override void ProcessPacket(PrebuildInstancePacket packet, NebulaeConnection conn)
+    {
+        if (!IsHost) Multiplayer.Session.BuildDispatch.Instances.Apply(packet);
+    }
+}
+
 internal sealed class BuildTargetAssignmentProcessor : PacketProcessor<BuildTargetAssignmentPacket>
 {
     protected override void ProcessPacket(BuildTargetAssignmentPacket packet, NebulaeConnection conn)
@@ -58,8 +65,7 @@ internal sealed class BuildDroneLaunchProcessor : PacketProcessor<BuildDroneLaun
 
         if (packet.PlayerId == Multiplayer.Session.LocalPlayer.Id ||
             !Multiplayer.Session.BuildDispatch.TryRenderRemoteLaunch(packet)) return;
-        Multiplayer.Session.Drones.EjectMechaDroneFromOtherPlayer(
-            new PlayerEjectMechaDronePacket(packet.PlayerId, packet.PlanetId, packet.TargetObjectId,
-                packet.Next1ObjectId, packet.Next2ObjectId, packet.Next3ObjectId, packet.DronePriority));
+        Multiplayer.Session.Drones.EjectMechaDroneFromOtherPlayer(packet.PlayerId, packet.PlanetId,
+            packet.TargetObjectId, packet.Next1ObjectId, packet.Next2ObjectId, packet.Next3ObjectId, packet.DronePriority);
     }
 }

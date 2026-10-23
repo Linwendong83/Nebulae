@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -32,7 +32,10 @@ internal sealed class JoinDataTransfer
         var codec = new NebulaeNetPacketProcessor();
         var begin = new JoinDataTransferBegin
         {
-            Generation = generation, TransferId = transferId, Stage = (byte)stage, PlanetId = planetId,
+            Generation = generation,
+            TransferId = transferId,
+            Stage = (byte)stage,
+            PlanetId = planetId,
             MessageLengths = prepared.Select(bytes => bytes.Length).ToArray()
         };
         Validate(begin, generation);
@@ -46,7 +49,11 @@ internal sealed class JoinDataTransfer
                 Buffer.BlockCopy(bytes, start, data, 0, data.Length);
                 yield return PacketCompression.WrapForSend(codec.Write(new JoinDataTransferChunk
                 {
-                    Generation = generation, TransferId = transferId, MessageIndex = i, Offset = start, Data = data
+                    Generation = generation,
+                    TransferId = transferId,
+                    MessageIndex = i,
+                    Offset = start,
+                    Data = data
                 }));
             }
             // A transfer retains at most its unsent messages, plus the current chunk.

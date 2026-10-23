@@ -7,6 +7,7 @@ using NebulaeModel.DataStructures;
 using NebulaeModel.Logger;
 using NebulaeModel.Networking;
 using NebulaeModel.Packets.Statistics;
+using NebulaeModel.Utils;
 using UnityEngine;
 #pragma warning disable IDE0007 // Use implicit type
 #pragma warning disable IDE1006 // Naming rule
@@ -401,7 +402,10 @@ internal class StatisticsManager : IDisposable
         var tmpEntries = referenceSpeedTip.loadedEntryDatas;
         var tmpSubEntries = referenceSpeedTip.loadedSubTipDatas;
         referenceSpeedTip.loadedEntryDatas = referenceEntryScratch ??= new RefSpeedTipEntryData[12000];
-        referenceSpeedTip.loadedSubTipDatas = referenceSubScratch ??= new RefSpeedSubTipEntryData[25700];
+        var astroCapacity = GalaxyLimits.AstroCapacity(GameMain.galaxy.starCount);
+        if (referenceSubScratch == null || referenceSubScratch.Length < astroCapacity)
+            Array.Resize(ref referenceSubScratch, astroCapacity);
+        referenceSpeedTip.loadedSubTipDatas = referenceSubScratch;
 
         try
         {
@@ -469,6 +473,7 @@ internal class StatisticsManager : IDisposable
     public void SetReferenceSpeedTip(BinaryReader br, int itemId, int astroFilter, int itemCycle, int productionProtoId)
     {
         if (referenceSpeedTip == null) return;
+        GalaxyLimits.EnsureReferenceCapacity(referenceSpeedTip);
         if (referenceSpeedTip.itemId != itemId || referenceSpeedTip.astroFilter != astroFilter || (int)referenceSpeedTip.itemCycle != itemCycle) return;
         if (productionProtoId != 0 && referenceSpeedTip.productionProtoId != productionProtoId) return;
 
@@ -522,10 +527,7 @@ internal class StatisticsManager : IDisposable
         {
             referenceSpeedTip.loadedEntryDatas = new RefSpeedTipEntryData[12000];
         }
-        if (referenceSpeedTip.loadedSubTipDatas == null)
-        {
-            referenceSpeedTip.loadedSubTipDatas = new RefSpeedSubTipEntryData[25700];
-        }
+        GalaxyLimits.EnsureReferenceCapacity(referenceSpeedTip);
         Array.Clear(referenceSpeedTip.loadedEntryDatas, 0, referenceSpeedTip.loadedEntryDatas.Length);
         Array.Clear(referenceSpeedTip.loadedSubTipDatas, 0, referenceSpeedTip.loadedSubTipDatas.Length);
         var data = GameMain.data;

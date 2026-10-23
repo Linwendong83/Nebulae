@@ -16,6 +16,7 @@ internal sealed class ReplicationCandidateIndex
     private readonly List<ObjectKey>[] due = new List<ObjectKey>[EnemyStatePolicy.CheckpointIntervalTicks];
     private object identity;
     private long auditTick;
+    private volatile int dirtyCount;
 
     public void Rebuild(object poolIdentity, long tick, IReadOnlyList<ObjectKey> keys)
     {
@@ -23,6 +24,7 @@ internal sealed class ReplicationCandidateIndex
         {
             identity = poolIdentity; auditTick = tick;
             live.Clear(); dirty.Clear(); retired.Clear();
+            dirtyCount = 0;
             fast.Clear();
             frequent.Clear();
             foreach (var bucket in due) bucket?.Clear();
@@ -35,16 +37,18 @@ internal sealed class ReplicationCandidateIndex
     {
         lock (gate)
         {
-            if (identity == null || !ReferenceEquals(identity, poolIdentity) || count != live.Count ||
-                tick < auditTick || tick - auditTick >= AuditIntervalTicks) return false;
+            if (identity == null || !ReferenceEquals(identity, poolIdentity)) { return false; }
+            if (count != live.Count) { return false; }
+            if (tick < auditTick) { return false; }
+            if (tick - auditTick >= AuditIntervalTicks) { return false; }
             candidates.AddRange(fast);
-            foreach (var key in dirty) if (!fast.Contains(key)) candidates.Add(key);
+            foreach (var key in dirty) if (!fast.Contains(key)) { candidates.Add(key); }
             var units = unitDue[(int)(tick % unitDue.Length)];
             if (units != null)
-                foreach (var key in units) if (!dirty.Contains(key) && !fast.Contains(key)) candidates.Add(key);
+                foreach (var key in units) if (!dirty.Contains(key) && !fast.Contains(key)) { candidates.Add(key); }
             var bucket = due[(int)(tick % due.Length)];
             if (bucket != null)
-                foreach (var key in bucket) if (!dirty.Contains(key) && !fast.Contains(key) && !frequent.Contains(key)) candidates.Add(key);
+                foreach (var key in bucket) if (!dirty.Contains(key) && !fast.Contains(key) && !frequent.Contains(key)) { candidates.Add(key); }
             removed.AddRange(retired); retired.Clear();
             return true;
         }
@@ -56,12 +60,13 @@ internal sealed class ReplicationCandidateIndex
         {
             if (live.TryGetValue(key.NativeId, out var previous))
             {
-                if (previous == key) { if (changed) dirty.Add(key); return; }
+                if (previous == key) { if (changed) dirty.Add(key); dirtyCount = dirty.Count; return; }
                 Remove(previous);
             }
             live[key.NativeId] = key;
             (due[key.NativeId % due.Length] ??= new List<ObjectKey>()).Add(key);
             if (changed) dirty.Add(key);
+            dirtyCount = dirty.Count;
         }
     }
 
@@ -71,6 +76,7 @@ internal sealed class ReplicationCandidateIndex
         {
             if (live.TryGetValue(key.NativeId, out var current) && current == key) live.Remove(key.NativeId);
             due[key.NativeId % due.Length]?.Remove(key); dirty.Remove(key); fast.Remove(key); retired.Add(key);
+            dirtyCount = dirty.Count;
             frequent.Remove(key); unitDue[key.NativeId % unitDue.Length]?.Remove(key);
         }
     }
@@ -83,10 +89,6 @@ internal sealed class ReplicationCandidateIndex
             UpdateFrequent(key, frequentValue);
         }
     }
-    public void SetFrequent(ObjectKey key, bool value)
-    {
-        lock (gate) UpdateFrequent(key, value);
-    }
     private void UpdateFrequent(ObjectKey key, bool value)
     {
         if (value)
@@ -95,6 +97,19 @@ internal sealed class ReplicationCandidateIndex
         }
         else if (frequent.Remove(key)) unitDue[key.NativeId % unitDue.Length]?.Remove(key);
     }
-    public void Changed(int id) { lock (gate) { if (live.TryGetValue(id, out var key)) dirty.Add(key); } }
-    public void Sampled(ObjectKey key) { lock (gate) dirty.Remove(key); }
+    public void Changed(int id)
+    {
+        lock (gate)
+        {
+            if (live.TryGetValue(id, out var key)) dirty.Add(key);
+            dirtyCount = dirty.Count;
+        }
+    }
+    public void Sampled(ObjectKey key)
+    {
+        // A zero observation only skips a removal. A concurrent new hint is retained for
+        // the next read, so this path cannot erase a change that was not sampled.
+        if (dirtyCount == 0) return;
+        lock (gate) { dirty.Remove(key); dirtyCount = dirty.Count; }
+    }
 }

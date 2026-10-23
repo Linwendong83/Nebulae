@@ -10,7 +10,9 @@ internal static class AtomicFile
         using var sha = System.Security.Cryptography.SHA256.Create();
         return BitConverter.ToString(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(identity))).Replace("-", "");
     }
-    public static void Write(string path, byte[] bytes)
+    public static void Write(string path, byte[] bytes) => Write(path, bytes, bytes.Length);
+
+    public static void Write(string path, byte[] bytes, int count)
     {
         var directory = Path.GetDirectoryName(Path.GetFullPath(path));
         Directory.CreateDirectory(directory);
@@ -20,7 +22,7 @@ internal static class AtomicFile
         {
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                stream.Write(bytes, 0, bytes.Length);
+                stream.Write(bytes, 0, count);
                 stream.Flush(true);
             }
             if (File.Exists(path)) File.Replace(temporary, path, path + ".bak");

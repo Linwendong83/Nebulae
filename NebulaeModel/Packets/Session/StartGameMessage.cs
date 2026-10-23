@@ -9,12 +9,14 @@ namespace NebulaeModel.Packets.Session;
 [NebulaeModel.Networking.PacketId(16741000459130034613UL)]
 internal class StartGameMessage
 {
-    public StartGameMessage() { }
+    public StartGameMessage() : this(false, null) { }
 
     public StartGameMessage(bool isAllowedToStart, PlayerData localPlayerData, bool isNewPlayer = false)
     {
         IsAllowedToStart = isAllowedToStart;
-        LocalPlayerData = localPlayerData;
+        // Nested PlayerData has no null marker on the wire. Requests and busy responses
+        // still need a complete placeholder so the receiver can read the trailing bool.
+        LocalPlayerData = localPlayerData ?? new PlayerData(0, 0);
         IsNewPlayer = isNewPlayer;
     }
 

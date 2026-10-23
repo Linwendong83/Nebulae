@@ -11,7 +11,7 @@ internal static class TurretStatePolicy
     public static bool SameCommittedFacts(in TurretState a, in TurretState b) =>
         a.EntityId == b.EntityId && a.ModelIndex == b.ModelIndex && a.Type == b.Type &&
         a.Group == b.Group && a.VsSettings == b.VsSettings && a.PhasePos == b.PhasePos &&
-        a.TargetId == b.TargetId && a.TargetAstro == b.TargetAstro && a.TargetType == b.TargetType &&
+        a.TargetId == b.TargetId && a.TargetAstro == b.TargetAstro && a.TargetType == b.TargetType && a.TargetGeneration == b.TargetGeneration &&
         (a.Flags & 4) == (b.Flags & 4) &&
         a.ItemId == b.ItemId && a.ItemCount == b.ItemCount && a.ItemInc == b.ItemInc &&
         a.BulletCount == b.BulletCount && a.ItemBulletCount == b.ItemBulletCount &&

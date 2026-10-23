@@ -80,6 +80,11 @@ internal class CommandLineOptions
 
     public bool VerifyStartupRequirements()
     {
+        if (NewGameDesc != null && (NewGameDesc.starCount < Utils.GalaxyLimits.MinStars || NewGameDesc.starCount > Utils.GalaxyLimits.MaxStars))
+        {
+            Log.Error($">> Star count must be between {Utils.GalaxyLimits.MinStars} and {Utils.GalaxyLimits.MaxStars}.");
+            return false;
+        }
         if (invalidStarNameLCID)
         {
             Log.Error(">> -star-name-lcid requires 0 (English) or 2052 (Simplified Chinese).");

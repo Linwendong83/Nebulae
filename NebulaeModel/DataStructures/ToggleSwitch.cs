@@ -24,11 +24,6 @@ internal sealed class ToggleSwitch : IToggle
         return toggle.Value;
     }
 
-    public Toggle On(bool conditional)
-    {
-        return new Toggle(this, conditional ? 1 : 0);
-    }
-
     internal readonly struct Toggle : IDisposable
     {
         private readonly ToggleSwitch value;

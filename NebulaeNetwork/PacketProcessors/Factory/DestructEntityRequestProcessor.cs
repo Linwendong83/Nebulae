@@ -17,6 +17,14 @@ internal class DestructEntityRequestProcessor : PacketProcessor<DestructEntityRe
 {
     protected override void ProcessPacket(DestructEntityRequest packet, NebulaeConnection conn)
     {
+        if (packet.CollectionBefore == null || packet.CollectionBefore.Length > NebulaeModel.DataStructures.VegetableCollectionState.MaxBytes) return;
+        if (!IsHost) Multiplayer.Session.Vegetation.InstallReplicaCollection(packet.AuthorId, packet.CollectionBefore);
+        if (IsHost)
+        {
+            var sender = Players.Get(conn, EConnectionStatus.Connected);
+            if (sender == null || sender.Id != packet.AuthorId || sender.Data.LocalPlanetId != packet.PlanetId ||
+                !Multiplayer.Session.Vegetation.AcceptCommand(sender.Id, packet.CommandSequence)) return;
+        }
         using (Multiplayer.Session.Factories.IsIncomingRequest.On())
         {
             var planet = GameMain.galaxy.PlanetById(packet.PlanetId);
@@ -51,6 +59,7 @@ internal class DestructEntityRequestProcessor : PacketProcessor<DestructEntityRe
                 return;
             }
 
+            using var context = new FactoryOperationScope(pab);
             Multiplayer.Session.Factories.TargetPlanet = packet.PlanetId;
             Multiplayer.Session.Factories.PacketAuthor = packet.AuthorId;
             var tmpFactory = pab.factory;

@@ -12,6 +12,13 @@ namespace NebulaePatcher.Patches.Dynamic;
 internal class MechaArmorModel_Patch
 {
     [HarmonyPostfix]
+    [HarmonyPatch(nameof(MechaArmorModel.Respawn))]
+    public static void Respawn_Postfix(MechaArmorModel __instance)
+    {
+        if (NebulaeWorld.Multiplayer.IsActive) NebulaeWorld.Combat.MechaInvincibilityVisual.RestoreAlive(__instance);
+    }
+
+    [HarmonyPostfix]
     [HarmonyPatch(nameof(MechaArmorModel.GameTickWreckages))]
     public static void EmptyWreckages_Postfix(MechaArmorModel __instance)
     {
@@ -62,15 +69,11 @@ internal class MechaArmorModel_Patch
         return true;
     }
 
-    private static readonly int InvincibleShaderId = Shader.PropertyToID("_Global_Player_Invicible");
-
     [HarmonyPostfix]
     [HarmonyPatch(nameof(MechaArmorModel.RefreshMaterialParametersDynamic))]
-    public static void RefreshMaterialParametersDynamic_Postfix()
+    public static void RefreshMaterialParametersDynamic_Postfix(MechaArmorModel __instance)
     {
-        // The Icarus shader reads this from $Globals, so the value reaches every mecha on screen.
-        // Vanilla writes it for the only local player; in multiplayer that lights everyone.
-        if (NebulaeWorld.Multiplayer.IsActive) Shader.SetGlobalInt(InvincibleShaderId, 0);
+        NebulaeWorld.Combat.MechaInvincibilityVisual.Apply(__instance);
     }
 
     [HarmonyPrefix]
@@ -86,11 +89,16 @@ internal class MechaArmorModel_Patch
                     Transform transform;
                     if (armorWreckage.isPart)
                     {
+                        if (__instance.partModels == null || armorWreckage.armorId < 0 || armorWreckage.armorId >= __instance.partModels.Length ||
+                            __instance.partModels[armorWreckage.armorId]?.part_renderer == null) continue;
                         transform = __instance.partModels[armorWreckage.armorId].transform;
                         armorWreckage.respawnMidPose.position = __instance.partModels[armorWreckage.armorId].part_renderer.bounds.center;
                     }
                     else
                     {
+                        if (__instance.boneModels == null || armorWreckage.armorId < 0 || armorWreckage.armorId >= __instance.boneModels.Length ||
+                            __instance.boneModels[armorWreckage.armorId]?.meshObject == null ||
+                            __instance.boneModels[armorWreckage.armorId].armorObject == null) continue;
                         transform = __instance.boneModels[armorWreckage.armorId].meshObject.transform;
                         armorWreckage.respawnMidPose.position = transform.position + __instance.boneModels[armorWreckage.armorId].armorObject.transform.up * 0.5f;
                     }

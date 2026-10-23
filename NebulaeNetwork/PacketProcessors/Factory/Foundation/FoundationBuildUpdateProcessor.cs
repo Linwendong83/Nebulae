@@ -19,12 +19,7 @@ internal class FoundationBuildUpdateProcessor : PacketProcessor<FoundationBuildU
 
     protected override void ProcessPacket(FoundationBuildUpdatePacket packet, NebulaeConnection conn)
     {
-        if (packet.ReformSize <= 0 || packet.ReformSize > 64 || packet.ReformIndices == null ||
-            packet.CollectionBefore == null || packet.CollectionBefore.Length > VegetableCollectionState.MaxBytes ||
-            packet.ReformIndices.Length > 4096 || packet.IsRestore && packet.IsCircle ||
-            !packet.IsCircle && packet.ReformIndices.Length < packet.ReformSize * packet.ReformSize ||
-            packet.IsCircle && (packet.CirclePointCount < 0 || packet.CirclePointCount > packet.ReformIndices.Length))
-            return;
+        if (!ValidBrush(packet)) return;
 
         var planet = GameMain.galaxy.PlanetById(packet.PlanetId);
         var factory = planet?.factory;
@@ -33,29 +28,32 @@ internal class FoundationBuildUpdateProcessor : PacketProcessor<FoundationBuildU
         if (IsHost)
         {
             var player = Players.Get(conn, EConnectionStatus.Connected);
-            if (player == null || player.Data.LocalStarId != planet.star.id) return;
+            if (player == null || player.Data.LocalPlanetId != packet.PlanetId) return;
+            if (packet.PitRuinId > 0 && (!factory.GetRemovableDFGBaseRuinIds().Contains(packet.PitRuinId) ||
+                packet.PitRuinGeneration <= 0 || Multiplayer.Session.AuthorityRuntime.RuinHost.Generation(packet.PlanetId, packet.PitRuinId) != packet.PitRuinGeneration)) return;
             author = player.Id;
+            if (!Multiplayer.Session.Vegetation.AcceptCommand(author, packet.CommandSequence)) return;
             var collection = Multiplayer.Session.Vegetation.GetRemote(author);
             if (collection == null) return;
             var canonicalBefore = VegetableCollectionState.Capture(collection);
-            if (!packet.CollectionBefore.SequenceEqual(canonicalBefore))
-            {
-                conn.SendPacket(new VegetableCollectionSnapshotPacket(canonicalBefore, true));
-                Multiplayer.Session.Server.Disconnect(conn, DisconnectionReason.InvalidData,
-                    "Vegetation collection is out of sync. Reconnect to reload the planet.");
-                return;
-            }
             packet.CollectionBefore = canonicalBefore;
         }
         else Multiplayer.Session.Vegetation.BeginReplay(packet.CollectionBefore);
 
+        var previousAuthor = Multiplayer.Session.Factories.PacketAuthor;
+        var previousPlanet = Multiplayer.Session.Factories.TargetPlanet;
+        var previousSpecify = GameMain.gpuiManager.specifyPlanet;
         try
         {
             Multiplayer.Session.Factories.PacketAuthor = author;
+            GameMain.gpuiManager.specifyPlanet = planet;
+            // Circle buffers have 400 entries in vanilla even though the search size is 40.
+            // Recompute into a full scratch buffer rather than treating it as a 40x40 brush.
+            if (packet.IsCircle) packet.ReformIndices = new int[packet.ReformSize * packet.ReformSize];
             // Increase reformPoints for mods that increase brush size over 10
-            if (packet.ReformSize * packet.ReformSize > reformPoints.Length)
+            if (Math.Max(packet.ReformSize * packet.ReformSize, packet.CirclePointCount) > reformPoints.Length)
             {
-                reformPoints = new Vector3[packet.ReformSize * packet.ReformSize];
+                reformPoints = new Vector3[Math.Max(packet.ReformSize * packet.ReformSize, packet.CirclePointCount)];
             }
             Array.Clear(reformPoints, 0, reformPoints.Length);
 
@@ -64,6 +62,8 @@ internal class FoundationBuildUpdateProcessor : PacketProcessor<FoundationBuildU
             {
                 factory.platformSystem.InitReformData();
             }
+            foreach (var index in packet.ReformIndices)
+                if (index < -1 || index >= factory.platformSystem.reformData.Length) return;
 
             Multiplayer.Session.Factories.TargetPlanet = packet.PlanetId;
             Multiplayer.Session.Factories.AddPlanetTimer(packet.PlanetId);
@@ -91,11 +91,18 @@ internal class FoundationBuildUpdateProcessor : PacketProcessor<FoundationBuildU
             }
             else //Remove pit
             {
-                factory.ComputeFlattenTerrainReform(reformPoints, center, packet.Radius, packet.CirclePointCount,
+                area = planet.aux.ReformSnapCircle(packet.ReformSize, packet.ReformType, packet.ReformColor,
+                    center, packet.Radius * packet.Radius, reformPoints, packet.ReformIndices, null, factory.platformSystem);
+                packet.CirclePointCount = area;
+                factory.ComputeFlattenTerrainReform(reformPoints, center, packet.Radius, area,
                     ref costSandCount, ref getSandCount, 3f, 1f);
             }
             using (Multiplayer.Session.Factories.IsIncomingRequest.On())
             {
+                if (packet.PitRuinId > 0 && (IsHost ||
+                    Multiplayer.Session.AuthorityRuntime.WorldReplica.TryFindKey(NebulaeModel.Authority.PoolKind.Ruin, packet.PlanetId, packet.PitRuinId, out var pitKey) &&
+                    (packet.PitRuinGeneration == 0 || pitKey.Generation == packet.PitRuinGeneration)))
+                    factory.enemySystem.RemoveBasePit(packet.PitRuinId);
                 if (packet.IsRestore)
                     factory.RestoreTerrainReform(center, packet.Radius, packet.ReformSize, packet.VeinBuried,
                         packet.Fade0);
@@ -125,16 +132,31 @@ internal class FoundationBuildUpdateProcessor : PacketProcessor<FoundationBuildU
         }
         finally
         {
-            Multiplayer.Session.Factories.PacketAuthor = SessionSentinels.AUTHOR_NONE;
-            Multiplayer.Session.Factories.TargetPlanet = SessionSentinels.PLANET_NONE;
+            Multiplayer.Session.Factories.PacketAuthor = previousAuthor;
+            Multiplayer.Session.Factories.TargetPlanet = previousPlanet;
+            GameMain.gpuiManager.specifyPlanet = previousSpecify;
             if (!IsHost) Multiplayer.Session.Vegetation.EndReplay();
         }
 
         if (IsHost)
         {
             Multiplayer.Session.Server.SendPacketToStarExclude(packet, planet.star.id, conn);
-            var authoritative = Multiplayer.Session.Vegetation.CaptureRemote(author);
-            conn.SendPacket(new VegetableCollectionSnapshotPacket(authoritative, true));
+            Multiplayer.Session.Vegetation.CaptureRemote(author);
         }
     }
+
+    internal static bool ValidBrush(FoundationBuildUpdatePacket packet) => packet != null &&
+        !(packet.ReformSize <= 0 || packet.ReformSize > 64 || packet.ReformIndices == null ||
+          packet.CollectionBefore == null || packet.CollectionBefore.Length > VegetableCollectionState.MaxBytes ||
+          packet.ReformIndices.Length > 4096 || packet.IsRestore && packet.IsCircle ||
+          float.IsNaN(packet.Radius) || float.IsInfinity(packet.Radius) || packet.Radius <= 0 || packet.Radius > 256 ||
+          float.IsNaN(packet.Fade0) || float.IsInfinity(packet.Fade0) || packet.Fade0 < 0 || packet.Fade0 > 64 ||
+          packet.PitRuinId < 0 || packet.PitRuinGeneration < 0 || !packet.IsCircle && (packet.PitRuinId != 0 || packet.PitRuinGeneration != 0) ||
+          packet.ReformType < 0 || packet.ReformType > 7 || packet.ReformColor < 0 || packet.ReformColor > 31 ||
+          !packet.IsCircle && packet.ReformIndices.Length < packet.ReformSize * packet.ReformSize ||
+          !Finite(packet.GroundTestPos) || !Finite(packet.ExtraCenter) ||
+          packet.IsCircle && (packet.CirclePointCount < 0 || packet.CirclePointCount > packet.ReformIndices.Length));
+
+    private static bool Finite(Float3 value) => !float.IsNaN(value.x) && !float.IsInfinity(value.x) &&
+        !float.IsNaN(value.y) && !float.IsInfinity(value.y) && !float.IsNaN(value.z) && !float.IsInfinity(value.z);
 }

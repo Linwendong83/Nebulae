@@ -154,8 +154,13 @@ internal static class UIMainMenu_Patch
         yield return null;
         try
         {
-            Multiplayer.JoinGame(new Client(parsed.Host, parsed.Port, parsed.Protocol, password), recordId,
-                address, password);
+            var client = new Client(parsed.Host, parsed.Port, parsed.Protocol, password);
+            client.AuthenticationFailed += () =>
+            {
+                Multiplayer.LeaveGame();
+                MultiplayerPage.ShowPasswordPrompt(address, password, recordId);
+            };
+            Multiplayer.JoinGame(client, recordId, address, password);
         }
         catch (Exception e)
         {

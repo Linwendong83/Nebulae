@@ -1,10 +1,11 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using NebulaeModel.Authority;
 using NebulaeModel.DataStructures;
 using NebulaeModel.Networking.Serialization;
 using NebulaeModel.Packets.Authority;
 using NebulaeModel.Packets.Combat;
+using NebulaeModel.Packets.Combat.Mecha;
 using NebulaeWorld.Authority;
 using UnityEngine;
 using NebulaeModel.Utils;
@@ -27,6 +28,7 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         public RemoteCombatPose.Frame Pose;
         public long LastCommand;
         public long Revision;
+        public bool FighterPortsDirty;
         public double CoreDebit;
         public long LastBombTick = -10000;
         public long LastBurstTick;
@@ -55,7 +57,7 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         public double CoreDebit;
         public int[] Items;
         public int[] Totals;
-        public Action<bool> Finish;
+        public Action<CheckpointReceiptStatus, CheckpointRejectReason> Finish;
     }
     private readonly object checkpointGate = new();
     private readonly Dictionary<ushort, Checkpoint> checkpoints = new();
@@ -90,6 +92,18 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
     private long publishedPersonalRevision;
     private long observedPersonalRevision;
     private bool personalStocksDirty;
+
+    public void InitializePersonalBaseline(PlayerData data)
+    {
+        receivingEpoch = Multiplayer.Session.Authority.Epoch;
+        received.Clear(); receivedConnections.Clear(); acknowledgedDebits.Clear();
+        CoreDebitAcknowledged = 0; LastAppliedRevision = LastAppliedCommand = 0;
+        publishedStockHistory.Clear(); publishedPersonalRevision = 0;
+        observedPersonalRevision = data.Life.Revision;
+        observedStocks = CopyStocks(GameMain.mainPlayer.mecha);
+        personalStocksDirty = false;
+        lastSettings = NoSettingsSent;
+    }
     public void MarkPersonalStockChange(StorageComponent storage)
     {
         if (PlayerWeaponResources.Active || Multiplayer.Session.IsServer || Multiplayer.Session.AuthorityRuntime.ApplyContext.IsActiveOnCurrentThread) return;
@@ -213,7 +227,8 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         actor.Data.Mecha = retained; actor.DetachedFight = retained.FightData;
     }
 
-    public bool QueueCheckpoint(PlayerData data, byte[] snapshot, long command, double debit, int[] items, int[] totals, Action<bool> finish, long combatRevision = 0, long inventoryTransferSequence = 0)
+    public bool QueueCheckpoint(PlayerData data, byte[] snapshot, long command, double debit, int[] items, int[] totals,
+        Action<CheckpointReceiptStatus, CheckpointRejectReason> finish, long combatRevision = 0, long inventoryTransferSequence = 0)
     {
         if (snapshot == null || snapshot.Length > 4 * 1024 * 1024 || items == null || totals == null || items.Length != totals.Length || items.Length > 512) return false;
         lock (checkpointGate)
@@ -260,21 +275,7 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         if (!session.IsServer || !session.IsGameLoaded) return;
         if (!hostEpoch.Equals(session.Authority.Epoch))
         { Dispose(); hostEpoch = session.Authority.Epoch; lastCompletedTick = -1; }
-        List<Checkpoint> pending;
-        lock (checkpointGate) { pending = checkpoints.Values.ToList(); checkpoints.Clear(); checkpointBytes = 0; }
-        foreach (var checkpoint in pending)
-        {
-            var current = session.Server.Players.Get(checkpoint.Data.PlayerId);
-            var valid = current != null && ReferenceEquals(current.Data, checkpoint.Data) &&
-                session.AuthorityRuntime.ConnectionEpochFor(checkpoint.Data.PlayerId).Equals(checkpoint.Connection);
-            try
-            {
-                var accepted = valid && PlayerLifeManager.StoreServer(checkpoint.Data, checkpoint.Snapshot, checkpoint.Command,
-                    checkpoint.CoreDebit, checkpoint.Items, checkpoint.Totals, checkpoint.CombatRevision, checkpoint.InventoryTransferSequence);
-                checkpoint.Finish?.Invoke(accepted);
-            }
-            catch (Exception error) { NebulaeModel.Logger.Log.Warn("[authority] personal checkpoint failed: " + error); }
-        }
+        DrainCheckpoints();
         if (!GameMain.data.gameDesc.isCombatMode) return;
         var online = new HashSet<ushort>();
         using (session.World.GetRemotePlayersModels(out var models))
@@ -291,6 +292,11 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                 model.PlayerInstance.SetHiddenProperty(nameof(global::Player.deliveryPackage), data.Mecha.DeliveryPackage);
                 model.MechaInstance.coreEnergy = data.Mecha.CoreEnergy;
                 model.MechaInstance.reactorEnergy = data.Mecha.ReactorEnergy;
+                if (data.Mecha is MechaData reactor)
+                {
+                    model.MechaInstance.reactorItemId = reactor.ReactorItemId;
+                    model.MechaInstance.reactorItemInc = reactor.ReactorItemInc;
+                }
                 model.MechaInstance.reactorStorage = data.Mecha.ReactorStorage;
                 model.MechaInstance.warpStorage = data.Mecha.WarpStorage;
                 data.Mecha.FightData.UpdateMech(model.PlayerInstance);
@@ -336,6 +342,42 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                         hive.Realize();
             actor.Action.ActivateNearbyEnemyHive();
         }
+    }
+
+    private void DrainCheckpoints()
+    {
+        var session = Multiplayer.Session;
+        List<Checkpoint> pending;
+        lock (checkpointGate) { pending = checkpoints.Values.ToList(); checkpoints.Clear(); checkpointBytes = 0; }
+        foreach (var checkpoint in pending)
+        {
+            var current = session.Server.Players.Get(checkpoint.Data.PlayerId);
+            var valid = current != null && ReferenceEquals(current.Data, checkpoint.Data) &&
+                session.AuthorityRuntime.ConnectionEpochFor(checkpoint.Data.PlayerId).Equals(checkpoint.Connection);
+            try
+            {
+                if (!valid) continue;
+                var status = PlayerLifeManager.StoreServerResult(checkpoint.Data, checkpoint.Snapshot, out var reason,
+                    checkpoint.Command, checkpoint.CoreDebit, checkpoint.Items, checkpoint.Totals,
+                    checkpoint.CombatRevision, checkpoint.InventoryTransferSequence);
+                if (status == CheckpointReceiptStatus.Retry && actors.TryGetValue(checkpoint.Data.PlayerId, out var staleActor))
+                    staleActor.LastPublishedCombat = null;
+                checkpoint.Finish?.Invoke(status, reason);
+            }
+            catch (Exception error) { NebulaeModel.Logger.Log.Warn("[authority] personal checkpoint failed: " + error); }
+        }
+    }
+
+    public void PumpPausedCheckpoints()
+    {
+        var session = Multiplayer.Session;
+        if (!hostEpoch.Equals(session.Authority.Epoch))
+        { Dispose(); hostEpoch = session.Authority.Epoch; lastCompletedTick = -1; }
+        DrainCheckpoints();
+        foreach (var pair in actors)
+            if (pair.Value.DetachedFight == null && (pair.Value.LastPublishedCombat == null ||
+                pair.Value.LastPublishedCombat.PersonalRevision != pair.Value.Data.Life.Revision))
+                PublishActor(pair.Key, pair.Value, GameMain.gameTick, force: true);
     }
 
     private static void Prepare(Actor actor)
@@ -415,6 +457,7 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         for (var i = 0; i < mecha.spaceCombatModule.fleetCount; i++) if (mecha.spaceCombatModule.moduleFleets[i].fleetEnabled) flags |= 1 << (8 + i);
         if (mecha.groundCombatModule.moduleFleets[0].fleetEnabled) flags |= 1 << 16;
         flags = CombatShieldSettings.Encode(flags, mecha.energyShieldRechargeEnabled);
+        flags = CombatFleetSettings.Encode(flags, mecha.groundCombatModule, mecha.spaceCombatModule);
         var report = (flags, mecha.coreEnergy, CoreDebitAcknowledged, mecha.energyShieldRechargeSpeed);
         if (IsUnchangedSettingsReport(lastSettings, report)) return;
         lastSettings = report;
@@ -423,6 +466,13 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
 
     public CommandOutcome Execute(in QueuedHostCommand command)
     {
+        if (command.Packet.Category == NebulaeModel.Packets.Factory.ManualBuildIntent.Category)
+        {
+            actors.TryGetValue(command.ConnectionPlayerId, out var builder);
+            var built = Multiplayer.Session.ManualBuilds.Execute(command, builder?.Player);
+            if (builder != null) ResetInventoryShadow(builder);
+            return built;
+        }
         if (command.Packet.Category == NebulaeModel.Packets.GameHistory.ResearchContributionIntent.Category)
             return Multiplayer.Session.Research.Execute(command);
         if (command.Packet.Category == NebulaeModel.Packets.Factory.Assembler.FactoryProductIntent.Category)
@@ -466,6 +516,7 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                         return new CommandOutcome(CommandResultCode.RejectedInvalid);
                     mecha.energyShieldRechargeEnabled = shieldEnabled;
                     mecha.energyShieldRechargeSpeed = shieldSpeed;
+                    CombatFleetSettings.Apply(intent.Argument, mecha.groundCombatModule, mecha.spaceCombatModule);
                     mecha.coreEnergy = Math.Max(0, intent.X - (actor.CoreDebit - intent.Y));
                     actor.FrameEnergy += mecha.coreEnergy - beforeEnergy;
                     mecha.ammoSelectSlot = intent.Argument & 3;
@@ -671,8 +722,12 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                     key.Kind == PoolKind.GroundEnemy && key.Scope != actor.Data.LocalPlanetId ||
                     key.Kind == PoolKind.SpaceEnemy && !actor.Player.sailing) continue;
                 if (!ValidWeaponTarget(actor, key, input.Ammo, input.Manual)) continue;
-                var target = new SkillTarget { type = ETargetType.Enemy, id = key.NativeId,
-                    astroId = key.Kind == PoolKind.GroundEnemy ? key.Scope : GameMain.spaceSector.enemyPool[key.NativeId].originAstroId };
+                var target = new SkillTarget
+                {
+                    type = ETargetType.Enemy,
+                    id = key.NativeId,
+                    astroId = key.Kind == PoolKind.GroundEnemy ? key.Scope : GameMain.spaceSector.enemyPool[key.NativeId].originAstroId
+                };
                 if (!WithinWeaponRange(actor, key, input.Ammo, input.Manual)) continue;
                 var mecha = actor.Player.mecha;
                 if (!laser)
@@ -711,6 +766,7 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
             // Let BeginFrame reclaim the actor instead of blocking that cleanup behind a dead transform.
             if (player.transform == null) continue;
             Prepare(actor);
+            RefreshCombatLimits(mecha, GameMain.mainPlayer.mecha);
             ExpireShots(actor.AmmoIntents, tick); ExpireShots(actor.LaserIntents, tick);
             if (player.isAlive)
             {
@@ -728,57 +784,77 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
             }
             actor.CoreDebit = actor.FrameDebit + Math.Max(actor.CoreDebit - actor.FrameDebit, Math.Max(0, actor.FrameEnergy - mecha.coreEnergy));
             CaptureInventoryDebits(actor);
-            actor.Data.Mecha.FightData = new MechaFightData(player);
-            actor.Data.Mecha.CoreEnergy = mecha.coreEnergy;
-            actor.Data.Life.IsAlive = player.isAlive; actor.Data.Life.DeathCount = player.deathCount;
-            actor.Data.Life.InvincibleTicks = player.invincibleTicks;
-            if (tick % 6 != 0 && !Multiplayer.Session.PlayerWeapons.NeedsSettlement(pair.Key)) continue;
-            var previous = actor.LastPublishedCombat;
-            var payload = SerializeReplicableFightData(actor.Data.Mecha.FightData, previous?.CombatData);
-            if (previous != null && ReferenceEquals(previous.CombatData, payload) &&
-                previous.LastCommandSequence == actor.LastCommand && previous.PersonalRevision == actor.Data.Life.Revision &&
-                previous.CoreEnergyDebitTotal == actor.CoreDebit && previous.IsAlive == player.isAlive &&
-                previous.DeathCount == player.deathCount && previous.InvincibleTicks == player.invincibleTicks &&
-                previous.HpRecoverCD == mecha.hpRecoverCD && previous.ShieldRecoverCD == mecha.energyShieldRecoverCD &&
-                SameDebits(previous, actor.Debits.Totals) && !Multiplayer.Session.PlayerWeapons.NeedsSettlement(pair.Key)) continue;
-            var packet = new AuthorityPlayerCombatStatePacket
-            {
-                PlayerId = pair.Key,
-                LastCommandSequence = actor.LastCommand,
-                PersonalRevision = actor.Data.Life.Revision,
-                ActorConnection = Multiplayer.Session.AuthorityRuntime.ConnectionEpochFor(pair.Key).Value,
-                CoreEnergyDebitTotal = actor.CoreDebit,
-                IsAlive = player.isAlive,
-                DeathCount = player.deathCount,
-                InvincibleTicks = player.invincibleTicks,
-                HpRecoverCD = mecha.hpRecoverCD,
-                ShieldRecoverCD = mecha.energyShieldRecoverCD,
-                CombatData = payload
-            };
-            packet.DebitItems = actor.Debits.Totals.Keys.ToArray();
-            packet.DebitTotals = actor.Debits.Totals.Values.ToArray();
-            // this packet is a reconciliation channel, not a heartbeat. Everything it
-            // carries is either a scalar the host gates on here or part of this payload, and the two
-            // cumulative ledgers (core debit, item debits) are applied as deltas by the receiver, so
-            // an unchanged packet would teach a recipient nothing. An idle player — the common case
-            // in a session — then costs nothing instead of a full MechaFightData per recipient every
-            // six ticks, while a player who is fighting still publishes on every change.
-            packet.CombatRevision = ++actor.Revision;
-            Multiplayer.Session.PlayerWeapons.Settle(pair.Key, packet.CombatRevision);
-            packet.SettledAttacks = Multiplayer.Session.PlayerWeapons.SettledSequences(pair.Key, packet.ActorConnection);
-            packet.SetHeader(new AuthorityEnvelopeHeader(AuthorityFamily.PlayerCombatState,
-                Multiplayer.Session.Authority.Epoch, default, actor.Revision, tick, 0, packet.DeclaredPayloadLength));
-            RememberStocks(actor);
-            actor.LastPublishedCombat = packet;
-            byte[] encoded = null;
-            foreach (var recipient in Multiplayer.Session.Server.Players.Connected.Values)
-                if (recipient.Id == pair.Key || recipient.Data.LocalStarId == actor.Data.LocalStarId)
-                {
-                    encoded ??= Multiplayer.Session.Network.WriteOnce(packet);
-                    recipient.Connection.SendRawPacket(encoded);
-                    Multiplayer.Session.AuthorityRuntime.Metrics.RecordPacketSent(packet.Family, AuthorityWireSize.Of(packet));
-                }
+            PublishActor(pair.Key, actor, tick);
         }
+    }
+
+    public void FighterPortChanged(ushort playerId)
+    {
+        if (actors.TryGetValue(playerId, out var actor)) actor.FighterPortsDirty = true;
+    }
+
+    // Publish completed gestures while paused without running another combat or production tick.
+    public void FlushFighterPorts()
+    {
+        if (!Multiplayer.Session.IsServer || !Multiplayer.Session.IsGameLoaded) return;
+        foreach (var pair in actors)
+            if (pair.Value.FighterPortsDirty && pair.Value.DetachedFight == null)
+                PublishActor(pair.Key, pair.Value, GameMain.gameTick);
+    }
+
+    private void PublishActor(ushort playerId, Actor actor, long tick, bool force = false)
+    {
+        var player = actor.Player; var mecha = player.mecha;
+        actor.Data.Mecha.FightData = new MechaFightData(player);
+        actor.Data.Mecha.CoreEnergy = mecha.coreEnergy;
+        actor.Data.Life.IsAlive = player.isAlive; actor.Data.Life.DeathCount = player.deathCount;
+        actor.Data.Life.InvincibleTicks = player.invincibleTicks;
+        if (!force && tick % 6 != 0 && !actor.FighterPortsDirty && !Multiplayer.Session.PlayerWeapons.NeedsSettlement(playerId)) return;
+        var previous = actor.LastPublishedCombat;
+        var payload = SerializeReplicableFightData(actor.Data.Mecha.FightData, previous?.CombatData);
+        if (previous != null && ReferenceEquals(previous.CombatData, payload) &&
+            previous.LastCommandSequence == actor.LastCommand && previous.PersonalRevision == actor.Data.Life.Revision &&
+            previous.CoreEnergyDebitTotal == actor.CoreDebit && previous.IsAlive == player.isAlive &&
+            previous.DeathCount == player.deathCount && previous.InvincibleTicks == player.invincibleTicks &&
+            previous.HpRecoverCD == mecha.hpRecoverCD && previous.ShieldRecoverCD == mecha.energyShieldRecoverCD &&
+            SameDebits(previous, actor.Debits.Totals) && !Multiplayer.Session.PlayerWeapons.NeedsSettlement(playerId)) { actor.FighterPortsDirty = false; return; }
+        var packet = new AuthorityPlayerCombatStatePacket
+        {
+            PlayerId = playerId,
+            LastCommandSequence = actor.LastCommand,
+            PersonalRevision = actor.Data.Life.Revision,
+            ActorConnection = Multiplayer.Session.AuthorityRuntime.ConnectionEpochFor(playerId).Value,
+            CoreEnergyDebitTotal = actor.CoreDebit,
+            IsAlive = player.isAlive,
+            DeathCount = player.deathCount,
+            InvincibleTicks = player.invincibleTicks,
+            HpRecoverCD = mecha.hpRecoverCD,
+            ShieldRecoverCD = mecha.energyShieldRecoverCD,
+            CombatData = payload
+        };
+        packet.DebitItems = actor.Debits.Totals.Keys.ToArray();
+        packet.DebitTotals = actor.Debits.Totals.Values.ToArray();
+        // this packet is a reconciliation channel, not a heartbeat. Everything it
+        // carries is either a scalar the host gates on here or part of this payload, and the two
+        // cumulative ledgers (core debit, item debits) are applied as deltas by the receiver, so
+        // an unchanged packet would teach a recipient nothing. An idle player — the common case
+        // in a session — then costs nothing instead of a full MechaFightData per recipient every
+        // six ticks, while a player who is fighting still publishes on every change.
+        packet.CombatRevision = ++actor.Revision;
+        Multiplayer.Session.PlayerWeapons.Settle(playerId, packet.CombatRevision);
+        packet.SettledAttacks = Multiplayer.Session.PlayerWeapons.SettledSequences(playerId, packet.ActorConnection);
+        packet.SetHeader(new AuthorityEnvelopeHeader(AuthorityFamily.PlayerCombatState,
+            Multiplayer.Session.Authority.Epoch, default, actor.Revision, tick, 0, packet.DeclaredPayloadLength));
+        RememberStocks(actor);
+        actor.LastPublishedCombat = packet;
+        byte[] encoded = null;
+        foreach (var recipient in Multiplayer.Session.Server.Players.Connected.Values)
+            if (recipient.Id == playerId || recipient.Data.LocalStarId == actor.Data.LocalStarId)
+            {
+                encoded ??= Multiplayer.Session.Network.WriteOnce(packet);
+                recipient.Connection.SendRawPacket(encoded);
+            }
+        actor.FighterPortsDirty = false;
     }
 
     /// <summary>
@@ -859,48 +935,6 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         (int Flags, double Energy, double DebitAck, double ShieldSpeed) previous,
         (int Flags, double Energy, double DebitAck, double ShieldSpeed) next) => previous == next;
 
-    /// <summary>
-    /// Whether a freshly built player-combat packet says anything its recipients do not already hold.
-    /// </summary>
-    /// <remarks>
-    /// Compared field by field rather than by serialized bytes because the packet carries scalars
-    /// outside <see cref="AuthorityPlayerCombatStatePacket.CombatData"/> that move on their own:
-    /// the cumulative core debit, the recover cooldowns, and the item ledger. The revision is
-    /// deliberately not compared — it is minted only once this gate says there is something to say.
-    /// </remarks>
-    internal static bool IsUnchangedPlayerCombatState(AuthorityPlayerCombatStatePacket previous,
-        AuthorityPlayerCombatStatePacket next)
-    {
-        if (previous == null) return false;
-        return previous.LastCommandSequence == next.LastCommandSequence &&
-               previous.PersonalRevision == next.PersonalRevision &&
-               previous.CoreEnergyDebitTotal == next.CoreEnergyDebitTotal &&
-               previous.IsAlive == next.IsAlive &&
-               previous.DeathCount == next.DeathCount &&
-               previous.InvincibleTicks == next.InvincibleTicks &&
-               previous.HpRecoverCD == next.HpRecoverCD &&
-               previous.ShieldRecoverCD == next.ShieldRecoverCD &&
-               SameBytes(previous.CombatData, next.CombatData) &&
-               SameInts(previous.DebitItems, next.DebitItems) &&
-               SameInts(previous.DebitTotals, next.DebitTotals);
-    }
-
-    private static bool SameBytes(byte[] left, byte[] right)
-    {
-        if (left == null || right == null) return left == right;
-        if (left.Length != right.Length) return false;
-        for (var i = 0; i < left.Length; i++) if (left[i] != right[i]) return false;
-        return true;
-    }
-
-    private static bool SameInts(int[] left, int[] right)
-    {
-        if (left == null || right == null) return left == right;
-        if (left.Length != right.Length) return false;
-        for (var i = 0; i < left.Length; i++) if (left[i] != right[i]) return false;
-        return true;
-    }
-
     public bool Send(CombatIntent intent, SkillTarget target = default) => Send(intent, target, out _);
 
     public bool Send(CombatIntent intent, SkillTarget target, out long commandSequence)
@@ -940,8 +974,12 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         var epoch = new AuthorityEpoch(packet.EpochHigh, packet.EpochLow);
         if (!receivingEpoch.Equals(epoch))
         {
+            var replacingWorld = receivingEpoch.IsValid;
             receivingEpoch = epoch; received.Clear(); receivedConnections.Clear(); acknowledgedDebits.Clear(); CoreDebitAcknowledged = 0; LastAppliedRevision = 0;
-            observedStocks = null; publishedStockHistory.Clear(); publishedPersonalRevision = 0; observedPersonalRevision = 0; personalStocksDirty = false;
+            if (replacingWorld)
+            {
+                observedStocks = null; publishedStockHistory.Clear(); publishedPersonalRevision = 0; observedPersonalRevision = 0; personalStocksDirty = false;
+            }
             // A new world means a new host that has never been told this player's configuration, so
             // the cached report must not suppress the first one it needs.
             lastSettings = NoSettingsSent;
@@ -954,11 +992,12 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
             var own = packet.PlayerId == Multiplayer.Session.LocalPlayer.Id;
             var player = own ? GameMain.mainPlayer : models.TryGetValue(packet.PlayerId, out var model) ? model.PlayerInstance : null;
             if (player == null) return false;
-            // A completed local respawn is ahead of the host until its checkpoint arrives.
+            // A completed local respawn can precede its host checkpoint; remote life messages
+            // can also precede queued combat facts from the dead life.
             // Keep its life/energy state, but still acknowledge combat revisions and stocks:
             // the host needs that baseline to accept the respawn-completion checkpoint.
-            var staleLife = own && (packet.DeathCount < player.deathCount ||
-                player.isAlive && !packet.IsAlive && packet.DeathCount == player.deathCount);
+            var staleLife = packet.DeathCount < player.deathCount ||
+                player.isAlive && !packet.IsAlive && packet.DeathCount == player.deathCount;
             var fight = new MechaFightData(); fight.Deserialize(new NetDataReader(packet.CombatData));
             var mecha = player.mecha;
             var muzzle = mecha.ammoMuzzleFire; var round = mecha.ammoRoundFire; var muzzleIndex = mecha.ammoMuzzleIndex;
@@ -966,17 +1005,23 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
             var personalStocks = own ? CopyStocks(mecha) : null;
             var stockBaseline = own && packet.PersonalRevision > observedPersonalRevision && publishedStockHistory.TryGetValue(packet.PersonalRevision, out var confirmedStock)
                 ? confirmedStock : observedStocks;
+            if (own && stockBaseline == null && personalStocksDirty)
+            {
+                // Preserve edits until a checkpoint establishes the starting inventory.
+                Multiplayer.Session.Life?.Publish();
+                return false;
+            }
             var serverStocks = own ? new[] { CloneStock(fight.AmmoStorage), CloneStock(fight.BombStorage), CloneStock(fight.FighterStorage) } : null;
             var rebasedStocks = new Dictionary<long, StorageComponent[]>();
+            if (staleLife)
+            {
+                fight.Hp = mecha.hp;
+                fight.EnergyShieldEnergy = mecha.energyShieldEnergy;
+                fight.LaserEnergy = mecha.laserEnergy;
+                fight.LaserRecharging = mecha.laserRecharging;
+            }
             if (own)
             {
-                if (staleLife)
-                {
-                    fight.Hp = mecha.hp;
-                    fight.EnergyShieldEnergy = mecha.energyShieldEnergy;
-                    fight.LaserEnergy = mecha.laserEnergy;
-                    fight.LaserRecharging = mecha.laserRecharging;
-                }
                 fight.AmmoSelectSlot = mecha.ammoSelectSlot; fight.LaserActive = mecha.laserActive;
                 fight.AutoReplenishFuel = mecha.autoReplenishFuel; fight.AutoReplenishAmmo = mecha.autoReplenishAmmo;
                 fight.AutoReplenishHangar = mecha.autoReplenishHangar;
@@ -1038,13 +1083,13 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                 }
                 if (!staleLife && !packet.IsAlive && player.isAlive) player.Kill();
             }
-            else player.isAlive = packet.IsAlive;
-            Multiplayer.Session.PlayerWeapons?.Resources.Rebase(mecha, packet.HostTick);
+            else if (!staleLife) player.isAlive = packet.IsAlive;
             if (!staleLife)
             {
                 player.deathCount = packet.DeathCount;
                 player.invincibleTicks = packet.InvincibleTicks;
             }
+            Multiplayer.Session.PlayerWeapons?.Resources.Rebase(mecha, packet.HostTick);
         }
         received[packet.PlayerId] = packet.CombatRevision;
         return true;
@@ -1076,6 +1121,11 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         (snapshot.Mecha as MechaData)?.ApplyHand(actor.Player);
         ResetInventoryShadow(actor);
         actor.Player.mecha.coreEnergy = Math.Max(0, snapshot.Mecha.CoreEnergy - Math.Max(0, actor.CoreDebit - debitAck));
+        if (snapshot.Mecha is MechaData fuel)
+        {
+            actor.Player.mecha.reactorItemId = fuel.ReactorItemId;
+            actor.Player.mecha.reactorItemInc = fuel.ReactorItemInc;
+        }
         data.Mecha.CoreEnergy = actor.Player.mecha.coreEnergy;
         if (stocks != null)
         {
@@ -1180,6 +1230,8 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
 
     private static void CopyFleetSettings(CombatModuleComponent target, CombatModuleComponent source)
     {
+        target.attackRelay = source.attackRelay;
+        target.attackBuilding = source.attackBuilding;
         for (var i = 0; i < Math.Min(target.fleetCount, source.fleetCount); i++)
             target.moduleFleets[i].fleetEnabled = source.moduleFleets[i].fleetEnabled;
     }
@@ -1199,6 +1251,24 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         { actor.StockHistory.Remove(revision); actor.StockPersonalRevisions.Remove(revision); }
     }
     private static StorageComponent[] CopyStocks(Mecha mecha) => new[] { CloneStock(mecha.ammoStorage), CloneStock(mecha.bombStorage), CloneStock(mecha.fighterStorage) };
+
+    internal static void RefreshCombatLimits(Mecha destination, Mecha source)
+    {
+        // Host research must not reset personal settings, fleets or airborne drones.
+        destination.coreEnergyCap = source.coreEnergyCap;
+        destination.reactorPowerGen = source.reactorPowerGen;
+        destination.hpMaxUpgrade = source.hpMaxUpgrade;
+        destination.energyShieldUnlocked = source.energyShieldUnlocked;
+        destination.energyShieldRadius = source.energyShieldRadius;
+        destination.energyShieldCapacity = source.energyShieldCapacity;
+        destination.laserEnergyCapacity = source.laserEnergyCapacity;
+        destination.laserLocalAttackRange = source.laserLocalAttackRange;
+        destination.laserSpaceAttackRange = source.laserSpaceAttackRange;
+        destination.laserLocalEnergyCost = source.laserLocalEnergyCost;
+        destination.laserSpaceEnergyCost = source.laserSpaceEnergyCost;
+        destination.laserLocalDamage = source.laserLocalDamage;
+        destination.laserSpaceDamage = source.laserSpaceDamage;
+    }
 
     internal static StorageComponent MergeStock(StorageComponent current, StorageComponent baseline, StorageComponent incoming)
     {

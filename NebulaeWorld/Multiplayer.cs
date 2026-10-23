@@ -25,6 +25,7 @@ internal static class Multiplayer
     public static bool IsActive => Session != null;
 
     public static bool IsLeavingGame { get; set; }
+    public static bool SuppressClientWorldSaves { get; private set; }
     public static bool ShouldReturnToJoinMenu { get; set; }
 
     public static bool IsInMultiplayerMenu { get; set; }
@@ -66,6 +67,16 @@ internal static class Multiplayer
 
     public static void LeaveGame()
     {
+        // The session disappears before GameMain.End can request an errored autosave.
+        // Preserve the peer's role through disposal and teardown, including reentrant exits.
+        var previous = SuppressClientWorldSaves;
+        SuppressClientWorldSaves |= Session?.IsClient == true;
+        try { LeaveGameCore(); }
+        finally { SuppressClientWorldSaves = previous; }
+    }
+
+    private static void LeaveGameCore()
+    {
         IsLeavingGame = true;
 
         var wasGameLoaded = Session?.IsGameLoaded ?? false;
@@ -84,16 +95,21 @@ internal static class Multiplayer
         }
         else if (ShouldReturnToJoinMenu)
         {
-            UIRoot.instance.CloseMainMenuUI();
-            var overlayCanvasGo = GameObject.Find("Overlay Canvas");
-            var multiplayerMenu = overlayCanvasGo?.transform.Find("Nebulae - Multiplayer Menu");
-            if (multiplayerMenu != null)
-            {
-                multiplayerMenu.SetAsLastSibling();
-                multiplayerMenu.gameObject.SetActive(true);
-            }
-            else UIRoot.instance.OpenMainMenuUI();
+            OpenJoinMenu();
         }
         ChatService.Instance.ClearMessages(_ => true);
+    }
+
+    private static void OpenJoinMenu()
+    {
+        UIRoot.instance.CloseMainMenuUI();
+        var overlayCanvasGo = GameObject.Find("Overlay Canvas");
+        var multiplayerMenu = overlayCanvasGo?.transform.Find("Nebulae - Multiplayer Menu");
+        if (multiplayerMenu != null)
+        {
+            multiplayerMenu.SetAsLastSibling();
+            multiplayerMenu.gameObject.SetActive(true);
+        }
+        else UIRoot.instance.OpenMainMenuUI();
     }
 }

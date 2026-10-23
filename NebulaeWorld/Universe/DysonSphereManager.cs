@@ -361,7 +361,6 @@ internal class DysonSphereManager : IDisposable
             {
                 continue;
             }
-            Log.Info($"Unload DysonSphere at system {GameMain.galaxy.stars[i].displayName} (Index: {i})");
             Multiplayer.Session.Network.SendPacket(new DysonSphereLoadRequest(i, DysonSphereRequestEvent.Unload));
             GameMain.data.dysonSpheres[i] = null;
         }

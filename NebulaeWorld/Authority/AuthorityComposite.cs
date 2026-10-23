@@ -17,7 +17,7 @@ namespace NebulaeWorld.Authority;
 /// when none can — which keeps "unreadable is not empty" per-domain: a planet whose factory is not
 /// loaded is skipped, never published as a wave of deaths, no matter how many domains exist.
 /// </remarks>
-internal sealed class CompositeHostWorldView : IHostWorldView, IHostIncrementalWorldView, IHostSnapshotWorldView
+internal sealed class CompositeHostWorldView : IHostWorldView, IHostIncrementalWorldView, IHostSnapshotWorldView, IHostCaptureBatchWorldView
 {
     private readonly List<IHostWorldView> views = [];
     private readonly Dictionary<ScopeKey, IHostWorldView> routes = new();
@@ -26,6 +26,18 @@ internal sealed class CompositeHostWorldView : IHostWorldView, IHostIncrementalW
     {
         if (views == null || views.Length == 0) throw new ArgumentException("At least one world view is required.", nameof(views));
         this.views.AddRange(views);
+    }
+
+    public void BeginCapture(ScopeKey scope)
+    {
+        foreach (var view in views)
+            if (view is IHostCaptureBatchWorldView batch) batch.BeginCapture(scope);
+    }
+
+    public void EndCapture()
+    {
+        foreach (var view in views)
+            if (view is IHostCaptureBatchWorldView batch) batch.EndCapture();
     }
 
     public bool TryReadMembers(ScopeKey scope, List<ObjectKey> members)
@@ -174,9 +186,11 @@ internal sealed class CompositeMirrorObserver : IReplicaMirrorObserver, IReplica
             {
                 observer.OnBaselineInstalled(scope, members);
             }
-            catch (Exception)
+            catch (Exception error)
             {
                 ObserverFailures++;
+                if (ObserverFailures <= 4 || ObserverFailures % 120 == 0)
+                    NebulaeModel.Logger.Log.Warn($"[authority] {observer.GetType().Name} failed to install {scope}: {error}");
                 throw; // A failed game-pool installation must never produce a successful snapshot ack.
             }
         }

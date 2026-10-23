@@ -33,6 +33,7 @@ internal class VegeMinedProcessor : PacketProcessor<VegeMinedPacket>
             var player = Players.Get(conn, EConnectionStatus.Connected);
             if (player == null || player.Data.LocalStarId != planetData.star.id) return;
             author = player.Id;
+            if (!Multiplayer.Session.Vegetation.AcceptCommand(author, packet.CommandSequence)) return;
         }
         using (Multiplayer.Session.Planets.IsIncomingRequest.On())
         {
@@ -87,8 +88,7 @@ internal class VegeMinedProcessor : PacketProcessor<VegeMinedPacket>
         {
             Multiplayer.Session.Server.SendPacketToStarExclude(packet, planetData.star.id, conn);
             if (packet.IsCollected)
-                conn.SendPacket(new VegetableCollectionSnapshotPacket(
-                    Multiplayer.Session.Vegetation.CaptureRemote(author), true));
+                Multiplayer.Session.Vegetation.CaptureRemote(author);
         }
     }
 }

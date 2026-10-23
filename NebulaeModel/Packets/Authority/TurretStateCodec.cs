@@ -10,6 +10,7 @@ internal struct TurretState
     public byte Type, Group, VsSettings, Flags, MuzzleIndex, BulletInc;
     public int TargetId, TargetAstro;
     public byte TargetType;
+    public long TargetGeneration;
     public short ItemId, ItemCount, ItemInc, BulletCount, ItemBulletCount, SupernovaTick;
     public int BulletDamage, RoundFire, MuzzleFire, MuzzleReset, PhasePos, AimTime, KillCount;
     public long TotalDamage, SampleTick;
@@ -28,6 +29,7 @@ internal static class TurretStateCodec
         w.Write(s.EntityId); w.Write(s.ModelIndex);
         w.Write(s.Type); w.Write(s.Group); w.Write(s.VsSettings); w.Write(s.Flags); w.Write(s.MuzzleIndex); w.Write(s.BulletInc);
         w.Write(s.TargetId); w.Write(s.TargetAstro); w.Write(s.TargetType);
+        w.Write(s.TargetGeneration);
         w.Write(s.ItemId); w.Write(s.ItemCount); w.Write(s.ItemInc); w.Write(s.BulletCount); w.Write(s.ItemBulletCount); w.Write(s.SupernovaTick);
         w.Write(s.BulletDamage); w.Write(s.RoundFire); w.Write(s.MuzzleFire); w.Write(s.MuzzleReset); w.Write(s.PhasePos); w.Write(s.AimTime); w.Write(s.KillCount);
         w.Write(s.TotalDamage); w.Write(s.SampleTick); w.Write(s.SupernovaStrength);
@@ -47,6 +49,7 @@ internal static class TurretStateCodec
             s.EntityId = r.ReadInt32(); s.ModelIndex = r.ReadInt32();
             s.Type = r.ReadByte(); s.Group = r.ReadByte(); s.VsSettings = r.ReadByte(); s.Flags = r.ReadByte(); s.MuzzleIndex = r.ReadByte(); s.BulletInc = r.ReadByte();
             s.TargetId = r.ReadInt32(); s.TargetAstro = r.ReadInt32(); s.TargetType = r.ReadByte();
+            s.TargetGeneration = r.ReadInt64();
             s.ItemId = r.ReadInt16(); s.ItemCount = r.ReadInt16(); s.ItemInc = r.ReadInt16(); s.BulletCount = r.ReadInt16(); s.ItemBulletCount = r.ReadInt16(); s.SupernovaTick = r.ReadInt16();
             s.BulletDamage = r.ReadInt32(); s.RoundFire = r.ReadInt32(); s.MuzzleFire = r.ReadInt32(); s.MuzzleReset = r.ReadInt32(); s.PhasePos = r.ReadInt32(); s.AimTime = r.ReadInt32(); s.KillCount = r.ReadInt32();
             s.TotalDamage = r.ReadInt64(); s.SampleTick = r.ReadInt64(); s.SupernovaStrength = r.ReadSingle();
@@ -59,7 +62,7 @@ internal static class TurretStateCodec
     private static bool Valid(in TurretState s) => s.EntityId > 0 && s.ModelIndex > 0 && s.ModelIndex < 2048 &&
         s.Type >= (byte)ETurretType.Gauss && s.Type <= (byte)ETurretType.Disturb && (s.Flags & ~7) == 0 && s.ItemId >= 0 && s.ItemCount >= 0 &&
         s.ItemInc >= 0 && s.BulletCount >= 0 && s.TargetId >= 0 && s.TargetAstro >= 0 &&
-        s.SampleTick >= 0 && Finite(s.SupernovaStrength) && VectorFinite(s.Direction) && VectorFinite(s.TargetDirection);
+        s.SampleTick >= 0 && s.TargetGeneration >= 0 && Finite(s.SupernovaStrength) && VectorFinite(s.Direction) && VectorFinite(s.TargetDirection);
     private static bool Finite(float f) => !float.IsNaN(f) && !float.IsInfinity(f);
     private static bool VectorFinite(Vector3 v) => Finite(v.x) && Finite(v.y) && Finite(v.z);
     private static void WriteVector(BinaryWriter w, Vector3 v) { w.Write(v.x); w.Write(v.y); w.Write(v.z); }

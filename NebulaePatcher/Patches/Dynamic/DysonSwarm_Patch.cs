@@ -15,6 +15,17 @@ internal class DysonSwarm_Patch
 {
     private static Vector4 storedHsva;
 
+    [HarmonyPrefix, HarmonyPatch(nameof(DysonSwarm.SetAllSailsEternal))]
+    public static bool SetAllSailsEternal_Prefix(DysonSwarm __instance)
+    {
+        if (!Multiplayer.IsActive || Multiplayer.Session.DysonSpheres.IncomingDysonSwarmPacket) return true;
+        if (!GameMain.data.gameDesc.isSandboxMode) return false;
+        var packet = new DysonSwarmRemoveOrbitPacket(__instance.starData.index, 0, SwarmRemoveOrbitEvent.MakeSailsEternal);
+        if (Multiplayer.Session.IsClient) Multiplayer.Session.Network.SendPacket(packet);
+        else Multiplayer.Session.DysonSpheres.SendPacketToDysonSphere(packet, __instance.starData.index);
+        return !Multiplayer.Session.IsClient;
+    }
+
     [HarmonyPrefix]
     [HarmonyPatch(nameof(DysonSwarm.NewOrbit))]
     public static void NewOrbit_Prefix(DysonSwarm __instance, float radius, Quaternion rotation)

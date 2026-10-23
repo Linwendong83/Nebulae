@@ -55,8 +55,6 @@ internal sealed class JoinSyncBuffer
         LastProgress = now;
     }
 
-    public bool HasCheckpoint(int scope) => cuts.Contains(scope);
-
     public bool Append(int scope, byte[] data, long limit = ConnectionLimit)
     {
         if (Failed || !cuts.Contains(scope < 0 ? 0 : scope)) return !Failed;

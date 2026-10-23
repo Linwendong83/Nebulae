@@ -19,7 +19,15 @@ internal class GamePauseProcessor : PacketProcessor<GamePausePacket>
         }
         else
         {
-            Multiplayer.Session.World.SetWorldPause(packet.Paused);
+            Multiplayer.Session.World.SetWorldPause(packet.Paused, packet.StepTick);
         }
+    }
+}
+
+internal class GamePauseStepProcessor : PacketProcessor<GamePauseStepRequest>
+{
+    protected override void ProcessPacket(GamePauseStepRequest packet, NebulaeConnection conn)
+    {
+        if (IsHost) Multiplayer.Session.World.HostStepWorld();
     }
 }

@@ -1,4 +1,4 @@
-#region
+﻿#region
 
 using HarmonyLib;
 using NebulaeWorld;
@@ -49,7 +49,7 @@ internal static class EnemyGroundTargetResolution_Patch
 internal static class EnemySpaceTargetResolution_Patch
 {
     [HarmonyPrefix]
-    private static bool Prefix(SpaceSector sector, int idType, out VectorLF3 target, out float territory,
+    private static bool Prefix(int idType, out VectorLF3 target, out float territory,
         ref bool __result)
     {
         target = default;

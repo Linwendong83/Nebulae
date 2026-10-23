@@ -1,7 +1,6 @@
 ﻿#region
 
 using System;
-using UnityEngine;
 
 #endregion
 
@@ -19,17 +18,6 @@ internal static class InGamePopup
         }
         displayedMessage.FadeOut();
         displayedMessage = null;
-    }
-
-    public static void UpdateMessage(in string title, string message)
-    {
-        if (displayedMessage == null || displayedMessage.m_TitleText.text != title)
-        {
-            return;
-        }
-        displayedMessage.m_MessageText.horizontalOverflow = HorizontalWrapMode.Overflow;
-        displayedMessage.m_MessageText.verticalOverflow = VerticalWrapMode.Overflow;
-        displayedMessage.m_MessageText.text = message;
     }
 
     // Info
@@ -55,49 +43,15 @@ internal static class InGamePopup
         Show(UIMessageBox.WARNING, title, message, btn1, resp1);
     }
 
-    public static void ShowWarning(string title, string message, string btn1, string btn2, Action resp1, Action resp2)
-    {
-        Show(UIMessageBox.WARNING, title, message, btn1, btn2, resp1, resp2);
-    }
-
-    public static void ShowWarning(string title, string message, string btn1, string btn2, string btn3, Action resp1,
-        Action resp2, Action resp3)
-    {
-        Show(UIMessageBox.WARNING, title, message, btn1, btn2, btn3, resp1, resp2, resp3);
-    }
-
-    // Question
-    public static void ShowQuestion(string title, string message, string btn1, Action resp1 = null)
-    {
-        Show(UIMessageBox.QUESTION, title, message, btn1, resp1);
-    }
-
     public static void ShowQuestion(string title, string message, string btn1, string btn2, Action resp1, Action resp2)
     {
         Show(UIMessageBox.QUESTION, title, message, btn1, btn2, resp1, resp2);
-    }
-
-    public static void ShowQuestion(string title, string message, string btn1, string btn2, string btn3, Action resp1,
-        Action resp2, Action resp3)
-    {
-        Show(UIMessageBox.QUESTION, title, message, btn1, btn2, btn3, resp1, resp2, resp3);
     }
 
     // Error
     public static void ShowError(string title, string message, string btn1, Action resp1 = null)
     {
         Show(UIMessageBox.ERROR, title, message, btn1, resp1);
-    }
-
-    public static void ShowError(string title, string message, string btn1, string btn2, Action resp1, Action resp2)
-    {
-        Show(UIMessageBox.ERROR, title, message, btn1, btn2, resp1, resp2);
-    }
-
-    public static void ShowError(string title, string message, string btn1, string btn2, string btn3, Action resp1,
-        Action resp2, Action resp3)
-    {
-        Show(UIMessageBox.ERROR, title, message, btn1, btn2, btn3, resp1, resp2, resp3);
     }
 
     // Base

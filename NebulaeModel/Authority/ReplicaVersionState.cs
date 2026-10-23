@@ -456,8 +456,6 @@ internal sealed class ReplicaVersionState
     /// longer displayed; the host keeps simulating them regardless.
     /// </summary>
     public bool RemoveScope(ScopeKey scope) => scopes.Remove(scope);
-
-    public void Clear() => scopes.Clear();
 }
 
 /// <summary>
@@ -502,6 +500,4 @@ internal sealed class ObjectRevisionTracker
 
     /// <summary>Forgets a key. Only valid after its generation is over, never for a live object.</summary>
     public bool Forget(ObjectKey key) => revisions.Remove(key);
-
-    public void Clear() => revisions.Clear();
 }

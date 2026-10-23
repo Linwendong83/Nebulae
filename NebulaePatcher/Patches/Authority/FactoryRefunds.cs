@@ -28,6 +28,8 @@ internal static class FactoryRefunds
 
     [HarmonyReversePatch(HarmonyReversePatchType.Original)]
     [HarmonyPatch(nameof(FactorySystem.TakeBackItems_Assembler))]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Style", "IDE0060:Remove unused parameter",
+        Justification = "Harmony reverse patches must retain the native instance and argument signature.")]
     private static void ReadRefunds(FactorySystem instance, Player player, int assembler)
     {
         _ = Transpiler(null);
@@ -37,6 +39,8 @@ internal static class FactoryRefunds
     }
     [HarmonyReversePatch(HarmonyReversePatchType.Original)]
     [HarmonyPatch(nameof(FactorySystem.TakeBackItems_Lab))]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Style", "IDE0060:Remove unused parameter",
+        Justification = "Harmony reverse patches must retain the native instance and argument signature.")]
     private static void ReadLabRefunds(FactorySystem instance, Player player, int laboratory)
     {
         _ = Transpiler(null);

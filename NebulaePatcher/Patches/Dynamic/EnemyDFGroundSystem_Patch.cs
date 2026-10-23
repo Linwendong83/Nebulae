@@ -77,6 +77,9 @@ internal class EnemyDFGroundSystem_Patch
     {
         if (!Multiplayer.IsActive) return true;
 
+        if (pitRuinId <= 0 || __instance.factory.ruinPool == null || pitRuinId >= __instance.factory.ruinCursor ||
+            __instance.factory.ruinPool[pitRuinId].id != pitRuinId) return false;
+
         var buffer = __instance.bases.buffer;
         var cursor = __instance.bases.cursor;
         for (var baseId = 1; baseId < cursor; baseId++)
@@ -91,7 +94,8 @@ internal class EnemyDFGroundSystem_Patch
                 else
                 {
                     // Client waits for the host's world state.
-                    return false;
+                    return Multiplayer.Session.Factories.IsIncomingRequest.Value ||
+                        Multiplayer.Session.AuthorityRuntime.ApplyContext.IsActiveOnCurrentThread;
                 }
             }
         }
@@ -126,7 +130,14 @@ internal class EnemyDFGroundSystem_Patch
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(EnemyDFGroundSystem.ClearReferencesOnEnemyRemove))]
-    public static bool ClearReferencesOnEnemyRemove_Prefix() => !Multiplayer.IsActive || Multiplayer.Session.IsServer;
+    public static bool ClearReferencesOnEnemyRemove_Prefix(EnemyDFGroundSystem __instance, int removingEnemyId)
+    {
+        if (!Multiplayer.IsActive || Multiplayer.Session.IsServer) return true;
+        // The remaining native method follows builder/formation AI pointers, which a
+        // presentation base intentionally does not own. Target cleanup still must run.
+        NebulaeWorld.Combat.EnemyTargetIdentity.RemoveGroundReferences(__instance.factory, removingEnemyId);
+        return false;
+    }
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(EnemyDFGroundSystem.KeyTickLogic))]

@@ -1,4 +1,4 @@
-#region
+﻿#region
 
 using System.Collections.Generic;
 using NebulaeModel.Authority;
@@ -35,7 +35,7 @@ namespace NebulaeWorld.Authority.Adapters;
 /// — so this adapter never reinterprets one pool's slot as another's.
 /// </para>
 /// </remarks>
-internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotWorldView, IHostIncrementalWorldView
+internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotWorldView, IHostIncrementalWorldView, IHostCaptureBatchWorldView
 {
     private readonly AuthorityEpoch epoch;
     private readonly SlotGenerationTracker tracker = new();
@@ -44,6 +44,94 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
     private readonly List<int> coresFirst = new(), rest = new();
     private readonly ReplicationCandidateIndex candidates = new();
     private readonly object gate = new();
+
+    private SpaceSector captureSector;
+    private EnemyData[] capturePool;
+    private EnemyDFHiveSystem[] captureHives;
+    private readonly Dictionary<ObjectKey, NativeExportCache<DFSTurretComponent>> turretExports = new();
+    private sealed class RelayReading
+    {
+        public long Generation;
+        public EnemyData Enemy;
+        public AnimData Animation;
+        public EnemyBuilderComponent OriginBuilder, BuildingBuilder;
+        public int Dock, Stage, Direction, Target, Base, BaseState;
+        public byte[] Bytes;
+    }
+    private EnemyData[] relayPool;
+    private RelayReading[] relayReadings;
+
+    private bool ReadUnchangedRelay(SpaceSector sector, ObjectKey key, out byte[] bytes)
+    {
+        bytes = null;
+        if (!ReferenceEquals(relayPool, sector.enemyPool) || key.NativeId >= relayReadings.Length) return false;
+        var previous = relayReadings[key.NativeId];
+        if (previous == null || previous.Generation != key.Generation || !SameBits(previous.Enemy, sector.enemyPool[key.NativeId]) ||
+            !SameBits(previous.Animation, sector.enemyAnimPool[key.NativeId])) return false;
+        var enemy = previous.Enemy;
+        var hive = Hive(sector, enemy.originAstroId);
+        if (hive == null || enemy.dfRelayId >= hive.relays.cursor || hive.relays.buffer[enemy.dfRelayId] is not { } relay || relay.id != enemy.dfRelayId ||
+            previous.Dock != relay.dockIndex || previous.Stage != relay.stage || previous.Direction != relay.direction ||
+            previous.Target != relay.targetAstroId || previous.Base != relay.baseId || previous.BaseState != relay.baseState) return false;
+        var buildingHive = enemy.astroId == enemy.originAstroId ? hive : Hive(sector, enemy.astroId) ?? hive;
+        if (!SameBits(previous.OriginBuilder, BuilderInput(hive, enemy.builderId)) ||
+            !SameBits(previous.BuildingBuilder, BuilderInput(buildingHive, enemy.builderId))) return false;
+        bytes = previous.Bytes;
+        return true;
+    }
+
+    private void RememberRelay(SpaceSector sector, ObjectKey key, byte[] bytes)
+    {
+        ref var enemy = ref sector.enemyPool[key.NativeId];
+        // Other component kinds and combat stats use the complete reader. Both builder inputs
+        // are included: docked relays have builders too, and can migrate between astro frames.
+        if (enemy.dfRelayId <= 0 || enemy.combatStatId != 0 || enemy.unitId != 0 || enemy.dfTinderId != 0 ||
+            enemy.dfSCoreId != 0 || enemy.dfSNodeId != 0 || enemy.dfSConnectorId != 0 || enemy.dfSReplicatorId != 0 ||
+            enemy.dfSGammaId != 0 || enemy.dfSTurretId != 0) return;
+        var hive = Hive(sector, enemy.originAstroId);
+        if (hive == null || enemy.dfRelayId >= hive.relays.cursor || hive.relays.buffer[enemy.dfRelayId] is not { } relay || relay.id != enemy.dfRelayId) return;
+        if (!ReferenceEquals(relayPool, sector.enemyPool))
+        { relayPool = sector.enemyPool; relayReadings = new RelayReading[relayPool.Length]; }
+        var reading = relayReadings[key.NativeId] ??= new RelayReading();
+        reading.Generation = key.Generation; reading.Enemy = enemy; reading.Animation = sector.enemyAnimPool[key.NativeId];
+        reading.Dock = relay.dockIndex; reading.Stage = relay.stage; reading.Direction = relay.direction;
+        reading.Target = relay.targetAstroId; reading.Base = relay.baseId; reading.BaseState = relay.baseState; reading.Bytes = bytes;
+        reading.OriginBuilder = BuilderInput(hive, enemy.builderId);
+        var buildingHive = enemy.astroId == enemy.originAstroId ? hive : Hive(sector, enemy.astroId) ?? hive;
+        reading.BuildingBuilder = BuilderInput(buildingHive, enemy.builderId);
+    }
+
+    private static EnemyBuilderComponent BuilderInput(EnemyDFHiveSystem hive, int id) =>
+        id > 0 && hive?.builders != null && id < hive.builders.cursor ? hive.builders.buffer[id] : default;
+
+    private static unsafe bool SameBits<T>(T a, T b) where T : unmanaged
+    {
+        var left = (byte*)&a; var right = (byte*)&b;
+        var i = 0;
+        for (; i + 8 <= sizeof(T); i += 8) if (*(long*)(left + i) != *(long*)(right + i)) return false;
+        for (; i < sizeof(T); i++) if (left[i] != right[i]) return false;
+        return true;
+    }
+
+    public void BeginCapture(ScopeKey scope)
+    {
+        EndCapture();
+        if (scope.Kind != PoolKind.SpaceEnemy) return;
+        captureSector = GameMain.spaceSector;
+        capturePool = captureSector?.enemyPool;
+        captureHives = captureSector?.dfHivesByAstro;
+    }
+
+    public void EndCapture() { captureSector = null; capturePool = null; captureHives = null; }
+
+    private EnemyDFHiveSystem Hive(SpaceSector sector, int astro)
+    {
+        var index = astro - 1000000;
+        if (captureHives != null && ReferenceEquals(sector, captureSector) && ReferenceEquals(sector.enemyPool, capturePool) &&
+            ReferenceEquals(sector.dfHivesByAstro, captureHives))
+            return (uint)index < (uint)sector.maxHiveCount ? captureHives[index] : null;
+        return sector.GetHiveByAstroId(astro);
+    }
 
     public long UnreadableScopes { get; private set; }
     public long CorruptReferences { get; private set; }
@@ -103,7 +191,11 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
         retired.Clear();
         foreach (var key in published.Keys)
             if (!tracker.IsAlive(key.NativeId) || tracker.GenerationOf(key.NativeId) != key.Generation) retired.Add(key);
-        foreach (var key in retired) published.Remove(key);
+        foreach (var key in retired)
+        {
+            published.Remove(key); turretExports.Remove(key);
+            if (relayReadings != null && key.NativeId < relayReadings.Length) relayReadings[key.NativeId] = null;
+        }
         candidates.Rebuild(sector.enemyPool, GameMain.gameTick, members);
         foreach (var key in members)
         {
@@ -134,7 +226,8 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
     {
         lock (gate)
         {
-            tracker.Retire(key.NativeId); candidates.Remove(key); published.Remove(key);
+            tracker.Retire(key.NativeId); candidates.Remove(key); published.Remove(key); turretExports.Remove(key);
+            if (relayReadings != null && key.NativeId < relayReadings.Length) relayReadings[key.NativeId] = null;
         }
     }
     public void MarkState(int id) => candidates.Changed(id);
@@ -169,7 +262,8 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
             return false;
         }
         // Capture all native inputs once at the parked-worker boundary; encode only if publishing.
-        if (!TryReadEnemyState(sector, key.NativeId, out var decoded, out var capturedUnit))
+        if (ReadUnchangedRelay(sector, key, out state)) return true;
+        if (!TryReadEnemyState(sector, key, out var decoded, out var capturedUnit))
         {
             return false;
         }
@@ -179,22 +273,24 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
         // hive core's hitpoints, a node's manufacture progress and a turret's state are settled
         // facts — see EnemyStatePolicy.HasMoved.
         if (published.TryGetValue(key, out var previous) && !EnemyStatePolicy.HasMoved(previous.State, decoded, movingUnit))
-        { state = previous.Bytes; return true; }
+        { state = previous.Bytes; RememberRelay(sector, key, state); return true; }
         if (!SpaceEnemyStateCodec.TryEncodeCaptured(decoded, capturedUnit, out state, out var canonical))
         {
             CorruptReferences++;
             return false;
         }
         published[key] = (canonical, state);
+        RememberRelay(sector, key, state);
         return true;
     }
 
     /// <summary>
     /// Captures one enemy and its native unit together, before allocating any wire buffers.
     /// </summary>
-    private bool TryReadEnemyState(SpaceSector sector, int enemyId, out SpaceEnemyState state, out EnemyUnitComponent capturedUnit)
+    private bool TryReadEnemyState(SpaceSector sector, ObjectKey key, out SpaceEnemyState state, out EnemyUnitComponent capturedUnit)
     {
         state = default; capturedUnit = default;
+        var enemyId = key.NativeId;
         ref var enemy = ref sector.enemyPool[enemyId];
         var kind = SpaceEnemyKinds.FromComponentIds(enemy.dfSCoreId, enemy.dfSNodeId,
             enemy.dfSConnectorId, enemy.dfSReplicatorId, enemy.dfSGammaId, enemy.dfSTurretId,
@@ -204,6 +300,8 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
             UnknownKinds++;
             return false;
         }
+        var originHive = Hive(sector, enemy.originAstroId);
+        var buildingHive = enemy.astroId == enemy.originAstroId ? originHive : Hive(sector, enemy.astroId) ?? originHive;
         var hasCombatStat = false;
         int hp = 0, hpMax = 0, hpRecover = 0, hpIncoming = 0;
         var combatStatId = enemy.combatStatId;
@@ -227,11 +325,11 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
                 Log.Warn($"[authority] space enemy {enemyId} has a dangling combatStatId {combatStatId}");
             }
         }
-        var dockIndex = ResolveDockIndex(sector, in enemy);
-        var builderIndex = ResolveBuilderIndex(sector, in enemy);
-        var unit = ReadUnit(sector, in enemy);
+        var dockIndex = ResolveDockIndex(originHive, in enemy);
+        var builderIndex = ResolveBuilderIndex(originHive, in enemy);
+        var unit = ReadUnit(originHive, in enemy);
         if (kind == SpaceEnemyKind.SpaceUnit && unit.id == 0) { CorruptReferences++; return false; }
-        var level = kind == SpaceEnemyKind.SpaceUnit ? unit.level : ResolveLevel(sector, in enemy, kind);
+        var level = kind == SpaceEnemyKind.SpaceUnit ? unit.level : ResolveLevel(originHive, kind);
         var animation = sector.enemyAnimPool[enemyId];
         // A hive turret's aim is only copied into the sector animation pool while the host is inside
         // the star (isLocal). Resolving it from the component keeps the barrel turning wherever the
@@ -241,7 +339,7 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
         var turretInRange = false;
         if (enemy.dfSTurretId > 0)
         {
-            var hive = ResolveHive(sector, in enemy);
+            var hive = buildingHive;
             if (hive != null && enemy.dfSTurretId < hive.turrets.cursor)
             {
                 ref var turret = ref hive.turrets.buffer[enemy.dfSTurretId];
@@ -251,12 +349,13 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
                     animation = EnemyTurretAnimation.Resolve(turret.localDir, turret.state, turret.fire, turret.heat,
                         turret.sensorRange, turret.attackRange, EnemyTurretAnimation.AttackInterval(enemy.modelIndex));
                     turretState = (int)turret.state;
-                nativeTurret = NebulaeWorld.Combat.NativeDarkFogTurrets.Export(turret);
+                    if (!turretExports.TryGetValue(key, out var export)) turretExports[key] = export = new();
+                    nativeTurret = export.Read(turret);
                     turretInRange = turret.targetInShootRange;
                 }
             }
         }
-        var buildingFacts = ReadBuildingFacts(sector, in enemy);
+        var buildingFacts = ReadBuildingFacts(buildingHive, in enemy);
         capturedUnit = unit;
         state = new SpaceEnemyState(kind, hasCombatStat, enemy.dynamic,
             enemy.protoId, enemy.modelIndex, enemy.owner, enemy.port, enemy.stateFlags,
@@ -273,14 +372,18 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
             kind == SpaceEnemyKind.SpaceUnit && enemy.dynamic ? Multiplayer.Session?.AuthorityRuntime?.CompletedSimulationTick ?? GameMain.gameTick : 0,
             unit.stateTick, unit.disturbValue,
             null,
-            unit.anim, unit.steering, unit.speed, buildingFacts.State, nativeTurret, ReadActivity(sector, in enemy));
+            unit.anim, unit.steering, unit.speed, buildingFacts.State, nativeTurret, ReadActivity(originHive, in enemy));
         return true;
     }
 
     internal static SpaceEnemyActivity ReadActivity(SpaceSector sector, in EnemyData enemy)
     {
         if (enemy.dfRelayId == 0 && enemy.dfTinderId == 0 && enemy.dfSCoreId == 0) return default;
-        var hive = sector.GetHiveByAstroId(enemy.originAstroId);
+        return ReadActivity(sector.GetHiveByAstroId(enemy.originAstroId), in enemy);
+    }
+
+    private static SpaceEnemyActivity ReadActivity(EnemyDFHiveSystem hive, in EnemyData enemy)
+    {
         if (hive == null) return default;
         if (enemy.dfRelayId > 0 && enemy.dfRelayId < hive.relays.cursor && hive.relays.buffer[enemy.dfRelayId] is { } relay && relay.id == enemy.dfRelayId)
             return new SpaceEnemyActivity(stage: relay.stage, direction: relay.direction, targetAstroId: relay.targetAstroId,
@@ -302,6 +405,7 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
     public bool TryReadSnapshotState(ObjectKey key, out byte[] state)
     {
         published.Remove(key);
+        if (relayReadings != null && key.NativeId > 0 && key.NativeId < relayReadings.Length) relayReadings[key.NativeId] = null;
         return TryReadState(key, out state);
     }
 
@@ -310,20 +414,12 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
     /// state line ("攻击中"/"巡逻中"/…). Zero for every non-unit enemy and while the hive or the
     /// component cannot be resolved.
     /// </summary>
-    private static EnemyUnitComponent ReadUnit(SpaceSector sector, in EnemyData enemy)
+    private static EnemyUnitComponent ReadUnit(EnemyDFHiveSystem hive, in EnemyData enemy)
     {
         if (enemy.unitId <= 0) return default;
-        var hive = sector.GetHiveByAstroId(enemy.originAstroId);
         if (hive?.units == null || enemy.unitId >= hive.units.cursor) return default;
         ref var unit = ref hive.units.buffer[enemy.unitId];
         return unit.id == enemy.unitId && unit.enemyId == enemy.id ? unit : default;
-    }
-
-    /// <summary>The hive an enemy's building components belong to: where it is now, else where it came from.</summary>
-    private static EnemyDFHiveSystem ResolveHive(SpaceSector sector, in EnemyData enemy)
-    {
-        // GetHiveByAstroId is null-safe for every astro id: a planet astro indexes out of range and yields null.
-        return sector.GetHiveByAstroId(enemy.astroId) ?? sector.GetHiveByAstroId(enemy.originAstroId);
     }
 
     /// <summary>
@@ -333,11 +429,10 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
     /// read the same way.
     /// </summary>
     private static (int Sp, int SpMax, int ProductSp, int ProductSpMax, int Matter, int MatterMax,
-        int MatterChange, int Energy, int EnergyMax, int EnergyChange, int State) ReadBuildingFacts(SpaceSector sector, in EnemyData enemy)
+        int MatterChange, int Energy, int EnergyMax, int EnergyChange, int State) ReadBuildingFacts(EnemyDFHiveSystem hive, in EnemyData enemy)
     {
         var facts = (Sp: 0, SpMax: 0, ProductSp: 0, ProductSpMax: 0, Matter: 0, MatterMax: 0,
             MatterChange: 0, Energy: 0, EnergyMax: 0, EnergyChange: 0, State: 0);
-        var hive = ResolveHive(sector, in enemy);
         if (hive == null) return facts;
         try
         {
@@ -374,12 +469,11 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
         return facts;
     }
 
-    private static int ResolveDockIndex(SpaceSector sector, in EnemyData enemy)
+    private static int ResolveDockIndex(EnemyDFHiveSystem hive, in EnemyData enemy)
     {
         try
         {
             if (enemy.dfRelayId <= 0 && enemy.dfTinderId <= 0) return 0;
-            var hive = sector.GetHiveByAstroId(enemy.originAstroId);
             if (hive == null) return 0;
             if (enemy.dfRelayId > 0 && enemy.dfRelayId < hive.relays.cursor &&
                 hive.relays.buffer[enemy.dfRelayId] != null)
@@ -399,12 +493,11 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
         return 0;
     }
 
-    private static int ResolveBuilderIndex(SpaceSector sector, in EnemyData enemy)
+    private static int ResolveBuilderIndex(EnemyDFHiveSystem hive, in EnemyData enemy)
     {
         if (enemy.builderId <= 0) return 0;
         try
         {
-            var hive = sector.GetHiveByAstroId(enemy.originAstroId);
             if (hive == null) return 0;
             if (enemy.builderId < hive.builders.cursor &&
                 hive.builders.buffer[enemy.builderId].id == enemy.builderId)
@@ -419,11 +512,10 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
         return 0;
     }
 
-    private static int ResolveLevel(SpaceSector sector, in EnemyData enemy, SpaceEnemyKind kind)
+    private static int ResolveLevel(EnemyDFHiveSystem hive, SpaceEnemyKind kind)
     {
         try
         {
-            var hive = sector.GetHiveByAstroId(enemy.originAstroId);
             if (hive == null) return 0;
             if (kind == SpaceEnemyKind.SpaceCore)
             {

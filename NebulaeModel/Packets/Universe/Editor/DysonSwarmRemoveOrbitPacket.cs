@@ -25,5 +25,6 @@ internal enum SwarmRemoveOrbitEvent
     Remove,
     Disable,
     Enable,
-    RemoveSails
+    RemoveSails,
+    MakeSailsEternal
 }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -62,7 +62,6 @@ internal sealed class PlayerWeaponManager : IDisposable
     }
     [ThreadStatic] private static Entry current;
     [ThreadStatic] private static PlayerShotId? hostShot;
-    public static bool InWeaponTick => current != null;
     public static bool SuppressImpactAudio => current != null && current.Impacts.ContainsKey(current.ImpactOrdinal + 1);
     public static int EffectAstro(SkillSystem system)
     {
@@ -133,10 +132,14 @@ internal sealed class PlayerWeaponManager : IDisposable
     {
         Ensure();
         if (pools == null) return null;
-        return new FireCapture { Intent = intent, Target = target,
+        return new FireCapture
+        {
+            Intent = intent,
+            Target = target,
             Resources = Multiplayer.Session.IsClient && !PlayerWeaponResources.Active ? Resources.Enter(GameMain.mainPlayer.mecha) : null,
             Item = intent.Kind == CombatIntentKind.Bomb ? GameMain.mainPlayer?.mecha?.bombStorage?.grids[0].itemId ?? 0 : (int)intent.X,
-            Pools = pools.Select(p => (p, p.Cursor, p.Recycled)).ToArray() };
+            Pools = pools.Select(p => (p, p.Cursor, p.Recycled)).ToArray()
+        };
     }
     public void FinishFire(FireCapture capture, bool success)
     {
@@ -166,9 +169,20 @@ internal sealed class PlayerWeaponManager : IDisposable
         for (var part = 0; part < added.Length; part++)
         {
             var item = added[part];
-            var entry = new Entry { Shot = shot, Part = part, Id = item.Id, Pool = item.Pool, Star = star,
-                Astro = NativePlayerWeaponPool.Astro(item.Pool.Read(item.Id)), Target = target, Predicted = session.IsClient,
-                Launched = session.IsServer, SampleTick = GameMain.gameTick, LastCorrection = GameMain.gameTick };
+            var entry = new Entry
+            {
+                Shot = shot,
+                Part = part,
+                Id = item.Id,
+                Pool = item.Pool,
+                Star = star,
+                Astro = NativePlayerWeaponPool.Astro(item.Pool.Read(item.Id)),
+                Target = target,
+                Predicted = session.IsClient,
+                Launched = session.IsServer,
+                SampleTick = GameMain.gameTick,
+                LastCorrection = GameMain.gameTick
+            };
             Bind(entry);
             if (session.IsServer) outbound.Enqueue(Sample(entry, PlayerWeaponEvent.Launch));
         }
@@ -228,24 +242,40 @@ internal sealed class PlayerWeaponManager : IDisposable
         if (entry == null) return false;
         var ordinal = Interlocked.Increment(ref entry.ImpactOrdinal);
         if (Multiplayer.Session.IsClient)
-            {
-                if (entry.Impacts.ContainsKey(ordinal) || entry.ConfirmedImpacts.Contains(ordinal)) { skills.hitEffects[kind].Remove(id); return true; }
-                entry.Impacts[ordinal] = (kind, id, GameMain.gameTick - particle.time); LocalImpacts++;
-            }
+        {
+            if (entry.Impacts.ContainsKey(ordinal) || entry.ConfirmedImpacts.Contains(ordinal)) { skills.hitEffects[kind].Remove(id); return true; }
+            entry.Impacts[ordinal] = (kind, id, GameMain.gameTick - particle.time); LocalImpacts++;
+        }
         else
         {
             HostImpacts++;
             using var s = new MemoryStream(); using var w = new BinaryWriter(s); particle.Export(w);
-            outbound.Enqueue(new PlayerWeaponSample { Shot = entry.Shot, Part = entry.Part, Ordinal = ordinal,
-                Event = PlayerWeaponEvent.Impact, Kind = entry.Pool.Kind, Star = entry.Star, Astro = particle.astroId,
-                Tick = GameMain.gameTick, Subtype = kind, Payload = s.ToArray() });
+            outbound.Enqueue(new PlayerWeaponSample
+            {
+                Shot = entry.Shot,
+                Part = entry.Part,
+                Ordinal = ordinal,
+                Event = PlayerWeaponEvent.Impact,
+                Kind = entry.Pool.Kind,
+                Star = entry.Star,
+                Astro = particle.astroId,
+                Tick = GameMain.gameTick,
+                Subtype = kind,
+                Payload = s.ToArray()
+            });
         }
         return true;
     }
     private static PlayerWeaponSample Sample(Entry entry, PlayerWeaponEvent type) => new()
     {
-        Shot = entry.Shot, Part = entry.Part, Kind = entry.Pool.Kind, Event = type, Star = entry.Star, Astro = entry.Astro,
-        Target = entry.Target, Tick = GameMain.gameTick,
+        Shot = entry.Shot,
+        Part = entry.Part,
+        Kind = entry.Pool.Kind,
+        Event = type,
+        Star = entry.Star,
+        Astro = entry.Astro,
+        Target = entry.Target,
+        Tick = GameMain.gameTick,
         Payload = type is PlayerWeaponEvent.Launch or PlayerWeaponEvent.State ? entry.Pool.Export(entry.Id) : Array.Empty<byte>()
     };
     private void End(Entry entry)

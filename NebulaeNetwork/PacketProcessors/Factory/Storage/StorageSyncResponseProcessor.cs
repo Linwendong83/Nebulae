@@ -25,9 +25,10 @@ internal class StorageSyncResponseProcessor : PacketProcessor<StorageSyncRespons
         {
             return;
         }
-        using (var reader = new BinaryUtils.Reader(packet.StorageComponent))
+        using (var reader = new BinaryUtils.Reader(packet.StorageComponent, 2))
         {
             storageComponent.Import(reader.BinaryReader);
+            reader.RequireEnd();
         }
         var storage = Multiplayer.Session.Storage;
         if (!storage.WindowOpened || !ReferenceEquals(storage.ActiveStorageComponent, storageComponent)) return;

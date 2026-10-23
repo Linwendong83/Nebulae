@@ -1,4 +1,4 @@
-#region
+﻿#region
 
 using System;
 using System.Collections.Generic;
@@ -200,8 +200,13 @@ internal class CombatManager : IDisposable
 
     internal void RecordLocalMovement(PlayerMovement sample, int starId)
     {
-        localMovement = new RemotePlayerMovement.Snapshot { LocalPlanetId = sample.LocalPlanetId,
-            LocalPlanetPosition = sample.LocalPlanetPosition, UPosition = sample.UPosition, VelocityL = sample.VelocityL };
+        localMovement = new RemotePlayerMovement.Snapshot
+        {
+            LocalPlanetId = sample.LocalPlanetId,
+            LocalPlanetPosition = sample.LocalPlanetPosition,
+            UPosition = sample.UPosition,
+            VelocityL = sample.VelocityL
+        };
         localMovementStar = starId;
         hasLocalMovement = true;
     }

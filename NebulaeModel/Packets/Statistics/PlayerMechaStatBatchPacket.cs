@@ -8,10 +8,8 @@ namespace NebulaeModel.Packets.Statistics;
 ///     Several mecha production and consumption statistics in one packet.
 /// </summary>
 /// <remarks>
-///     The client reports every <c>AddProductionStat</c> and <c>AddConsumptionStat</c> call separately,
-///     and those fire on every crafted item and every mined node, so a short mining trip was dozens of
-///     eight-byte packets. Net changes per item are accumulated instead and reported together, which is
-///     the same total with one message.
+///     The client accumulates production and consumption changes per item and reports the net totals
+///     together. Positive counts mean production; negative counts mean consumption.
 /// </remarks>
 [NebulaeModel.Networking.PacketId(4471829305647283910UL)]
 internal class PlayerMechaStatBatchPacket

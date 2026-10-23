@@ -71,6 +71,8 @@ internal class PlayerMechaArmorProcessor : PacketProcessor<PlayerMechaArmor>
                     playerModel.MechaInstance.appearance.NotifyAllEvents();
                     playerModel.PlayerInstance.mechaArmorModel._Init(playerModel.PlayerInstance);
                     playerModel.PlayerInstance.mechaArmorModel._OnOpen();
+                    if (playerModel.RespawnVisual.IsAlive)
+                        NebulaeWorld.Combat.MechaInvincibilityVisual.RestoreAlive(playerModel.PlayerInstance.mechaArmorModel);
 
                     // and store the appearance on the server
                     if (!IsHost || player == null)

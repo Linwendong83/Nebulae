@@ -39,6 +39,7 @@ internal static class VegetationAction_Patch
 
     [HarmonyPrefix]
     [HarmonyPatch(typeof(PlanetFactory), nameof(PlanetFactory.BuildFinally))]
+    [HarmonyPatch(typeof(PlayerAction_Build), nameof(PlayerAction_Build.DoDismantleObject))]
     public static void BuildPrefix()
     {
         if (Multiplayer.IsActive) Multiplayer.Session.Vegetation.EnterBulkAction();
@@ -46,6 +47,7 @@ internal static class VegetationAction_Patch
 
     [HarmonyFinalizer]
     [HarmonyPatch(typeof(PlanetFactory), nameof(PlanetFactory.BuildFinally))]
+    [HarmonyPatch(typeof(PlayerAction_Build), nameof(PlayerAction_Build.DoDismantleObject))]
     public static void BuildFinalizer()
     {
         if (Multiplayer.IsActive) Multiplayer.Session.Vegetation.LeaveBulkAction();

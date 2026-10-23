@@ -379,47 +379,6 @@ internal static class ObjectKeyCodec
     }
 }
 
-/// <summary>Wire encoding of <see cref="CommandKey"/>.</summary>
-internal static class CommandKeyCodec
-{
-    /// <summary>Fixed wire size of a command key: epoch, connection epoch, sequence.</summary>
-    public const int SizeBytes = AuthorityEpoch.SizeBytes + 8 + 8;
-
-    public static void WriteTo(byte[] destination, int offset, in CommandKey key)
-    {
-        if (destination == null || offset < 0 || offset + SizeBytes > destination.Length)
-        {
-            throw new ArgumentException("CommandKey needs " + SizeBytes + " bytes.", nameof(destination));
-        }
-        key.Epoch.WriteTo(destination, offset);
-        var position = offset + AuthorityEpoch.SizeBytes;
-        Buffer.BlockCopy(BitConverter.GetBytes((long)key.Connection.Value), 0, destination, position, 8);
-        Buffer.BlockCopy(BitConverter.GetBytes(key.Sequence), 0, destination, position + 8, 8);
-    }
-
-    public static bool TryRead(byte[] source, int offset, in AuthoritySessionContext context,
-        out CommandKey key, out AuthorityReject reject)
-    {
-        key = default;
-        reject = AuthorityReject.Accepted;
-        if (source == null || offset < 0 || offset + SizeBytes > source.Length)
-        {
-            reject = new AuthorityReject(AuthorityRejectCode.InvalidCommandKey, "truncated key");
-            return false;
-        }
-        var epoch = AuthorityEpoch.FromBytes(source, offset);
-        var position = offset + AuthorityEpoch.SizeBytes;
-        var connection = new ConnectionEpoch((ulong)BitConverter.ToInt64(source, position));
-        var sequence = BitConverter.ToInt64(source, position + 8);
-
-        var candidate = new CommandKey(epoch, connection, sequence);
-        reject = AuthorityEnvelopeGate.ValidateCommandKey(context, candidate);
-        if (reject.IsRejected) return false;
-        key = candidate;
-        return true;
-    }
-}
-
 /// <summary>
 /// A bounded cursor over one already-validated payload buffer.
 /// </summary>

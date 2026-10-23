@@ -88,26 +88,6 @@ internal class ConcurrentPlayerCollection
     }
 
     /// <summary>
-    /// Retrieves a player from the connected players list by their username.
-    /// </summary>
-    /// <param name="username"></param>
-    /// <param name="connectionStatus">The connection status cache to query</param>
-    /// <returns>
-    /// Player or null if the player has disconnected.
-    /// </returns>
-    public INebulaePlayer Get(string username, EConnectionStatus connectionStatus = EConnectionStatus.Connected)
-    {
-        var connectedPlayers = playerCollections[connectionStatus];
-        foreach (var kvp in connectedPlayers)
-        {
-            if (kvp.Value.Data.Username == username)
-                return kvp.Value;
-        }
-
-        return null;
-    }
-
-    /// <summary>
     /// Retrieves a player from the connected players list by their player id.
     /// </summary>
     /// <param name="playerId"></param>

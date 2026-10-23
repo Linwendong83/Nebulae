@@ -8,6 +8,9 @@ namespace NebulaePatcher.Patches.Dynamic;
 [HarmonyPatch]
 internal static class UIStorageRefreshGuard_Patch
 {
+    [HarmonyTargetMethods]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "IDE0051:Remove unused private members",
+        Justification = "Harmony discovers this target provider by reflection when processing the patch class.")]
     private static IEnumerable<MethodBase> TargetMethods()
     {
         foreach (var name in new[] { "OnGridMouseDown", "OnGridMouseUp", "OnGridSplitMouseUp", "HandTake", "HandPut", "OnSort" })

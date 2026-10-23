@@ -1,7 +1,7 @@
 ﻿namespace NebulaeModel.Packets.Planet;
 
 [NebulaeModel.Networking.PacketId(3312890902060737998UL)]
-internal class VegeAddPacket
+internal class VegeAddPacket : NebulaeModel.Networking.IVegetationOperation
 {
     public VegeAddPacket() { }
 
@@ -21,4 +21,8 @@ internal class VegeAddPacket
     public byte[] Data { get; set; }
     [NebulaeModel.Networking.WireOrder(3)]
     public bool IsPlanting { get; set; }
+    [NebulaeModel.Networking.WireOrder(4)]
+    public bool IsRejected { get; set; }
+    [NebulaeModel.Networking.WireOrder(5)]
+    public long CommandSequence { get; set; }
 }

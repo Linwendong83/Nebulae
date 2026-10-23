@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using System;
 using NebulaeModel.Contracts;
@@ -14,6 +14,13 @@ internal class LobbyResponseProcessor : PacketProcessor<LobbyResponse>
 {
     protected override void ProcessPacket(LobbyResponse packet, NebulaeConnection conn)
     {
+        if (IsHost) return;
+        var combatSettings = new CombatSettings();
+        using (var p = new BinaryUtils.Reader(packet.CombatSettingsData, 0))
+        {
+            combatSettings.Import(p.BinaryReader);
+            p.RequireEnd();
+        }
         ((LocalPlayer)Multiplayer.Session.LocalPlayer).IsHost = false;
         Multiplayer.Session.NumPlayers = packet.NumPlayers;
         Multiplayer.Session.IsInLobby = true;
@@ -29,12 +36,9 @@ internal class LobbyResponseProcessor : PacketProcessor<LobbyResponse>
         gameDesc.isSandboxMode = packet.IsSandboxMode;
         gameDesc.savedThemeIds = new int[packet.SavedThemeIds.Length];
         Array.Copy(packet.SavedThemeIds, gameDesc.savedThemeIds, packet.SavedThemeIds.Length);
-        using (var p = new BinaryUtils.Reader(packet.CombatSettingsData))
-        {
-            gameDesc.combatSettings.Import(p.BinaryReader);
-        }
+        gameDesc.combatSettings = combatSettings;
 
-        UIRoot.instance.galaxySelect.gameDesc = gameDesc;
+        NebulaeModel.Utils.NativeGameAccess.SetGalaxyDescription(UIRoot.instance.galaxySelect, gameDesc);
         UIRoot.instance.galaxySelect.uiCombat.gameDesc = gameDesc;
         UIRoot.instance.galaxySelect.GoalSetting.gameDesc = gameDesc;
         UIRoot.instance.galaxySelect.SetStarmapGalaxy();

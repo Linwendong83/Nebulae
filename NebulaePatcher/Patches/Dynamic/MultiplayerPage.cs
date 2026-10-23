@@ -815,18 +815,30 @@ internal static class MultiplayerPage
         };
     }
 
-    private static void OpenEditor(SavedServer server, bool direct)
+    internal static void ShowPasswordPrompt(string address, string password, string recordId)
+    {
+        ShowAfterDisconnect();
+        if (root == null) return;
+        // Keep the attempted address and record identity for both saved and direct connections.
+        OpenEditor(new SavedServer { Id = recordId, Address = address, Password = password }, true,
+            string.IsNullOrEmpty(password) ? "Password Required" : "Wrong Password");
+        passwordInput.ActivateInputField();
+    }
+
+    private static void OpenEditor(SavedServer server, bool direct, string titleKey = null)
     {
         directConnect = direct;
         editor.name = server?.Id ?? "Server editor";
         var title = editor.Find("Editor dialog/Add Server text")?.GetComponent<Text>();
-        NebulaeLocalizedText.Set(title, direct ? "Direct Connect" : server == null ? "Add Server" : "Edit Server");
+        NebulaeLocalizedText.Set(title, titleKey ?? (direct ? "Direct Connect" : server == null ? "Add Server" : "Edit Server"));
         nameInput.transform.parent.gameObject.SetActive(!direct);
         goalRow.gameObject.SetActive(!direct && goalCombo != null);
         nameInput.text = server?.Name ?? "";
         addressInput.text = server?.Address ?? "";
         addressInput.interactable = server == null || !direct;
         passwordInput.text = server?.Password ?? "";
+        var passwordLabel = passwordInput.transform.parent.Find("Password (optional) text").GetComponent<Text>();
+        NebulaeLocalizedText.Set(passwordLabel, direct && server != null ? "Password" : "Password (optional)");
         if (goalCombo != null)
         {
             goalCombo.itemIndex = Mathf.Clamp((server?.GoalLevel ?? 0) - 1, -1, 2);
@@ -852,12 +864,13 @@ internal static class MultiplayerPage
             return;
         }
 
+        var id = ServerMemoryStore.Instance.FindServer(editor.name)?.Id;
         if (directConnect)
         {
             var address = addressInput.text.Trim();
             var password = passwordInput.text;
             editor.gameObject.SetActive(false);
-            UIMainMenu_Patch.JoinGame(address, password);
+            UIMainMenu_Patch.JoinGame(address, password, id);
             return;
         }
 
@@ -867,7 +880,6 @@ internal static class MultiplayerPage
             return;
         }
 
-        var id = ServerMemoryStore.Instance.FindServer(editor.name)?.Id;
         try
         {
             var saved = ServerMemoryStore.Instance.SaveServer(id, nameInput.text, addressInput.text, passwordInput.text);
@@ -888,8 +900,8 @@ internal static class MultiplayerPage
     {
         var server = Selected();
         if (server == null) return;
-        if (string.IsNullOrEmpty(server.Password)) OpenEditor(server, true);
-        else UIMainMenu_Patch.JoinGame(server.Address, server.Password, server.Id);
+        // An empty saved password is valid; only a server authentication failure needs a prompt.
+        UIMainMenu_Patch.JoinGame(server.Address, server.Password, server.Id);
     }
 
     private static void DeleteSelected()

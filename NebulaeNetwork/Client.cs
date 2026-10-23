@@ -1,4 +1,4 @@
-using NebulaeModel.Packets;
+﻿using NebulaeModel.Packets;
 #region
 
 using System;
@@ -47,6 +47,8 @@ internal class Client : IClient
     private NebulaeConnection serverConnection;
     private bool websocketAuthenticationFailure;
 
+    public event Action AuthenticationFailed;
+
     /// <summary>
     ///     Connect to a server by host name or IP literal. The host is kept as configured: it is
     ///     resolved by the websocket layer when the connection is opened, not here.
@@ -92,7 +94,6 @@ internal class Client : IClient
 
     public void Start()
     {
-        Multiplayer.Session.JoinSync.BeginAttempt();
         RuntimePacketRegistry.Register((NebulaeNetPacketProcessor)PacketProcessor, false);
 
         clientSocket = new WebSocket(SocketUrl);
@@ -148,6 +149,7 @@ internal class Client : IClient
 
     public void SendPacket<T>(T packet) where T : class, new()
     {
+        StampVegetationOperation(packet);
         serverConnection?.SendPacket(packet);
     }
 
@@ -164,10 +166,17 @@ internal class Client : IClient
 
     public byte[] WriteOnce<T>(T packet) where T : class, new()
     {
+        StampVegetationOperation(packet);
         lock (PacketProcessor)
         {
             return PacketProcessor.Write(packet);
         }
+    }
+
+    private static void StampVegetationOperation(object packet)
+    {
+        if (packet is IVegetationOperation operation && operation.CommandSequence == 0)
+            operation.CommandSequence = Multiplayer.Session?.Vegetation?.NextCommandSequence() ?? 0;
     }
 
     public void SendPacketToLocalStar<T>(T packet) where T : class, new()
@@ -200,15 +209,21 @@ internal class Client : IClient
 
     public void Update()
     {
-        var packetStart = NebulaeModel.DataStructures.LoadingTimings.Now;
         // Loading the local baseline is only the first stage of joining. Keep the larger
         // budget until replay and authority baselines are ready, rather than throttling
         // the remaining synchronization as soon as GameLoader finishes.
         PacketProcessor.ProcessPacketQueue(PacketBudget(Time.unscaledDeltaTime,
             !Multiplayer.Session.IsGameLoaded || Multiplayer.Session.JoinSync.LocalPending));
-        Multiplayer.Session.Planets.Timings.Record("packet-queue", NebulaeModel.DataStructures.LoadingTimings.Elapsed(packetStart));
         Multiplayer.Session.Planets.Update();
         Multiplayer.Session.JoinSync.UpdateClient();
+
+        if (Multiplayer.Session.IsGameLoaded && Multiplayer.Session.WorldPaused && !Multiplayer.Session.JoinSync.LocalPending)
+        {
+            // A stopped clock still has inventory receipts and replica messages to settle.
+            NebulaeWorld.GameStates.JoinSyncManager.WaitForSimulation();
+            Multiplayer.Session.AuthorityRuntime?.OnFrameBoundary(GameMain.gameTick);
+            Multiplayer.Session.Life.GameTick();
+        }
 
         WatchdogJoinResponse();
 
@@ -237,7 +252,6 @@ internal class Client : IClient
         if (GameStatesManager.FragmentSize > 0)
         {
             var received = GetFragmentBufferLength();
-            GameStatesManager.UpdateBufferLength(received);
             Multiplayer.Session.JoinSync.TransferProgress(received);
         }
 
@@ -285,7 +299,6 @@ internal class Client : IClient
             return;
         }
 
-        Multiplayer.Session?.JoinSync.RecordTraffic(e.RawData?.Length ?? 0);
         byte[] packet;
         try
         {
@@ -294,6 +307,7 @@ internal class Client : IClient
         }
         catch (InvalidDataException exception)
         {
+            connection.StopSending();
             // A message the framing cannot read means the stream itself is corrupt: staying on it
             // would only feed the processors garbage, so close and let the close handler surface it.
             Log.Warn($"Dropping connection after an unreadable message: {exception.Message}");
@@ -312,7 +326,6 @@ internal class Client : IClient
         // The endpoint we actually reached. The connection itself is identified by the configured
         // host:port below, so no name lookup is needed to talk to the server.
         ServerEndpoint = GetRemoteEndPoint(clientSocket);
-
         Log.Info("Server connection established");
         serverConnection = new NebulaeConnection(clientSocket, new DnsEndPoint(ServerHost, ServerPort),
             PacketProcessor as NebulaeNetPacketProcessor);
@@ -338,16 +351,6 @@ internal class Client : IClient
 
     private void ClientSocket_OnClose(object sender, CloseEventArgs e)
     {
-        // Unity's TLS bug workaround, see https://github.com/sta/websocket-sharp/issues/219
-        var sslProtocolHack = (System.Security.Authentication.SslProtocols)(0xC00 | 0x300 | 0xC0);
-        // TlsHandshakeFailure: 1015
-        if (e.Code == 1015 && clientSocket.SslConfiguration.EnabledSslProtocols != sslProtocolHack)
-        {
-            clientSocket.SslConfiguration.EnabledSslProtocols = sslProtocolHack;
-            clientSocket.Connect();
-            return;
-        }
-
         if (serverConnection != null)
         {
             serverConnection.StopSending();
@@ -389,8 +392,12 @@ internal class Client : IClient
                         return;
                     }
                 case (ushort)DisconnectionReason.ProtocolError when websocketAuthenticationFailure:
-                    // The server rejected the credentials. There is no second chance to type a
-                    // password here: an empty attempt means one is required, anything else was wrong.
+                    if (AuthenticationFailed != null)
+                    {
+                        AuthenticationFailed.Invoke();
+                        return;
+                    }
+                    // Clients without an interactive retry handler still report the rejection.
                     InGamePopup.ShowWarning(
                         (string.IsNullOrEmpty(serverPassword) ? "Password Required" : "Wrong Password").Translate(),
                         "Server is protected. Please enter the correct password:".Translate(),

@@ -4,7 +4,7 @@ using NebulaeModel.Networking;
 
 namespace NebulaeModel.Packets.Factory.Assembler;
 
-internal enum FactoryProductMessage : byte { RequestSnapshot, Commit, Snapshot, InputCommit, Recipe, Acceleration }
+internal enum FactoryProductMessage : byte { RequestSnapshot, Commit, Snapshot, InputCommit, Recipe, Acceleration, FighterPortsSnapshot }
 
 [PacketId(9723416151934816341UL)]
 internal class FactoryProductPacket
@@ -24,6 +24,7 @@ internal class FactoryProductPacket
     [WireOrder(12)] public int[] IncServed { get; set; } = Array.Empty<int>();
     [WireOrder(13)] public bool ForceAcceleration { get; set; }
     [WireOrder(14)] public int[] OutputInc { get; set; } = Array.Empty<int>();
+    [WireOrder(15)] public int[] Filters { get; set; } = Array.Empty<int>();
 
     public static byte[] EncodeKey(in ObjectKey key)
     { var bytes = new byte[AuthorityLimits.ObjectKeyBytes]; ObjectKeyCodec.WriteTo(bytes, 0, key); return bytes; }
@@ -48,6 +49,7 @@ internal class FactoryProductPacket
         Served = Served == null ? null : (int[])Served.Clone(),
         IncServed = IncServed == null ? null : (int[])IncServed.Clone(),
         ForceAcceleration = ForceAcceleration,
-        OutputInc = OutputInc == null ? null : (int[])OutputInc.Clone()
+        OutputInc = OutputInc == null ? null : (int[])OutputInc.Clone(),
+        Filters = Filters == null ? null : (int[])Filters.Clone()
     };
 }

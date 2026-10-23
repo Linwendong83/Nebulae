@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using NebulaeModel.Logger;
 using NebulaeModel.DataStructures;
 
@@ -39,6 +40,7 @@ internal class NebulaeNetPacketProcessor : NetPacketProcessor, INetPacketProcess
     // end of the queue (where a later snapshot/ready marker could overtake them).
     public void DispatchInline(byte[] data, object userData)
     {
+        if (userData is NebulaeConnection { IsStopped: true }) return;
         if (data == null) throw new ParseException("Missing packet data");
         if (++dispatchDepth > 8) { dispatchDepth--; throw new ParseException("Packet nesting limit exceeded"); }
         try { ReadPacket(new NetDataReader(data), userData); }
@@ -64,13 +66,13 @@ internal class NebulaeNetPacketProcessor : NetPacketProcessor, INetPacketProcess
             {
                 DispatchInline(packet.Data, packet.UserData);
             }
-            catch (ParseException ex)
+            catch (Exception ex) when (ex is ParseException or InvalidDataException or EndOfStreamException)
             {
                 Log.Warn($"Rejected malformed packet: {ex.Message}");
-                if (packet.UserData is NebulaeConnection { peerSocket: not null } connection)
+                if (packet.UserData is NebulaeConnection connection)
                 {
                     connection.StopSending();
-                    connection.peerSocket.Close((ushort)DisconnectionReason.InvalidData, "Malformed packet");
+                    connection.peerSocket?.Close((ushort)DisconnectionReason.InvalidData, "Malformed packet");
                 }
             }
             catch (Exception ex) { Log.Error(ex); }
@@ -80,6 +82,7 @@ internal class NebulaeNetPacketProcessor : NetPacketProcessor, INetPacketProcess
 
     public void EnqueuePacketForProcessing(byte[] rawData, object userData)
     {
+        if (userData is NebulaeConnection { IsStopped: true }) return;
         lock (pendingPackets)
         {
             pendingPackets.Enqueue(new PendingPacket(rawData, userData));

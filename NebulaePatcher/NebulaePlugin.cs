@@ -88,6 +88,7 @@ public class NebulaePlugin : BaseUnityPlugin
     private static void Initialize()
     {
         InitPatches();
+        NebulaeModel.Utils.UnityDispatchQueue.Initialize();
         AddNebulaeBootstrapper();
     }
 

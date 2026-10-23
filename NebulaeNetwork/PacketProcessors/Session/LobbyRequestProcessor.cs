@@ -57,10 +57,6 @@ internal class LobbyRequestProcessor : PacketProcessor<LobbyRequest>
             return;
         }
 
-        // The peer passed the version gate before receiving any world data.
-        Multiplayer.Session.Authority.ConfirmHandshake();
-
-
         var isNewUser = false;
 
         // Load old data of the client
@@ -77,6 +73,8 @@ internal class LobbyRequestProcessor : PacketProcessor<LobbyRequest>
             }
             ((NebulaeNetwork.Server)Server).OnSocketDisconnection(previous.Connection);
         }
+        conn.CompleteHandshake();
+        Multiplayer.Session.Authority.ConfirmHandshake();
         ((PlayerData)player.Data).PersistentId = clientCertHash;
         if (SaveManager.PlayerSaves.TryGetValue(clientCertHash, out var value))
         {
@@ -144,7 +142,7 @@ internal class LobbyRequestProcessor : PacketProcessor<LobbyRequest>
         }
         else
         {
-            var gameDesc = UIRoot.instance.galaxySelect.gameDesc;
+            var gameDesc = NebulaeModel.Utils.NativeGameAccess.GetGalaxyDescription(UIRoot.instance.galaxySelect);
             byte[] combatSettingsData;
             using (var p = new BinaryUtils.Writer())
             {
