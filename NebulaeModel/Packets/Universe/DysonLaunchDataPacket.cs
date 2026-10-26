@@ -1,6 +1,5 @@
 #region
 
-using NebulaeModel.Networking;
 using NebulaeModel.DataStructures;
 
 #endregion

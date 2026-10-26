@@ -60,8 +60,15 @@ internal static class NativeCraftCommit_Patch
 [HarmonyPatch]
 internal static class NativeUnitHealth_Patch
 {
-    private static IEnumerable<MethodBase> TargetMethods() => typeof(UnitComponent).GetMethods(BindingFlags.Instance | BindingFlags.Public)
-        .Where(method => method.GetMethodBody() != null);
+    [HarmonyPrepare]
+    private static bool Prepare() => TargetMethods().Any();
+
+    internal static IEnumerable<MethodBase> TargetMethods() => typeof(UnitComponent).GetMethods(BindingFlags.Instance | BindingFlags.Public)
+        // Do not detour geometry/engagement methods with an empty transpiler. Unity
+        // Mono miscompiles the small warship's by-ref movement when these methods
+        // are rebuilt unnecessarily, even while multiplayer is inactive.
+        .Where(method => method.GetMethodBody() != null && PatchProcessor.GetOriginalInstructions(method)
+            .Any(code => code.StoresField(AccessTools.Field(typeof(CombatStat), nameof(CombatStat.hp)))));
     [HarmonyTranspiler]
     private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
     {

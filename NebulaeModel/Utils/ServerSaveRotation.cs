@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 
 namespace NebulaeModel.Utils;
@@ -11,15 +12,29 @@ internal static class ServerSaveRotation
             !File.Exists(Path.Combine(folder, temporaryName + suffixes[0]))) return;
         foreach (var suffix in suffixes)
         {
-            var oldest = Path.Combine(folder, slots[slots.Length - 1] + suffix);
-            if (File.Exists(oldest)) File.Delete(oldest);
-            for (var i = slots.Length - 2; i >= 0; i--)
+            string from = null, to = null;
+            try
             {
-                var source = Path.Combine(folder, slots[i] + suffix);
-                if (File.Exists(source)) File.Move(source, Path.Combine(folder, slots[i + 1] + suffix));
+                var oldest = Path.Combine(folder, slots[slots.Length - 1] + suffix);
+                from = oldest;
+                if (File.Exists(oldest)) File.Delete(oldest);
+                for (var i = slots.Length - 2; i >= 0; i--)
+                {
+                    var source = Path.Combine(folder, slots[i] + suffix);
+                    from = source; to = Path.Combine(folder, slots[i + 1] + suffix);
+                    if (File.Exists(source)) File.Move(source, Path.Combine(folder, slots[i + 1] + suffix));
+                }
+                var temporary = Path.Combine(folder, temporaryName + suffix);
+                from = temporary; to = Path.Combine(folder, slots[0] + suffix);
+                if (File.Exists(temporary)) File.Move(temporary, Path.Combine(folder, slots[0] + suffix));
             }
-            var temporary = Path.Combine(folder, temporaryName + suffix);
-            if (File.Exists(temporary)) File.Move(temporary, Path.Combine(folder, slots[0] + suffix));
+            catch (Exception error)
+            {
+                error.Data["Nebulae.FileStage"] = "autosave-rotation";
+                error.Data["Nebulae.FileSource"] = from;
+                error.Data["Nebulae.FileTarget"] = to;
+                throw;
+            }
         }
     }
 }

@@ -1,7 +1,6 @@
 ﻿#region
 
 using HarmonyLib;
-using NebulaeModel.DataStructures.Chat;
 using NebulaeWorld;
 using NebulaeWorld.MonoBehaviours.Local.Chat;
 using UnityEngine;
@@ -85,7 +84,7 @@ internal class GameCamera_Patch
 
     private static void StopTrackingPlayer(string text)
     {
-        ChatManager.Instance.SendChatMessage(text, ChatMessageType.CommandOutputMessage);
+        ChatManager.Instance.SendChatMessage(text);
         Multiplayer.Session.Gizmos.ObservingPlayerId = 0;
     }
 

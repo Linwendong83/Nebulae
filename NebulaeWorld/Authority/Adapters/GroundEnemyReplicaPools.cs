@@ -1,10 +1,8 @@
-﻿using NebulaeWorld;
-#region
+﻿#region
 
 using NebulaeModel.Authority;
 using NebulaeModel.Packets.Authority;
 using System;
-using NebulaeModel.DataStructures;
 
 #endregion
 
@@ -379,12 +377,12 @@ internal sealed class GroundEnemyReplicaPools : IGroundEnemyPools
     /// <para>
     /// The killing blow's impact direction is not replicated, so the fragments inherit only the
     /// enemy's own velocity: a default <c>ImpactData</c> has mass 0, which is exactly the branch
-    /// vanilla skips. A growth-type wreckage (<c>DFGBuilding</c>) is skipped because a shell carries
-    /// no builder progress for it to render. The audio holder lives in the sector skill system,
+    /// vanilla skips. Growth-type wreckage uses the last applied builder progress, retained by the
+    /// binding even after the replica's canonical state is retired. The audio holder lives in the sector skill system,
     /// which vanilla ticks from <c>GameLogic.LateUpdate</c> on every machine.
     /// </para>
     /// </remarks>
-    public void PlayDeathPresentation(int enemyId)
+    public void PlayDeathPresentation(int enemyId, int builderSp, int builderSpMax)
     {
         presentationWrites.FlushOne(enemyId, writePose);
         var factory = Factory;
@@ -400,18 +398,23 @@ internal sealed class GroundEnemyReplicaPools : IGroundEnemyPools
             var prefabDesc = PlanetFactory.PrefabDescByModelIndex[
                 modelProto.RuinId != 0 ? modelProto.RuinId : modelProto.ID];
             var wreckagePrefab = prefabDesc?.wreckagePrefab;
-            if (wreckagePrefab == null) return;
+            if (wreckagePrefab is null) return;
             var fragments = prefabDesc.wreckageFragments;
             if (fragments == null || fragments.Length == 0) return;
             var stateIndex = 0;
             if (fragments.Length > 1)
             {
-                stateIndex = (int)(UnityEngine.Random.value * fragments.Length);
-                if (stateIndex >= fragments.Length) stateIndex = fragments.Length - 1;
+                stateIndex = RandomWreckageVariant(fragments.Length);
             }
-            if (wreckagePrefab.transformType == WreckageHandler.ETransformType.None)
+            var impact = new ImpactData();
+            if (wreckagePrefab.transformType == WreckageHandler.ETransformType.DFGBuilding)
             {
-                var impact = new ImpactData();
+                UnityEngine.Vector3 pos = enemy.pos;
+                factory.planet.factoryModel.AddWreckage(modelProto, stateIndex, ref pos, ref enemy.rot,
+                    new UnityEngine.Vector3(builderSp, builderSpMax, 0f), ref impact, wreckagePrefab.transformType);
+            }
+            else if (wreckagePrefab.transformType == WreckageHandler.ETransformType.None)
+            {
                 factory.planet.factoryModel.AddWreckage(modelProto, stateIndex, enemy.pos, ref enemy.rot,
                     ref enemy.vel, ref impact);
             }
@@ -440,6 +443,10 @@ internal sealed class GroundEnemyReplicaPools : IGroundEnemyPools
                 enemyId + ": " + e.Message);
         }
     }
+
+    // Keep the engine-only random call out of the deterministic presentation path.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static int RandomWreckageVariant(int count) => Math.Min((int)(UnityEngine.Random.value * count), count - 1);
 
     private void WriteCombatStat(PlanetFactory factory, int enemyId, in GroundEnemyState state)
     {

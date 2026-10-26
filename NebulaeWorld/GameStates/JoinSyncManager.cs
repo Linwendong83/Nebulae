@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using NebulaeModel.Authority;
-using NebulaeModel.Contracts;
 using NebulaeModel.Logger;
 using NebulaeModel.Networking;
 using NebulaeModel.Networking.Serialization;
@@ -45,6 +44,9 @@ internal sealed class JoinSyncManager : IDisposable
     private long localProgress, reportedProgress;
     private double lastProgressReport;
     private NebulaeConnection localConnection;
+    private double localStarted;
+    private readonly DiagnosticWatchdog watchdog = new();
+    public string DiagnosticState => $"connection={localConnection?.Id} generation={LocalGeneration} sequence={LocalSequence} loaded={LocalLoaded} barrier={barrier} acked={barrierAcknowledged} final={finalReceived} transfer={DataTransfer.Stage} planet={DataTransfer.PlanetId} bytes={DataTransfer.ReceivedBytes}/{DataTransfer.TotalBytes} idle={Now - lastLocalProgress:F1}s authorityReady={AuthorityReady} productsReady={Multiplayer.Session?.FactoryProducts?.JoinReady}";
     public bool HasJoiningPeers { get { lock (gate) return buffers.Count != 0; } }
 
     /// <summary>Unity main thread only. Workers finish the preceding frame and stay parked;
@@ -65,6 +67,7 @@ internal sealed class JoinSyncManager : IDisposable
             buffers.Add(connection, new JoinSyncBuffer(connection.Id, Now));
         }
         connection.SendPacket(new JoinSyncBegin { Generation = connection.Id, TechBonuses = bonuses ?? new() });
+        Log.Debug($"[join-sync] snapshot begun connection={connection.Id} generation={connection.Id}");
     }
 
     public void Checkpoint(INebulaeConnection connection, int scope)
@@ -99,6 +102,7 @@ internal sealed class JoinSyncManager : IDisposable
             if (!buffers.TryGetValue(connection, out var buffer) || buffer.Generation != generation ||
                 buffer.Replaying || buffer.Failed) return;
             buffer.BeginReplay(Now);
+            Log.Debug($"[join-sync] replay begun connection={connection.Id} generation={generation} bytes={buffer.Bytes}");
             completions[connection] = complete;
             // Replay may refer to another player's mecha (trash, logistics). Install the roster first.
             connection.SendPacket(new SyncComplete(Multiplayer.Session.Server.Players.GetAllPlayerData(
@@ -134,6 +138,7 @@ internal sealed class JoinSyncManager : IDisposable
             if (!buffers.TryGetValue(connection, out var buffer)) return;
             var before = buffer.Bytes;
             if (!buffer.Acknowledge(ack.Generation, ack.Sequence, Now)) return;
+            Log.Debug($"[join-sync] barrier acknowledged connection={connection.Id} generation={ack.Generation} sequence={ack.Sequence} sent={buffer.SentSequence} buffered={buffer.Bytes}");
             bufferedBytes += buffer.Bytes - before;
             // The roster upgrade and tail enqueue are one main-thread transaction. Later
             // broadcasts reach Connected, behind this tail in the same ordered sender.
@@ -181,6 +186,9 @@ internal sealed class JoinSyncManager : IDisposable
         lock (gate) expired = buffers.Where(p => p.Value.Expired(Now)).Select(p => p.Key).ToArray();
         foreach (var connection in expired)
         {
+            lock (gate)
+                if (buffers.TryGetValue(connection, out var failed))
+                    Diagnostics.Warn("join:expired:" + connection.Id, () => $"[join-sync] host rejected joining peer connection={connection.Id} generation={failed.Generation} reason={(failed.Failed ? "buffer-limit" : "no-progress-timeout")} bytes={failed.Bytes}/{JoinSyncBuffer.ConnectionLimit} serverBytes={bufferedBytes}/{JoinSyncBuffer.ServerLimit} replaying={failed.Replaying} sent={failed.SentSequence} required={failed.RequiredSequence} ack={failed.AcknowledgedSequence} idle={Now - failed.LastProgress:F1}s");
             Forget(connection);
             Multiplayer.Session.Server.Disconnect(connection, DisconnectionReason.InvalidData,
                 "Joining timed out or exceeded the synchronization buffer. Please reconnect.");
@@ -192,6 +200,9 @@ internal sealed class JoinSyncManager : IDisposable
 
     public void BeginLocal()
     {
+        localStarted = Now;
+        watchdog.Clear();
+        Log.Debug("[join-sync] local join started");
         view?.Dispose();
         DataTransfer.Clear();
         worldDataReceived = false;
@@ -215,6 +226,7 @@ internal sealed class JoinSyncManager : IDisposable
         if (!LocalPending || begin.Generation <= 0 || LocalGeneration != 0)
             throw new InvalidOperationException("Unexpected join generation.");
         LocalGeneration = begin.Generation;
+        Log.Debug($"[join-sync] adopted generation connection={connection?.Id} generation={LocalGeneration}");
         // Research may finish between the handshake and the world cut. Use the bonuses
         // captured with that cut, then apply subsequent unlocks through the replay stream.
         ((NebulaeModel.DataStructures.MechaData)Multiplayer.Session.LocalPlayer.Data.Mecha).TechBonuses = begin.TechBonuses;
@@ -224,6 +236,7 @@ internal sealed class JoinSyncManager : IDisposable
     public void MarkLoaded()
     {
         LocalLoaded = true; lastLocalProgress = Now;
+        Log.Debug($"[join-sync] local world loaded {DiagnosticState}");
     }
 
     public void MarkWorldDataReceived() => worldDataReceived = true;
@@ -233,6 +246,7 @@ internal sealed class JoinSyncManager : IDisposable
         // Queued packets from a disposed connection must never affect a newer attempt.
         if (!LocalPending || localFailed || !ReferenceEquals(connection, localConnection)) return;
         DataTransfer.Begin(packet, LocalGeneration);
+        Log.Debug($"[join-sync] transfer begun id={packet.TransferId} {DiagnosticState}");
     }
 
     public void ReceiveTransfer(JoinDataTransferChunk packet, NebulaeConnection connection)
@@ -241,6 +255,7 @@ internal sealed class JoinSyncManager : IDisposable
         var prepared = DataTransfer.Receive(packet);
         ReceivedData(packet.Data.Length);
         if (prepared == null) return;
+        Log.Debug($"[join-sync] transferred message index={packet.MessageIndex} bytes={prepared.Length} {DiagnosticState}");
         var data = connection.ReceivePacket(DataTransfer.Decode(prepared));
         if (data == null) throw new InvalidOperationException("Join snapshot message was discarded.");
         ((NebulaeNetPacketProcessor)Multiplayer.Session.Network.PacketProcessor).DispatchInline(data, connection);
@@ -303,6 +318,7 @@ internal sealed class JoinSyncManager : IDisposable
         if (!LocalPending || packet.Generation != LocalGeneration || packet.Sequence != LocalSequence)
             throw new InvalidOperationException("Join barrier overtook world changes.");
         barrier = packet.Sequence;
+        Log.Debug($"[join-sync] barrier received {DiagnosticState}");
         lastLocalProgress = Now;
     }
 
@@ -333,6 +349,7 @@ internal sealed class JoinSyncManager : IDisposable
     public void UpdateClient()
     {
         if (!LocalPending || localFailed) return;
+        watchdog.Observe("join-progress", Now - lastLocalProgress >= 10 && Multiplayer.Session.Goals?.AwaitingSelection != true, () => "[join-sync] " + DiagnosticState, 20);
         var installed = Multiplayer.Session.AuthorityRuntime?.WorldReplica?.SnapshotsInstalledTotal ?? 0;
         if (installed != installedBaselines) { installedBaselines = installed; ReceivedData(1); }
         if (LocalGeneration > 0 && localProgress > reportedProgress && Now - lastProgressReport >= 1)
@@ -369,6 +386,8 @@ internal sealed class JoinSyncManager : IDisposable
         }
         if (!finalReceived) return;
         LocalPending = false;
+        watchdog.Clear();
+        Log.Debug($"[join-sync] local join completed elapsed={Now - localStarted:F1}s {DiagnosticState}");
         DataTransfer.Clear();
         Multiplayer.Session.Network.SendPacket(new GameStateRequest());
     }
@@ -381,6 +400,7 @@ internal sealed class JoinSyncManager : IDisposable
         if (!LocalPending || !LocalLoaded || localFailed || barrier < 0 || !authorityReady || !productsReady) return false;
         enqueueAck();
         barrierAcknowledged = true;
+        Log.Debug($"[join-sync] interaction unlocked {DiagnosticState}");
         lastLocalProgress = Now;
         return true;
     }
@@ -388,8 +408,8 @@ internal sealed class JoinSyncManager : IDisposable
     public void FailLocal(Exception error)
     {
         if (localFailed) return;
+        Log.ErrorWithoutPopup($"[join-sync] joining failed elapsed={Now - localStarted:F1}s {DiagnosticState}", error);
         CancelLocal();
-        Log.Error("[join-sync] joining failed", error);
         // Use the transport's ordinary error/disconnect UI, keeping partially loaded data unplayable.
         localConnection?.peerSocket.Close((ushort)DisconnectionReason.InvalidData, "Join synchronization failed. Please reconnect.");
     }
@@ -418,6 +438,7 @@ internal sealed class JoinSyncManager : IDisposable
 
     public void Dispose()
     {
+        watchdog.Clear();
         localFailed = true;
         DataTransfer.Clear();
         view?.Dispose();

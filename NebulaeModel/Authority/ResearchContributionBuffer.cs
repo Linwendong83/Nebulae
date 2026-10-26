@@ -19,7 +19,6 @@ internal sealed class ResearchContributionBuffer
     private Batch tail;
     public Batch Active { get; private set; }
     public long Hashes { get; private set; }
-    public int QueuedCount => queued.Count;
     public bool CanRecord(int tech, int level, int speed, int[] items, int[] costs)
     {
         if (speed <= 0 || Hashes + speed > ResearchContributionIntent.MaxHashes ||

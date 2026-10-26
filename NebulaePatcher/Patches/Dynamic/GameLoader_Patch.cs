@@ -1,9 +1,7 @@
 ﻿#region
 
 using HarmonyLib;
-using NebulaeModel.Logger;
 using NebulaeWorld;
-using NebulaeWorld.GameStates;
 
 #endregion
 

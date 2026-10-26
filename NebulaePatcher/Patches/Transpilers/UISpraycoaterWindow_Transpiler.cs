@@ -46,9 +46,9 @@ internal class UISpraycoaterWindow_Transpiler
                 .RemoveInstructions(14); // remove #81~94, leave only (byte)num
             return matcher.InstructionEnumeration();
         }
-        catch
+        catch (System.Exception error)
         {
-            Log.Error("UISpraycoaterWindow._OnUpdate_Transpiler failed. Mod version not compatible with game version.");
+            Log.Error("UISpraycoaterWindow._OnUpdate_Transpiler failed. Mod version not compatible with game version.", error);
             return codeInstructions;
         }
     }

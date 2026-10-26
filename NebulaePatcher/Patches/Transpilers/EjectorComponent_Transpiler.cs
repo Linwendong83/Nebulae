@@ -51,11 +51,10 @@ internal class EjectorComponent_Transpiler
                             return;
                         }
 
-                        // Assume orbitId < 65536
                         var data = new DysonLaunchData.Projectile
                         {
                             PlanetId = planetId,
-                            TargetId = (ushort)orbitId,
+                            TargetId = orbitId,
                             LocalPos = localPos
                         };
                         Multiplayer.Session.Launch.ProjectileBag.Add(data);
@@ -63,9 +62,9 @@ internal class EjectorComponent_Transpiler
                 );
             return matcher.InstructionEnumeration();
         }
-        catch
+        catch (System.Exception error)
         {
-            Log.Error("EjectorComponent.InternalUpdate_Transpiler failed. Mod version not compatible with game version.");
+            Log.Error("EjectorComponent.InternalUpdate_Transpiler failed. Mod version not compatible with game version.", error);
             return codeInstructions;
         }
     }

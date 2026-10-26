@@ -23,6 +23,10 @@ internal sealed class TurretSnapshotAdapter : IHostWorldView, IHostIncrementalWo
     private readonly Dictionary<int, PlanetFactory> factories = new();
     private readonly List<ObjectKey> obsolete = new();
     public TurretSnapshotAdapter(AuthorityEpoch epoch) { this.epoch = epoch; }
+    public long Generation(int planet, int entity)
+    {
+        lock (gate) return trackers.TryGetValue(planet, out var tracker) ? tracker.GenerationOf(entity) : 0;
+    }
     private SlotGenerationTracker Tracker(int planet)
     {
         if (!trackers.TryGetValue(planet, out var tracker)) trackers[planet] = tracker = new SlotGenerationTracker();

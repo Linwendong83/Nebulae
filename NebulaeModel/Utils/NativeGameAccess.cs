@@ -5,6 +5,16 @@ namespace NebulaeModel.Utils;
 
 internal static class NativeGameAccess
 {
+    private static readonly FieldInfo PlayerPlanetId = typeof(Player).GetField("_planetId", BindingFlags.Instance | BindingFlags.NonPublic);
+
+    // Remote avatars own their render hierarchy. The native setter reparents it, but both
+    // simulation fields must still agree (fleet movement reads planetId, not planetData).
+    internal static void SetSimulationPlanet(Player player, PlanetData planet)
+    {
+        PlayerPlanetId.SetValue(player, planet?.id ?? 0);
+        player.SetHiddenProperty(nameof(Player.planetData), planet);
+    }
+
     private static readonly FieldInfo GalaxyDescription = typeof(UIGalaxySelect).GetField("gameDesc", BindingFlags.Instance | BindingFlags.NonPublic);
     internal static GameDesc GetGalaxyDescription(UIGalaxySelect select) => (GameDesc)GalaxyDescription.GetValue(select);
     internal static void SetGalaxyDescription(UIGalaxySelect select, GameDesc desc) => GalaxyDescription.SetValue(select, desc);

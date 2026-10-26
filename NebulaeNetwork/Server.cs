@@ -4,6 +4,7 @@ using NebulaeModel.Packets;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -18,7 +19,6 @@ using NebulaeModel.Logger;
 using NebulaeModel.Networking.Serialization;
 using NebulaeModel.Packets.GameHistory;
 using NebulaeModel.Packets.Session;
-using NebulaeModel.Utils;
 using NebulaeNetwork.Messaging;
 using NebulaeWorld;
 using NebulaeWorld.Statistics;
@@ -55,6 +55,7 @@ internal class Server : IServer
 
     private ConcurrentQueue<ushort> PlayerIdPool = new();
     private int highestPlayerID;
+    private double nextDiagnosticCheck;
 
     public Server(ushort port, bool loadSaveFile = false)
     {
@@ -114,6 +115,7 @@ internal class Server : IServer
         }
 
         Multiplayer.Session.BuildDispatch?.PlayerLeft(player.Id);
+        Multiplayer.Session.Repairs?.PlayerLeft(player.Id);
         // The departing player's connection epoch is retired, so a reconnect gets a fresh dedup
         // window and no queued command from the old connection can still be executed.
         Multiplayer.Session.AuthorityRuntime?.ForgetPlayerConnection(player.Id);
@@ -165,14 +167,15 @@ internal class Server : IServer
                     await device.CreatePortMapAsync(new Mapping(Protocol.Tcp, Port, Port, "DSP nebulae"));
                     Log.Info($"Successfully created UPnp or Pmp port mapping for {Port}");
                 }
-                catch (NatDeviceNotFoundException)
+                catch (NatDeviceNotFoundException error)
                 {
-                    Log.Warn("No UPnp or Pmp compatible/enabled NAT device found".Translate());
+                    Diagnostics.Warn("nat:discovery", () => $"[network] NAT discovery failed port={Port}", error);
                 }
-                catch (MappingException)
+                catch (MappingException error)
                 {
-                    Log.Warn("Could not create UPnp or Pmp port mapping".Translate());
+                    Diagnostics.Warn("nat:mapping", () => $"[network] NAT port mapping failed protocol=TCP port={Port}", error);
                 }
+                catch (Exception error) { Diagnostics.Warn("nat:unexpected", () => $"[network] NAT background task failed port={Port}", error); }
             });
         }
 
@@ -208,7 +211,7 @@ internal class Server : IServer
         }
         catch (InvalidOperationException e)
         {
-            Log.Warn(e.ToString());
+            Log.ErrorWithoutPopup($"[network] server listen failed address=IPv6Any port={Port} dedicated={Multiplayer.IsDedicated}", e);
             InGamePopup.ShowError("Error".Translate(), "An error occurred while hosting the game: ".Translate() + e.Message,
                 "Close".Translate());
             Stop();
@@ -234,6 +237,8 @@ internal class Server : IServer
 
     public void Disconnect(INebulaeConnection conn, DisconnectionReason reason, string reasonMessage = "")
     {
+        if (reason != DisconnectionReason.ClientRequestedDisconnect && reason != DisconnectionReason.Normal)
+            Diagnostics.Warn("server:disconnect:" + conn.Id + ":" + reason, () => $"[network] disconnecting connection={conn.Id} player={Players.Get(conn)?.Id} status={conn.ConnectionStatus} reason={reason} detail={reasonMessage}");
         OnSocketDisconnection(conn);
         if (Encoding.UTF8.GetBytes(reasonMessage).Length <= 123)
         {
@@ -348,6 +353,13 @@ internal class Server : IServer
         PacketProcessor.ProcessPacketQueue(Multiplayer.Session.IsGameLoaded ? 2 : 8);
         Multiplayer.Session.Planets.Update();
         Multiplayer.Session.JoinSync.UpdateServer();
+        Multiplayer.Session.InventoryTransfers.CheckDiagnostics();
+        if (Diagnostics.Now >= nextDiagnosticCheck)
+        {
+            nextDiagnosticCheck = Diagnostics.Now + 1;
+            foreach (var peer in Players.Connected.Keys.Concat(Players.Syncing.Keys).Concat(Players.Pending.Keys))
+                (peer as NebulaeConnection)?.CheckSendDiagnostics();
+        }
         if (Multiplayer.Session.IsGameLoaded && (Multiplayer.Session.WorldPaused || GameMain.isPaused))
         {
             NebulaeWorld.GameStates.JoinSyncManager.WaitForSimulation();

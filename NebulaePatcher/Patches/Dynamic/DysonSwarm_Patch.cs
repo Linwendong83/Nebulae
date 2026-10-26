@@ -2,6 +2,7 @@
 
 using HarmonyLib;
 using NebulaeModel.Packets.Universe.Editor;
+using NebulaeModel.Utils;
 using NebulaeWorld;
 using NebulaeWorld.Universe;
 using UnityEngine;
@@ -13,7 +14,14 @@ namespace NebulaePatcher.Patches.Dynamic;
 [HarmonyPatch(typeof(DysonSwarm))]
 internal class DysonSwarm_Patch
 {
-    private static Vector4 storedHsva;
+    [HarmonyPostfix, HarmonyPatch(nameof(DysonSwarm.Import))]
+    public static void Import_Postfix(DysonSwarm __instance)
+    {
+        // Network snapshots are validated before committing and must not silently lose sails.
+        if (Multiplayer.Session?.IsClient == true && Multiplayer.Session.DysonSpheres != null &&
+            Multiplayer.Session.DysonSpheres.IncomingDysonSwarmPacket) return;
+        if (!Multiplayer.IsDedicated) SolarSailState.AfterImport(__instance);
+    }
 
     [HarmonyPrefix, HarmonyPatch(nameof(DysonSwarm.SetAllSailsEternal))]
     public static bool SetAllSailsEternal_Prefix(DysonSwarm __instance)
@@ -84,9 +92,9 @@ internal class DysonSwarm_Patch
         {
             return;
         }
-        // Notify others about manual sails cleaning.
-        // In DysonSwarm.GameTick() it will automatically clean every 21600 ticks
-        if (!Multiplayer.Session.DysonSpheres.IncomingDysonSwarmPacket && GameMain.gameTick % 21600L != 0L)
+        // Orbit zero only compacts local slots. It also runs automatically at unrelated ticks.
+        if (orbitId != 0 && !Multiplayer.Session.DysonSpheres.IncomingDysonSwarmPacket &&
+            !Multiplayer.Session.DysonSpheres.InBlueprint)
         {
             Multiplayer.Session.Network.SendPacket(new DysonSwarmRemoveOrbitPacket(__instance.starData.index, orbitId,
                 SwarmRemoveOrbitEvent.RemoveSails));
@@ -112,11 +120,10 @@ internal class DysonSwarm_Patch
         {
             return;
         }
-        if (storedHsva == hsva)
+        if (orbitId < 0 || orbitId >= __instance.orbitColorsHSVA.Length || __instance.orbitColorsHSVA[orbitId] == hsva)
         {
             return;
         }
         Multiplayer.Session.Network.SendPacket(new DysonSwarmEditOrbitPacket(__instance.starData.index, orbitId, hsva));
-        storedHsva = hsva;
     }
 }

@@ -37,7 +37,7 @@ internal static class AuthoritySidecarLimits
 }
 
 /// <summary>
-/// Encoding and decoding of the authority sidecar.
+/// Reads historical authority sidecars for save migration.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -48,8 +48,8 @@ internal static class AuthoritySidecarLimits
 /// the declared records do.
 /// </para>
 /// <para>
-/// The codec is pure: it runs on plain byte arrays so the round trip and every rejection case are
-/// testable without a game process.
+/// The reader runs on plain byte arrays so historical fixtures and rejection cases are testable
+/// without a game process.
 /// </para>
 /// </remarks>
 internal static class AuthoritySaveCodec
@@ -58,123 +58,6 @@ internal static class AuthoritySaveCodec
     public const string Magic = "NBAS";
 
     private const int HeaderBytes = 8; // magic (4) + schema (4)
-
-    /// <summary>
-    /// Encodes the sidecar. Returns null when a value cannot fit its ceiling instead of writing a
-    /// file a reader would refuse.
-    /// </summary>
-    public static byte[] Encode(AuthoritySaveState state)
-    {
-        if (state == null || state.Schema != AuthoritySidecarSchema.Current) return null;
-        if (state.Players.Count > AuthoritySidecarLimits.PlayersMax ||
-            state.Accounts.Count > AuthoritySidecarLimits.AccountsMax ||
-            state.Budgets.Count > AuthoritySidecarLimits.BudgetsMax ||
-            state.Tasks.Count > AuthoritySidecarLimits.TasksMax)
-        {
-            return null;
-        }
-
-        var writer = new AuthorityPayloadWriter();
-        if (!writer.TryWriteString(state.WorldId ?? string.Empty, AuthoritySidecarLimits.WorldIdMaxBytes))
-        {
-            return null;
-        }
-        writer.WriteRaw(state.SavedEpoch.ToBytes());
-        writer.WriteLong(state.SavedHostTick);
-
-        writer.WriteInt(state.Players.Count);
-        foreach (var player in state.Players)
-        {
-            if (player == null ||
-                !writer.TryWriteString(player.PersistentId ?? string.Empty,
-                    AuthoritySidecarLimits.PersistentIdMaxBytes))
-            {
-                return null;
-            }
-            writer.WriteByte((byte)player.Role);
-            writer.WriteInt(player.PlanetId);
-            writer.WriteInt(player.StarId);
-            writer.WriteByte(player.IsAlive ? (byte)1 : (byte)0);
-            writer.WriteByte(player.RepairEnabled ? (byte)1 : (byte)0);
-            writer.WriteByte(player.BuildEnabled ? (byte)1 : (byte)0);
-            writer.WriteInt(player.DroneTotal);
-        }
-
-        writer.WriteInt(state.Accounts.Count);
-        foreach (var account in state.Accounts)
-        {
-            if (account == null ||
-                !writer.TryWriteString(account.PersistentId ?? string.Empty,
-                    AuthoritySidecarLimits.PersistentIdMaxBytes))
-            {
-                return null;
-            }
-            writer.WriteByte((byte)account.OwnerKind);
-            writer.WriteInt(account.BaseScope);
-            writer.WriteInt(account.BaseNativeId);
-            writer.WriteLong(account.BaseGeneration);
-            writer.WriteByte((byte)account.ResourceKind);
-            writer.WriteInt(account.ItemId);
-            writer.WriteByte(account.IsDouble ? (byte)1 : (byte)0);
-            if (account.IsDouble)
-            {
-                writer.WriteLong(BitConverter.DoubleToInt64Bits(account.DoubleBalance));
-            }
-            else
-            {
-                writer.WriteLong(account.LongBalance);
-            }
-        }
-
-        writer.WriteInt(state.Budgets.Count);
-        foreach (var budget in state.Budgets)
-        {
-            if (budget == null ||
-                !writer.TryWriteString(budget.PersistentId ?? string.Empty,
-                    AuthoritySidecarLimits.PersistentIdMaxBytes))
-            {
-                return null;
-            }
-            writer.WriteByte((byte)budget.OwnerKind);
-            writer.WriteInt(budget.BaseScope);
-            writer.WriteInt(budget.BaseNativeId);
-            writer.WriteLong(budget.BaseGeneration);
-            writer.WriteInt(budget.Total);
-        }
-
-        writer.WriteInt(state.Tasks.Count);
-        foreach (var task in state.Tasks)
-        {
-            if (task == null ||
-                !writer.TryWriteString(task.PersistentId ?? string.Empty,
-                    AuthoritySidecarLimits.PersistentIdMaxBytes))
-            {
-                return null;
-            }
-            writer.WriteLong(task.Sequence);
-            writer.WriteByte((byte)task.OwnerKind);
-            writer.WriteInt(task.BaseScope);
-            writer.WriteInt(task.BaseNativeId);
-            writer.WriteLong(task.BaseGeneration);
-            writer.WriteByte((byte)task.TargetKind);
-            writer.WriteInt(task.TargetScope);
-            writer.WriteInt(task.TargetNativeId);
-            writer.WriteLong(task.TargetGeneration);
-            writer.WriteByte((byte)task.TaskKind);
-            writer.WriteByte((byte)task.Stage);
-            writer.WriteLong(task.Revision);
-            writer.WriteLong(task.LastHostTick);
-            writer.WriteByte((byte)task.CancelReason);
-        }
-
-        var payload = writer.ToArray();
-        var file = new byte[HeaderBytes + payload.Length];
-        Encoding.ASCII.GetBytes(Magic, 0, Magic.Length, file, 0);
-        var schema = BitConverter.GetBytes(state.Schema);
-        Buffer.BlockCopy(schema, 0, file, 4, 4);
-        Buffer.BlockCopy(payload, 0, file, HeaderBytes, payload.Length);
-        return file;
-    }
 
     /// <summary>
     /// Decodes a sidecar file. Refuses with a reason instead of guessing: a wrong magic, an

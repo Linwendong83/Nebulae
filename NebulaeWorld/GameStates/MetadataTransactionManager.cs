@@ -30,6 +30,7 @@ internal sealed class MetadataTransactionManager : IDisposable
     private long lastPoll;
     private bool initialized;
     private bool faulted;
+    private readonly DiagnosticWatchdog diagnosticWaits = new();
     public bool ApplyingWorld { get; private set; }
     public bool ApplyingPersonal { get; private set; }
     public string ActiveOperationId { get; private set; } = "";
@@ -70,6 +71,7 @@ internal sealed class MetadataTransactionManager : IDisposable
         foreach (var tx in server.Values) serverTransactions.Add(tx.Id, tx);
         foreach (var tx in local.Values) localTransactions.Add(tx.Id, tx);
         initialized = true;
+        Log.Debug($"[metadata] journals loaded world={SaveManager.WorldId} serverPath={serverPath} localPath={localPath} serverTransactions={server.Count} localTransactions={local.Count}");
         if (Multiplayer.Session.IsServer)
         {
             sequence = serverTransactions.Values.Select(x => x.Sequence).DefaultIfEmpty().Max();
@@ -161,6 +163,8 @@ internal sealed class MetadataTransactionManager : IDisposable
     {
         if (Multiplayer.Session.IsDedicated || faulted) return;
         if (pending == null && requests.Count > 0) pending = requests.Dequeue();
+        diagnosticWaits.Observe("metadata-operation", pending != null,
+            () => $"[metadata] world={SaveManager.WorldId} tx={pending?.Id} operation={pending?.Operation} state={pending?.State} sequence={pending?.Sequence} queued={requests.Count}");
         if (pending == null) return;
         if (pending.State == MetadataTransactionState.DebitPending) FinishDebit(pending);
         var message = pending.State switch
@@ -337,7 +341,7 @@ internal sealed class MetadataTransactionManager : IDisposable
             if (input.AfterPlayer.Length > 0 && tx.AfterPlayer.Length == 0)
             {
                 tx.AfterPlayer = input.AfterPlayer;
-                var restored = ReadPlayer(tx.AfterPlayer);
+                var restored = ReadPlayer(tx.AfterPlayer, $"tx={tx.Id} operation={tx.Operation} snapshot=after");
                 if (restored != null && ShouldRestorePlayer(tx, restored, player))
                 {
                     if (player.CombatAuthoritative) player.TryApplyPersonalSnapshot(restored);
@@ -354,6 +358,7 @@ internal sealed class MetadataTransactionManager : IDisposable
 
     private static void Reject(MetadataTransaction tx, string error)
     {
+        Log.Debug($"[metadata] transaction rejected tx={tx.Id} operation={tx.Operation} state={tx.State} sequence={tx.Sequence} reason={error}");
         tx.State = MetadataTransactionState.Rejected;
         tx.Error = error;
     }
@@ -495,6 +500,7 @@ internal sealed class MetadataTransactionManager : IDisposable
             if (local.State != MetadataTransactionState.Committed) return;
             local.State = MetadataTransactionState.Applied;
             PersistLocal();
+            Log.Debug($"[metadata] transaction confirmed tx={local.Id} operation={local.Operation} sequence={local.Sequence}");
             if (pending?.Id == local.Id) pending = null;
             return;
         }
@@ -514,6 +520,7 @@ internal sealed class MetadataTransactionManager : IDisposable
             PersistLocal();
             FinishDebit(tx);
             SendToServer(CommitMessage(tx), tx);
+            Log.Debug($"[metadata] debit committed tx={tx.Id} operation={tx.Operation} state={tx.State} sequence={tx.Sequence}");
             return;
         }
         if (packet.Message != MetadataMessage.Result) return;
@@ -530,6 +537,7 @@ internal sealed class MetadataTransactionManager : IDisposable
             }
             local.State = MetadataTransactionState.Rejected;
             PersistLocal();
+            Log.Debug($"[metadata] transaction rejected or refunded tx={local.Id} operation={local.Operation} sequence={local.Sequence} reason={tx.Error}");
             if (pending?.Id == local.Id) pending = null;
             UIRealtimeTip.Popup(tx.Error.Translate());
             return;
@@ -612,11 +620,15 @@ internal sealed class MetadataTransactionManager : IDisposable
                         Multiplayer.Session.Server.SendPacket(new CombatAggressivenessUpdatePacket(0, history.combatSettings.aggressiveness));
                         break;
                     case MetadataOperation.Truce:
-                        history.AddTruceTime(tx.EffectValue - GameMain.gameTick - history.dfTruceTimer);
+                        // An expired receipt must not clear attacks when replayed after recovery.
+                        if (tx.EffectValue > GameMain.gameTick)
+                            history.AddTruceTime(tx.EffectValue - GameMain.gameTick - history.dfTruceTimer);
+                        else history.dfTruceTimer = 0;
                         Multiplayer.Session.Server.SendPacket(new CombatTruceUpdatePacket(0, tx.EffectValue));
                         break;
                     case MetadataOperation.WithdrawTruce:
-                        history.AddTruceTime(-history.dfTruceTimer);
+                        // Vanilla withdrawal only ends the timer; AddTruceTime also resets enemy attacks.
+                        history.dfTruceTimer = 0;
                         Multiplayer.Session.Server.SendPacket(new CombatTruceUpdatePacket(0, GameMain.gameTick));
                         break;
                 }
@@ -639,11 +651,11 @@ internal sealed class MetadataTransactionManager : IDisposable
     {
         if (tx.AfterPlayer.Length > 0)
         {
-            var delivered = ReadPlayer(tx.AfterPlayer);
+            var delivered = ReadPlayer(tx.AfterPlayer, $"tx={tx.Id} operation={tx.Operation} snapshot=after");
             var current = (PlayerData)Multiplayer.Session.LocalPlayer.Data;
             if (resume && delivered != null && ShouldRestorePlayer(tx, delivered, current))
             {
-                RestorePlayer(tx.AfterPlayer);
+                RestorePlayer(tx.AfterPlayer, $"tx={tx.Id} operation={tx.Operation} snapshot=after");
                 current.Life = delivered.Life;
             }
             return;
@@ -654,7 +666,7 @@ internal sealed class MetadataTransactionManager : IDisposable
         try
         {
             // Restoring the pre-effect image makes an interrupted local delivery replayable.
-            if (resume) RestorePlayer(tx.BeforePlayer);
+            if (resume) RestorePlayer(tx.BeforePlayer, $"tx={tx.Id} operation={tx.Operation} snapshot=before");
             var player = GameMain.mainPlayer;
             if (tx.Operation == MetadataOperation.BuyTech)
                 for (var i = 0; i < 6; i++) if (tx.Cost[i] > 0)
@@ -690,7 +702,7 @@ internal sealed class MetadataTransactionManager : IDisposable
                          x.State is MetadataTransactionState.Committed or MetadataTransactionState.Applied)
                      .OrderBy(x => x.Sequence))
         {
-            var snapshot = ReadPlayer(tx.AfterPlayer);
+            var snapshot = ReadPlayer(tx.AfterPlayer, $"tx={tx.Id} operation={tx.Operation} snapshot=after");
             if (snapshot == null || !ShouldRestorePlayer(tx, snapshot, player)) continue;
             player.Mecha = snapshot.Mecha;
             player.Life = snapshot.Life;
@@ -720,13 +732,12 @@ internal sealed class MetadataTransactionManager : IDisposable
         Multiplayer.Session.Research.OverlayCheckpoint((MechaData)data.Mecha);
         data.Life = PlayerLifeData.Capture(player, transactionId: data.Life.TransactionId);
         var writer = new NetDataWriter();
-        var snapshot = (PlayerData)data.CreateCopyWithoutMechaData();
-        snapshot.Mecha = data.Mecha;
+        var snapshot = data.CreatePersonalSnapshot(player.mecha);
         snapshot.Serialize(writer);
         return writer.CopyData();
     }
 
-    internal static PlayerData ReadPlayer(byte[] bytes)
+    internal static PlayerData ReadPlayer(byte[] bytes, string context = null)
     {
         if (bytes.Length == 0) return null;
         try
@@ -734,18 +745,21 @@ internal sealed class MetadataTransactionManager : IDisposable
             var player = new PlayerData();
             var reader = new NetDataReader(bytes);
             player.Deserialize(reader);
-            return reader.AvailableBytes == 0 ? player : null;
+            if (reader.AvailableBytes == 0) return player;
+            if (context != null) Diagnostics.Error("metadata:snapshot:" + context, () => $"[metadata] player snapshot has trailing bytes context={context} bytes={bytes.Length} trailing={reader.AvailableBytes}");
+            return null;
         }
-        catch (Exception)
+        catch (Exception error)
         {
+            if (context != null) Diagnostics.Error("metadata:snapshot:" + context, () => $"[metadata] player snapshot unreadable context={context} bytes={bytes.Length}", error);
             return null;
         }
     }
 
-    private static void RestorePlayer(byte[] bytes)
+    private static void RestorePlayer(byte[] bytes, string context)
     {
         if (bytes.Length == 0) return;
-        var snapshot = ReadPlayer(bytes);
+        var snapshot = ReadPlayer(bytes, context);
         if (snapshot == null) return;
         snapshot.Mecha.UpdateMech(GameMain.mainPlayer);
         SimulatedWorld.FixPlayerAfterImport();
@@ -779,7 +793,7 @@ internal sealed class MetadataTransactionManager : IDisposable
         var reason = error is InvalidDataException or ParseException or EndOfStreamException
             ? "a transaction journal format failure"
             : error is IOException or UnauthorizedAccessException ? "a file access failure" : "a recovery failure";
-        Log.Error($"Metadata transaction recovery is suspended after {reason}.", error);
+        Log.ErrorWithoutPopup($"[metadata] recovery suspended reason={reason} world={SaveManager.WorldId} tx={pending?.Id} operation={pending?.Operation} state={pending?.State} sequence={pending?.Sequence} activeOperation={ActiveOperationId} serverPath={serverPath} localPath={localPath} fileStage={error.Data["Nebulae.FileStage"]} target={error.Data["Nebulae.FileTarget"]}", error);
     }
 
     private void PersistServer() => Save(serverPath, serverTransactions);
@@ -882,5 +896,5 @@ internal sealed class MetadataTransactionManager : IDisposable
         throw new InvalidDataException("Unknown or damaged saved transaction player snapshot.", lastError);
     }
 
-    public void Dispose() { requests.Clear(); localTransactions.Clear(); serverTransactions.Clear(); }
+    public void Dispose() { diagnosticWaits.Clear(); requests.Clear(); localTransactions.Clear(); serverTransactions.Clear(); }
 }

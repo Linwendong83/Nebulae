@@ -3,6 +3,8 @@
 using System;
 using System.Collections.Generic;
 using NebulaeModel.Packets.Authority;
+using NebulaeModel.Logger;
+using NebulaeModel.Networking;
 
 #endregion
 
@@ -104,24 +106,19 @@ internal sealed class HostWorldReplicator
     private readonly List<ObjectKey> despawnScratch = [];
     private readonly List<ScopeDigestMember> digestScratch = [];
     private readonly HashSet<int> interestedStars = [];
-
-    private long framesCaptured;
+    private readonly List<(ushort Player, long Request)> recoveryScratch = [];
     private long lastCaptureTick;
     private long eventsAppended;
     private long scopesSkipped;
     private long oversizedStatesRefused;
     private long coldScopeFrames;
-    private long packetsSent;
     private long baselineCounter;
     private long subscriptionEpochCounter;
     private long snapshotsSent;
     private long snapshotRefusedTotal;
-    private long acksAccepted;
     private long acksRejected;
     private long acksUnknown;
     private long eventsTrimmed;
-    private long resyncsServed;
-    private long digestsPublished;
     private long lastDigestTick;
 
     /// <param name="epoch">World epoch every published key and envelope carries.</param>
@@ -201,12 +198,7 @@ internal sealed class HostWorldReplicator
 
     public int ScopeCount => scopes.Count;
 
-    public long FramesCaptured => framesCaptured;
-
     public long EventsAppended => eventsAppended;
-
-    /// <summary>Host tick of the most recent capture, or 0 before the first frame.</summary>
-    public long LastCaptureTick => lastCaptureTick;
 
     /// <summary>Frames a scope could not be read. Persistent growth means the adapter is broken.</summary>
     public long ScopesSkipped => scopesSkipped;
@@ -216,20 +208,14 @@ internal sealed class HostWorldReplicator
 
     /// <summary>
     /// Scope-frames captured at the cold cadence because no subscriber was fighting.
-    /// The complement of this against <see cref="FramesCaptured"/> is how much of a session the
-    /// reduced cadence actually covered.
     /// </summary>
     public long ColdScopeFrames => coldScopeFrames;
-
-    public long PacketsSent => packetsSent;
 
     /// <summary>Baselines frozen and sent to a subscriber.</summary>
     public long SnapshotsSent => snapshotsSent;
 
     /// <summary>Subscriptions refused a baseline (unreadable scope, oversized snapshot).</summary>
     public long SnapshotRefusedTotal => snapshotRefusedTotal;
-
-    public long AcksAccepted => acksAccepted;
     public long AcksRejected => acksRejected;
 
     /// <summary>Acks for no pending baseline. Either a replay or a bookkeeping bug.</summary>
@@ -237,12 +223,6 @@ internal sealed class HostWorldReplicator
 
     /// <summary>Log events reclaimed because every subscriber was covered by a baseline or delivery.</summary>
     public long EventsTrimmed => eventsTrimmed;
-
-    /// <summary>Resync requests answered with a fresh baseline.</summary>
-    public long ResyncsServed => resyncsServed;
-
-    /// <summary>Digest messages handed to subscribers.</summary>
-    public long DigestsPublished => digestsPublished;
 
     /// <summary>
     /// Starts one subscriber's subscription of a scope with a frozen baseline.
@@ -286,6 +266,7 @@ internal sealed class HostWorldReplicator
             // A subscriber cannot grow its delivery surface without bound; the request is refused
             // visibly instead of silently inflating every later capture.
             snapshotRefusedTotal++;
+            Diagnostics.Warn("host:subscription-limit", () => $"[authority] subscription limit refused player={subscriberId} scope={scope} refused={snapshotRefusedTotal}");
             return;
         }
 
@@ -293,10 +274,8 @@ internal sealed class HostWorldReplicator
             (previous.InterestStarId != SubscriberStarProvider(subscriberId) || previous.RequestId != requestId))
             Unsubscribe(subscriberId, scope);
 
-        // A baseline already on its way is the answer to a repeat request. A second
-        // StartSnapshotSubscription would race the first, and the client refuses a different baseline
-        // while one is staging — fail-closed, but a stall until the next resync. Waiting for the
-        // in-flight ack is the correct answer to a duplicate request.
+        // Coalesce ordinary subscription retries while a baseline is in flight. A client that
+        // stops making progress explicitly requests resync, which replaces this conversation.
         if (state.TryGetSubscriber(subscriberId, out var inFlight) && inFlight.PendingBaselineId != 0)
         {
             return;
@@ -355,7 +334,6 @@ internal sealed class HostWorldReplicator
         cursor.NeedsResync = true;
         cursor.DeltaStates.Clear();
         cursor.PendingBaselineId = 0;
-        resyncsServed++;
         Subscribe(subscriberId, scope, requestId: requestId);
         return true;
     }
@@ -411,7 +389,6 @@ internal sealed class HostWorldReplicator
                     ControlHeader(AuthorityFamily.ScopeDigest, hostTick), state.Scope,
                     cursor.SubscriptionEpoch, cursor.BaselineId, cursor.NextStreamSequence - 1,
                     memberCount, digest));
-                digestsPublished++;
             }
         }
     }
@@ -473,7 +450,6 @@ internal sealed class HostWorldReplicator
     /// </remarks>
     public void CaptureFrame(long hostTick)
     {
-        framesCaptured++;
         lastCaptureTick = hostTick;
         foreach (var pair in scopes)
         {
@@ -518,23 +494,26 @@ internal sealed class HostWorldReplicator
             }
 
             cursor.PendingBaselineId = 0;
-            cursor.ClientAppliedSequence = lastAppliedSequence;
             if (!accepted)
             {
+                Diagnostics.Warn("host:ack-refused:" + subscriberId + ":" + state.Scope, () => $"[authority] snapshot ACK rejected player={subscriberId} scope={state.Scope} baseline={baselineId} sequence={lastAppliedSequence}");
                 cursor.NeedsResync = true;
                 cursor.DeltaStates.Clear();
                 acksRejected++;
                 return;
             }
-
-            acksAccepted++;
             if (!CurrentInterest(subscriberId, cursor)) return;
             DeliverScope(state);
-            SendResumeMarker(state, subscriberId, cursor);
+            // Delivery may discover that the baseline's tail has already been evicted and
+            // replace this cursor with a fresh snapshot. Never acknowledge an incomplete tail.
+            if (!cursor.NeedsResync && state.TryGetSubscriber(subscriberId, out var current) &&
+                ReferenceEquals(current, cursor) && cursor.PendingBaselineId == 0)
+                SendResumeMarker(state, subscriberId, cursor);
             TrimCoveredLog(state);
             return;
         }
         acksUnknown++;
+        Log.Debug($"[authority] unmatched snapshot ACK player={subscriberId} baseline={baselineId} sequence={lastAppliedSequence} accepted={accepted}");
     }
 
     /// <summary>
@@ -553,6 +532,7 @@ internal sealed class HostWorldReplicator
                 snapshotStarId: Filters(scope.Scope) ? starId : (int?)null))
         {
             snapshotRefusedTotal++;
+            Diagnostics.Warn("host:snapshot-read:" + scope.Scope, () => $"[authority] snapshot capture unavailable player={subscriberId} scope={scope.Scope} tick={lastCaptureTick}");
             return;
         }
         var startLogSequence = scope.NextLogSequence - 1;
@@ -562,6 +542,7 @@ internal sealed class HostWorldReplicator
             // AddSubscriber just created this cursor; reaching here would be a defect, and
             // proceeding without a cursor would strand the subscription unacked.
             snapshotRefusedTotal++;
+            Diagnostics.Error("host:missing-cursor", () => $"[authority] snapshot cursor missing player={subscriberId} scope={scope.Scope}");
             return;
         }
 
@@ -574,7 +555,6 @@ internal sealed class HostWorldReplicator
         cursor.InterestStarId = starId;
         cursor.RequestId = requestId;
         if (Filters(scope.Scope)) cursor.VisibleMembers = new Dictionary<ObjectKey, HostMemberRecord>();
-        scope.BaselineId = baselineId;
 
         // Freeze: the member table is completed from the world view at this safe point, so the
         // baseline is a full statement — identity and current state for every current member. The
@@ -603,6 +583,7 @@ internal sealed class HostWorldReplicator
             // subscription stops here rather than sending a partial world (fail-closed).
             scope.RemoveSubscriber(subscriberId);
             snapshotRefusedTotal++;
+            Diagnostics.Error("host:snapshot-encode:" + scope.Scope, () => $"[authority] snapshot encoding refused player={subscriberId} scope={scope.Scope} baseline={baselineId} members={members.Count} maxBytes={AuthorityLimits.ScopeSnapshotMaxBytes}");
             return;
         }
 
@@ -626,6 +607,7 @@ internal sealed class HostWorldReplicator
             ControlHeader(AuthorityFamily.SnapshotCommit, lastCaptureTick), scope.Scope,
             baselineId, cursor.SubscriptionEpoch, chunkCount, hash));
         snapshotsSent++;
+        Log.Debug($"[authority] snapshot sent player={subscriberId} scope={scope.Scope} baseline={baselineId} subscription={cursor.SubscriptionEpoch} members={members.Count} bytes={image.Length} chunks={chunkCount}");
     }
 
     /// <summary>
@@ -735,7 +717,7 @@ internal sealed class HostWorldReplicator
             var interest = MemberInterestFor?.Invoke(key) ?? default;
             scope.Members[key] = new HostMemberRecord(revision, null, interest);
             if (!seedOnly) Append(scope, new ScopeEvent(scope.NextLogSequence, ScopeEventKind.Spawn, key, revision, hostTick,
-                null, scope.BaselineId, interest));
+                null, interest));
         }
 
         // 2. Absolute state for members whose canonical bytes changed. The comparison is against
@@ -790,9 +772,10 @@ internal sealed class HostWorldReplicator
                 // Refuse the whole frame for this scope: publishing the other members would let a
                 // silently unpublishable field diverge.
                 oversizedStatesRefused++;
+                Diagnostics.Error("host:oversized-state:" + scope.Scope, () => $"[authority] state publication refused key={key} bytes={canonical.Length} maxBytes={AuthorityLimits.StateRecordMaxBytes} tick={hostTick}");
                 return false;
             }
-            if (SameBytes(record.State, canonical))
+            if (FieldDeltaCodec.Equal(record.State, canonical))
             {
                 (worldView as IHostIncrementalWorldView)?.StateSampled(key);
                 continue;
@@ -803,7 +786,7 @@ internal sealed class HostWorldReplicator
             if (!seedOnly)
             {
                 Append(scope, new ScopeEvent(scope.NextLogSequence, ScopeEventKind.State, key, revision, hostTick,
-                    canonical, scope.BaselineId, record.Interest));
+                    canonical, record.Interest));
             }
             (worldView as IHostIncrementalWorldView)?.StateSampled(key);
         }
@@ -820,7 +803,7 @@ internal sealed class HostWorldReplicator
             // through the silent removal path and must stay silent on the client too.
             var kind = deathView != null && deathView.IsDead(key) ? ScopeEventKind.Death : ScopeEventKind.Despawn;
             if (!seedOnly) Append(scope, new ScopeEvent(scope.NextLogSequence, kind, key, revision, hostTick,
-                null, scope.BaselineId, removed.Interest));
+                null, removed.Interest));
             // The generation is over on the host; the client's tombstone is what refuses any late
             // packet for this key from here on.
             Revisions.Forget(key);
@@ -858,6 +841,7 @@ internal sealed class HostWorldReplicator
     private void DeliverScope(ScopeReplicationState scope)
     {
         if (scope.LogCount == 0) return;
+        recoveryScratch.Clear();
         var receivers = 0;
         foreach (var pair in scope.Subscribers)
             if (pair.Value.Active && !pair.Value.DigestOnly && !pair.Value.NeedsResync && pair.Value.PendingBaselineId == 0) receivers++;
@@ -869,9 +853,17 @@ internal sealed class HostWorldReplicator
             // delivered after the ack, so no event is applied ahead of the identity baseline.
             if (pair.Value.PendingBaselineId != 0) continue;
             if (!CurrentInterest(pair.Key, pair.Value)) continue;
-            if (!scope.TryTakePending(pair.Value, pendingScratch)) continue;
+            if (pair.Value.NeedsResync) continue;
+            if (!scope.TryTakePending(pair.Value, pendingScratch))
+            {
+                if (pair.Value.NeedsResync) recoveryScratch.Add((pair.Key, pair.Value.RequestId));
+                continue;
+            }
             DeliverEvents(scope, pair.Key, pair.Value, pendingScratch, patches);
         }
+        // Subscribe replaces dictionary entries; do it only after enumerating the subscribers.
+        foreach (var recovery in recoveryScratch)
+            RequestResync(recovery.Player, scope.Scope, recovery.Request);
     }
 
     /// <summary>
@@ -964,7 +956,6 @@ internal sealed class HostWorldReplicator
             if (sink is IDeferredReplicationSink deferred)
             {
                 deferred.SendWorldStates(subscriberId, Build);
-                packetsSent++;
                 cursor.NextStreamSequence++;
             }
             else Send(subscriberId, Build());
@@ -979,8 +970,6 @@ internal sealed class HostWorldReplicator
 
     private void Send(ushort subscriberId, AuthorityEnvelopePacket packet)
     {
-        // Sending consumes the stream sequence assigned in the header.
-        packetsSent++;
         sink.Send(subscriberId, packet);
         AdvanceStreamSequence(subscriberId, packet);
     }
@@ -1036,17 +1025,5 @@ internal sealed class HostWorldReplicator
             scopes.Add(scope, state);
         }
         return state;
-    }
-
-    private static bool SameBytes(byte[] left, byte[] right)
-    {
-        if (ReferenceEquals(left, right)) return true;
-        if (left == null || right == null) return false;
-        if (left.Length != right.Length) return false;
-        for (var i = 0; i < left.Length; i++)
-        {
-            if (left[i] != right[i]) return false;
-        }
-        return true;
     }
 }

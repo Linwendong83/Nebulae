@@ -13,7 +13,7 @@ using NebulaeModel.Packets.Warning;
 
 namespace NebulaeWorld.Warning;
 
-internal class WarningManager : IDisposable
+internal partial class WarningManager : IDisposable
 {
     public readonly ToggleSwitch IsIncomingMonitorPacket = new();
     public readonly ToggleSwitch IsIncomingBroadcast = new();
@@ -41,6 +41,7 @@ internal class WarningManager : IDisposable
     {
         if (packet.Event == WarningRequestEvent.Signal)
         {
+            conn.SendPacket(CaptureGreenPrebuildWarningPreferences());
             conn.SendPacket(warningSignalPacket);
         }
         else
@@ -149,6 +150,11 @@ internal class WarningManager : IDisposable
     public void ImportBinaryData(BinaryReader br, int activeWarningCount)
     {
         ws = GameMain.data.warningSystem;
+        // Snapshots repack warning indices. Clear the old line order before shrinking the cursor,
+        // since native line synchronization only visits indices below the new cursor.
+        ws.ClearWarningLineOrder();
+        // Also discard removed entries and metadata that the snapshot does not transmit.
+        Array.Clear(ws.warningPool, 0, ws.warningCursor);
         var newCapacity = ws.warningCapacity;
         while (activeWarningCount + 1 > newCapacity)
         {

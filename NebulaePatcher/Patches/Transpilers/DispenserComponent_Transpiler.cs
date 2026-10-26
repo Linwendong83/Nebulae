@@ -98,29 +98,31 @@ internal class DispenserComponent_Transpiler
 
     public static int PickFromStorage(PlanetFactory factory, int entityId, int itemId, int count, out int inc)
     {
-        if (Multiplayer.IsActive)
+        var taken = factory.PickFromStorage(entityId, itemId, count, out inc);
+        if (Multiplayer.IsActive && taken > 0)
         {
             Multiplayer.Session.Network.SendPacketToLocalStar(
                 new DispenserAddTakePacket(factory.planetId,
                     entityId,
                     EDispenserAddTakeEvent.CourierTake,
-                    itemId, count, 0));
+                    itemId, taken, 0));
         }
-        return factory.PickFromStorage(entityId, itemId, count, out inc);
+        return taken;
     }
 
     public static int InsertIntoStorage(PlanetFactory factory, int entityId, int itemId, int count, int inc, out int remainInc,
         bool useBan)
     {
-        if (Multiplayer.IsActive && useBan == false)
+        var added = factory.InsertIntoStorage(entityId, itemId, count, inc, out remainInc, useBan);
+        if (Multiplayer.IsActive && useBan == false && added > 0)
         {
             Multiplayer.Session.Network.SendPacketToLocalStar(
                 new DispenserAddTakePacket(factory.planetId,
                     entityId,
                     EDispenserAddTakeEvent.CourierAdd,
-                    itemId, count, inc));
+                    itemId, added, inc - remainInc));
         }
-        return factory.InsertIntoStorage(entityId, itemId, count, inc, out remainInc, useBan);
+        return added;
     }
 
     public static void IdleCourierToWork(DispenserComponent dispenser)

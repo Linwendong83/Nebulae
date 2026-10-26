@@ -8,9 +8,8 @@ namespace NebulaeWorld.Authority.Adapters;
 internal sealed class TurretReplicaBinding : IReplicaMirrorObserver, IReplicaBaselineReadiness
 {
     private readonly TurretMirror mirror;
-    private readonly Dictionary<(int Planet, int Entity), (ObjectKey Key, TurretComponent[] Pool)> installed = new();
+    private readonly Dictionary<(int Planet, int Entity), (ObjectKey Key, TurretComponent[] Pool, TurretState State)> installed = new();
     public TurretReplicaBinding(AuthorityEpoch epoch) => mirror = new TurretMirror(epoch, Apply, Clear);
-    public int PendingCount => mirror.PendingCount;
     public bool CanSimulatePlanet(PlanetFactory factory) => factory?.planet.factoryLoaded == true && Replica != null &&
         IsLive(PoolKind.Turret, factory.planetId) && IsLive(PoolKind.GroundEnemy, factory.planetId) &&
         IsLive(PoolKind.Base, factory.planetId) && IsLive(PoolKind.SpaceEnemy, 0) && IsLive(PoolKind.HiveSummary, 0);
@@ -31,13 +30,14 @@ internal sealed class TurretReplicaBinding : IReplicaMirrorObserver, IReplicaBas
         GameMain.galaxy?.PlanetById(scope.Scope)?.factory?.planet.factoryLoaded == true;
     private static void RequireApply()
     {
-        if (Multiplayer.Session?.AuthorityRuntime?.ApplyContext.IsActiveOnCurrentThread != true)
+        if (!ReplicaApplyContext.IsSessionApplyActive())
             throw new InvalidOperationException("Turret facts outside replica apply.");
     }
     public void OnStateApplied(ScopeKey scope, in ObjectKey key, long revision, byte[] bytes)
     {
         if (scope.Kind != PoolKind.Turret) return;
         RequireApply();
+        if (NebulaeWorld.Factory.BuildingDeathReplication.IsRetired(GameMain.galaxy?.PlanetById(scope.Scope)?.factory, key)) return;
         if (!key.IsValid || key.Kind != scope.Kind || key.Scope != scope.Scope || !TurretStateCodec.TryDecode(bytes, out var state) || state.EntityId != key.NativeId)
             throw new InvalidOperationException("Invalid turret state.");
         mirror.Put(key, state);
@@ -49,6 +49,7 @@ internal sealed class TurretReplicaBinding : IReplicaMirrorObserver, IReplicaBas
         var decoded = new List<(ObjectKey, TurretState)>();
         foreach (var member in members)
         {
+            if (NebulaeWorld.Factory.BuildingDeathReplication.IsRetired(GameMain.galaxy?.PlanetById(scope.Scope)?.factory, member.Key)) continue;
             if (!TurretStateCodec.TryDecode(member.State, out var state) || !member.Key.IsValid || member.Key.Kind != scope.Kind || member.Key.Scope != scope.Scope || state.EntityId != member.Key.NativeId)
                 throw new InvalidOperationException("Invalid turret baseline.");
             decoded.Add((member.Key, state));
@@ -65,10 +66,11 @@ internal sealed class TurretReplicaBinding : IReplicaMirrorObserver, IReplicaBas
         var f = GameMain.galaxy?.PlanetById(key.Scope)?.factory;
         var wasInstalled = installed.TryGetValue((key.Scope, key.NativeId), out var entry) && entry.Key == key &&
             ReferenceEquals(entry.Pool, f?.defenseSystem?.turrets?.buffer);
+        if (!wasInstalled) return;
         installed.Remove((key.Scope, key.NativeId));
         if (!TurretSnapshotAdapter.TryTurret(f, key.NativeId, out var id)) return;
         ref var t = ref f.defenseSystem.turrets.buffer[id];
-        if (wasInstalled && t.projectileId > 0) t.StopContinuousSkill(f.skillSystem, false);
+        if (t.projectileId > 0) t.StopContinuousSkill(f.skillSystem, false);
         t.projectileId = 0; t.target = new SkillTarget { type = ETargetType.Enemy }; t.hatred0 = default; t.isAiming = t.isLockingTarget = false;
         t.searchPairBeginIndex = t.searchPairCount = t.muzzleFire = t.roundFire = 0;
     }
@@ -82,6 +84,7 @@ internal sealed class TurretReplicaBinding : IReplicaMirrorObserver, IReplicaBas
     private bool Apply(ObjectKey key, TurretState s)
     {
         var f = GameMain.galaxy?.PlanetById(key.Scope)?.factory;
+        if (NebulaeWorld.Factory.BuildingDeathReplication.IsRetired(f, key)) return false;
         if (f?.planet.factoryLoaded != true || !TurretSnapshotAdapter.TryTurret(f, key.NativeId, out var id)) return false;
         if (f.entityPool[s.EntityId].modelIndex != s.ModelIndex || (byte)f.defenseSystem.turrets.buffer[id].type != s.Type) return false;
         ref var t = ref f.defenseSystem.turrets.buffer[id];
@@ -95,27 +98,44 @@ internal sealed class TurretReplicaBinding : IReplicaMirrorObserver, IReplicaBas
             // Native construction already matched this turret, but those offsets belong
             // to the pre-install pool view. Rebuild after all replica streams settle.
             Multiplayer.Session?.AuthorityRuntime?.DarkFogReplica?.MarkSearchDirty(key.Scope);
+            t.localDir = s.Direction; t.localTargetDir = s.TargetDirection;
+            t.currentAngleVelocity = default;
+            t.roundFire = s.RoundFire; t.muzzleFire = s.MuzzleFire; t.muzzleReset = s.MuzzleReset;
+            t.muzzleIndex = s.MuzzleIndex; t.aimt = s.AimTime;
         }
-        else if (t.projectileId > 0 && (t.target.id != s.TargetId || t.target.astroId != s.TargetAstro))
-        {
-            t.StopContinuousSkill(f.skillSystem, false);
-        }
-        t.isAiming = (s.Flags & 1) != 0; t.isLockingTarget = (s.Flags & 2) != 0; t.activeSearch = (s.Flags & 4) != 0;
         var targetReady = TargetReady(s);
-        t.target = targetReady ? new SkillTarget { type = ETargetType.Enemy, id = s.TargetId, astroId = s.TargetAstro } : new SkillTarget { type = ETargetType.Enemy };
-        t.localDir = s.Direction; t.localTargetDir = s.TargetDirection; t.group = s.Group; t.vsSettings = (VSLayerMask)s.VsSettings;
+        var targetChanged = !wasInstalled || entry.State.TargetId != s.TargetId ||
+            entry.State.TargetAstro != s.TargetAstro || entry.State.TargetGeneration != s.TargetGeneration;
+        if (targetChanged && targetReady)
+        {
+            if (t.projectileId > 0 && (t.target.id != s.TargetId || t.target.astroId != s.TargetAstro))
+                t.StopContinuousSkill(f.skillSystem, false);
+            t.target = new SkillTarget { type = ETargetType.Enemy, id = s.TargetId, astroId = s.TargetAstro };
+            t.isAiming = t.isLockingTarget = false;
+            NebulaeWorld.Combat.EnemyTargetIdentity.Observe(f, t, s.TargetGeneration);
+        }
+        // Once bound, native Aim/Shoot own pose, angular momentum and firing clocks. Replaying
+        // a delayed checkpoint into those fields makes the turret turn and fire backwards in time.
+        t.activeSearch = (s.Flags & 4) != 0 || !targetReady || t.target.id == 0;
+        t.group = s.Group; t.vsSettings = (VSLayerMask)s.VsSettings;
         t.itemId = s.ItemId; t.itemCount = s.ItemCount; t.itemInc = s.ItemInc; t.bulletCount = s.BulletCount; t.itemBulletCount = s.ItemBulletCount;
-        t.bulletDamage = s.BulletDamage; t.currentBulletInc = s.BulletInc; t.supernovaTick = s.SupernovaTick; t.supernovaStrength = s.SupernovaStrength;
-        t.roundFire = s.RoundFire; t.muzzleFire = s.MuzzleFire; t.muzzleReset = s.MuzzleReset; t.muzzleIndex = s.MuzzleIndex; t.phasePos = s.PhasePos; t.aimt = s.AimTime;
+        t.bulletDamage = s.BulletDamage; t.currentBulletInc = s.BulletInc;
+        if (!wasInstalled || Math.Sign(entry.State.SupernovaTick) != Math.Sign(s.SupernovaTick) ||
+            entry.State.SampleTick + Math.Abs((int)entry.State.SupernovaTick) != s.SampleTick + Math.Abs((int)s.SupernovaTick))
+        {
+            t.supernovaTick = s.SupernovaTick; t.supernovaStrength = s.SupernovaStrength;
+        }
+        t.phasePos = s.PhasePos;
         t.totalKillCount = t.lastTotalKillCount = s.KillCount; t.totalDamage = s.TotalDamage;
-        installed[(key.Scope, key.NativeId)] = (key, f.defenseSystem.turrets.buffer);
-        if (targetReady) NebulaeWorld.Combat.EnemyTargetIdentity.Observe(f, t, s.TargetGeneration);
-        else
+        installed[(key.Scope, key.NativeId)] = (key, f.defenseSystem.turrets.buffer, s);
+        if (!targetReady && !NebulaeWorld.Combat.EnemyTargetIdentity.Validate(f, ref t))
         {
             if (t.projectileId > 0) t.StopContinuousSkill(f.skillSystem, false);
             t.projectileId = 0; t.isAiming = t.isLockingTarget = false;
         }
-        Replica?.SetLocalComponentBinding(key, id); return targetReady;
+        // A missing/dead host target is not a missing turret binding. Let native Search acquire
+        // a live local target once the scopes are ready instead of retrying this snapshot forever.
+        Replica?.SetLocalComponentBinding(key, id); return true;
     }
 
     private static bool TargetReady(TurretState state)

@@ -3,7 +3,6 @@
 using System;
 using System.Threading;
 using HarmonyLib;
-using NebulaeModel.Authority;
 using NebulaeModel.Logger;
 using NebulaeWorld;
 
@@ -43,6 +42,12 @@ internal class AuthorityFrame_Patch
             // Every worker has arrived and cannot leave until vanilla signals the main participant.
             if (session.IsServer) session.Ships.FlushLifecycle();
             runtime.OnFrameComplete(hostTick, __instance.frameCounter > 0 ? __instance.frameCounter : Math.Max(0, hostTick - 1));
+            if (session.IsClient)
+            {
+                var completed = __instance.frameCounter > 0 ? __instance.frameCounter : Math.Max(0, hostTick - 1);
+                NebulaeWorld.Combat.NativeCraftSimulation.CaptureMotion(GameMain.localPlanet?.factory, completed);
+                NebulaeWorld.Combat.NativeCraftSimulation.CaptureMotion(GameMain.spaceSector, completed);
+            }
 
             // Now admit the messages that arrived while the previous frame ran. Both queues were
             // filled by the socket thread, which never touches the world itself.
@@ -57,7 +62,7 @@ internal class AuthorityFrame_Patch
                 session.CombatAuthority.SendSettings(hostTick);
                 runtime.UpdateStandingSubscriptions(
                     GameMain.localPlanet != null ? GameMain.localPlanet.id : 0,
-                    isInSector: GameMain.localPlanet == null, supportsPool: HasReplicaAdapter,
+                    isInSector: GameMain.localPlanet == null, supportsPool: NebulaeWorld.GameStates.JoinSyncManager.HasReplicaAdapter,
                     currentStarId: GameMain.localStar?.id ?? 0);
                 var factory = GameMain.localPlanet?.factory;
                 if (session.IsGameLoaded && !GameMain.isPaused)
@@ -66,6 +71,7 @@ internal class AuthorityFrame_Patch
                     NebulaeWorld.Combat.NativeEnemySimulation.Prepare(GameMain.spaceSector);
                     NebulaeWorld.Combat.NativeCraftSimulation.Prepare(factory);
                     NebulaeWorld.Combat.NativeCraftSimulation.Prepare(GameMain.spaceSector);
+                    session.FleetCommands.Tick();
                     runtime.AuditRuntime(hostTick);
                 }
             }
@@ -76,10 +82,4 @@ internal class AuthorityFrame_Patch
         }
     }
 
-    // These are the sources registered by MultiplayerSession. Construction/resource pools still
-    // use their native protocols; subscribing them without an adapter strands the client forever.
-    private static bool HasReplicaAdapter(PoolKind kind) => kind == PoolKind.Entity || kind == PoolKind.Turret ||
-        kind == PoolKind.GroundEnemy || kind == PoolKind.GroundCraft ||
-        kind == PoolKind.SpaceEnemy || kind == PoolKind.SpaceCraft ||
-        kind == PoolKind.Base || kind == PoolKind.HiveSummary;
 }

@@ -9,7 +9,6 @@ using NebulaeModel.DataStructures;
 using NebulaeModel.Networking;
 using NebulaeModel.Packets.Authority;
 using NebulaeModel.Packets.Combat;
-using UnityEngine;
 
 namespace NebulaeWorld.Combat;
 
@@ -39,13 +38,12 @@ internal sealed class PlayerWeaponManager : IDisposable
     }
     public sealed class TickScope : IDisposable
     {
-        internal Entry Entry;
         private readonly Entry previous;
         private readonly int[] impacts;
         private readonly SkillSystem skills;
         internal TickScope(Entry entry, SkillSystem skills)
         {
-            Entry = entry; previous = current; current = entry; this.skills = skills;
+            previous = current; current = entry; this.skills = skills;
             impacts = Multiplayer.Session.Impacts.Begin(skills);
         }
         public void Dispose()
@@ -161,7 +159,7 @@ internal sealed class PlayerWeaponManager : IDisposable
             shot = new PlayerShotId(session.LocalPlayer.Id, session.Authority.Connection.Value, sequence);
             PredictedShots++; LastPredictionTick = GameMain.gameTick;
             Resources.Reserve(shot, (EAmmoType)capture.Intent.Argument, capture.Intent.Kind == CombatIntentKind.Bomb,
-                capture.Target.astroId == GameMain.localPlanet?.id, capture.Item, capture.Intent.Kind == CombatIntentKind.Bomb ? 0 : (int)capture.Intent.Y);
+                capture.Item, capture.Intent.Kind == CombatIntentKind.Bomb ? 0 : (int)capture.Intent.Y);
         }
         else { shot = hostShot ?? new PlayerShotId(session.LocalPlayer.Id, 0, ++hostSequence); HostShots++; }
         var target = TargetKey(capture.Target);
@@ -232,7 +230,9 @@ internal sealed class PlayerWeaponManager : IDisposable
         if (NativePlayerWeaponPool.IsLocal(entry.Pool.Kind) && entry.Astro != GameMain.localPlanet?.id) return false;
         var astro = entry.Id > 0 && entry.Pool.Exists(entry.Id) ? NativePlayerWeaponPool.RequiredPlanet(entry.Pool.Read(entry.Id)) : entry.Astro;
         if (astro > 0 && astro < 1000000 && (astro >= skills.astroFactories.Length || skills.astroFactories[astro] == null)) return false;
-        if (entry.Target.NativeId > 0 && (!Multiplayer.Session.AuthorityRuntime.WorldReplica.TryFindKey(entry.Target.Kind,
+        // Missiles outlive their original target and may acquire another one. Target identity
+        // guards retire stale references without stopping flight, smoke, expiry or corrections.
+        if (entry.Pool.Kind != BattleEffectKind.MechaMissile && entry.Target.NativeId > 0 && (!Multiplayer.Session.AuthorityRuntime.WorldReplica.TryFindKey(entry.Target.Kind,
                 entry.Target.Scope, entry.Target.NativeId, out var currentKey) || !currentKey.Equals(entry.Target))) return false;
         return true;
     }
@@ -266,7 +266,7 @@ internal sealed class PlayerWeaponManager : IDisposable
         }
         return true;
     }
-    private static PlayerWeaponSample Sample(Entry entry, PlayerWeaponEvent type) => new()
+    private PlayerWeaponSample Sample(Entry entry, PlayerWeaponEvent type) => new()
     {
         Shot = entry.Shot,
         Part = entry.Part,
@@ -274,7 +274,8 @@ internal sealed class PlayerWeaponManager : IDisposable
         Event = type,
         Star = entry.Star,
         Astro = entry.Astro,
-        Target = entry.Target,
+        Target = entry.Pool.Exists(entry.Id) && entry.Pool.Read(entry.Id) is GeneralMissile missile
+            ? TargetKey(missile.target) : entry.Target,
         Tick = GameMain.gameTick,
         Payload = type is PlayerWeaponEvent.Launch or PlayerWeaponEvent.State ? entry.Pool.Export(entry.Id) : Array.Empty<byte>()
     };
@@ -336,7 +337,7 @@ internal sealed class PlayerWeaponManager : IDisposable
             { RemoveNative(entry); entries.Remove((entry.Shot, entry.Part)); continue; }
             if (entry.Pending != null && Ready(entry))
             {
-                entry.Id = entry.Pool.Install(entry.Pending, entry.Id); entry.Pending = null; Bind(entry);
+                entry.Id = entry.Pool.Install(entry.Pending, entry.Id, entry.Target); entry.Pending = null; Bind(entry);
                 entry.ImpactOrdinal = 0;
                 if (!entry.Predicted && PresentationWindow(entry.Pool.Kind) > 0 && !entry.LaunchAudio)
                     entry.MinimumUntil = GameMain.gameTick + Math.Min(PresentationWindow(entry.Pool.Kind), Math.Abs(NativePlayerWeaponPool.Life(entry.Pool.Read(entry.Id))));

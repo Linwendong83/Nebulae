@@ -112,6 +112,17 @@ internal class UIBattleBaseWindow_Patch
         {
             return true;
         }
+        if (Multiplayer.Session.Authority.IsActive)
+        {
+            if (__instance.eventLock || __instance.factory == null || __instance.battleBase?.id != __instance.battleBaseId ||
+                obj < 0 || obj >= ItemProto.kFighterGroundIds.Length) return false;
+            var item = ItemProto.kFighterGroundIds[obj];
+            var products = Multiplayer.Session.FactoryProducts;
+            if (Multiplayer.Session.IsClient) products.RequestFleetConfiguration(__instance.factory, __instance.battleBase.entityId, item);
+            else if (!products.LocalFleetConfiguration(__instance.factory, __instance.battleBase.entityId, item, __instance.player))
+                UIRealtimeTip.Popup("无法完成操作".Translate());
+            return false;
+        }
         var arg = ItemProto.kFighterGroundIds[obj];
         SendEvent(__instance, BattleBaseSettingEvent.ChangeFleetConfig, arg);
         return true; // Let local handles the storage/inventory interactions and broadcast the changes

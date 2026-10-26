@@ -9,16 +9,9 @@ namespace NebulaeModel.Networking.Serialization
 {
     internal class NetDataWriter : INetDataWriter
     {
-        protected byte[] _data;
+        protected byte[] _data = new byte[InitialSize];
         protected int _position;
         private const int InitialSize = 64;
-        private readonly bool _autoResize;
-
-        public int Capacity
-        {
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => _data.Length;
-        }
 
         public byte[] Data
         {
@@ -36,42 +29,13 @@ namespace NebulaeModel.Networking.Serialization
         public const int StringBufferMaxLength = 65535;
         private byte[] _stringBuffer;
 
-        public NetDataWriter() : this(true, InitialSize)
-        {
-        }
-
-        public NetDataWriter(bool autoResize) : this(autoResize, InitialSize)
-        {
-        }
-
-        public NetDataWriter(bool autoResize, int initialSize)
-        {
-            _data = new byte[initialSize];
-            _autoResize = autoResize;
-        }
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void ResizeIfNeed(int newSize)
+        private void ResizeIfNeed(int newSize)
         {
             if (_data.Length < newSize)
             {
                 Array.Resize(ref _data, Math.Max(newSize, _data.Length * 2));
             }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void EnsureFit(int additionalSize)
-        {
-            if (_data.Length < _position + additionalSize)
-            {
-                Array.Resize(ref _data, Math.Max(_position + additionalSize, _data.Length * 2));
-            }
-        }
-
-        public void Reset(int size)
-        {
-            ResizeIfNeed(size);
-            _position = 0;
         }
 
         public void Reset()
@@ -86,62 +50,44 @@ namespace NebulaeModel.Networking.Serialization
             return resultData;
         }
 
-        /// <summary>
-        /// Sets position of NetDataWriter to rewrite previous values
-        /// </summary>
-        /// <param name="position">new byte position</param>
-        /// <returns>previous position of data writer</returns>
-        public int SetPosition(int position)
-        {
-            int prevPosition = _position;
-            _position = position;
-            return prevPosition;
-        }
-
         public void Put(float value)
         {
-            if (_autoResize)
-                ResizeIfNeed(_position + 4);
+            ResizeIfNeed(_position + 4);
             FastBitConverter.GetBytes(_data, _position, value);
             _position += 4;
         }
 
         public void Put(double value)
         {
-            if (_autoResize)
-                ResizeIfNeed(_position + 8);
+            ResizeIfNeed(_position + 8);
             FastBitConverter.GetBytes(_data, _position, value);
             _position += 8;
         }
 
         public void Put(long value)
         {
-            if (_autoResize)
-                ResizeIfNeed(_position + 8);
+            ResizeIfNeed(_position + 8);
             FastBitConverter.GetBytes(_data, _position, value);
             _position += 8;
         }
 
         public void Put(ulong value)
         {
-            if (_autoResize)
-                ResizeIfNeed(_position + 8);
+            ResizeIfNeed(_position + 8);
             FastBitConverter.GetBytes(_data, _position, value);
             _position += 8;
         }
 
         public void Put(int value)
         {
-            if (_autoResize)
-                ResizeIfNeed(_position + 4);
+            ResizeIfNeed(_position + 4);
             FastBitConverter.GetBytes(_data, _position, value);
             _position += 4;
         }
 
         public void Put(uint value)
         {
-            if (_autoResize)
-                ResizeIfNeed(_position + 4);
+            ResizeIfNeed(_position + 4);
             FastBitConverter.GetBytes(_data, _position, value);
             _position += 4;
         }
@@ -153,74 +99,49 @@ namespace NebulaeModel.Networking.Serialization
 
         public void Put(ushort value)
         {
-            if (_autoResize)
-                ResizeIfNeed(_position + 2);
+            ResizeIfNeed(_position + 2);
             FastBitConverter.GetBytes(_data, _position, value);
             _position += 2;
         }
 
         public void Put(short value)
         {
-            if (_autoResize)
-                ResizeIfNeed(_position + 2);
+            ResizeIfNeed(_position + 2);
             FastBitConverter.GetBytes(_data, _position, value);
             _position += 2;
         }
 
         public void Put(sbyte value)
         {
-            if (_autoResize)
-                ResizeIfNeed(_position + 1);
+            ResizeIfNeed(_position + 1);
             _data[_position] = (byte)value;
             _position++;
         }
 
         public void Put(byte value)
         {
-            if (_autoResize)
-                ResizeIfNeed(_position + 1);
+            ResizeIfNeed(_position + 1);
             _data[_position] = value;
             _position++;
         }
 
         public void Put(byte[] data, int offset, int length)
         {
-            if (_autoResize)
-                ResizeIfNeed(_position + length);
+            ResizeIfNeed(_position + length);
             Buffer.BlockCopy(data, offset, _data, _position, length);
             _position += length;
         }
 
         public void Put(byte[] data)
         {
-            if (_autoResize)
-                ResizeIfNeed(_position + data.Length);
+            ResizeIfNeed(_position + data.Length);
             Buffer.BlockCopy(data, 0, _data, _position, data.Length);
             _position += data.Length;
-        }
-
-        public void PutSBytesWithLength(sbyte[] data, int offset, int length)
-        {
-            const int intSize = 4;
-            if (_autoResize)
-                ResizeIfNeed(_position + intSize + length);
-            FastBitConverter.GetBytes(_data, _position, length);
-            Buffer.BlockCopy(data, offset, _data, _position + intSize, length);
-            _position += intSize + length;
         }
 
         public void PutSBytesWithLength(sbyte[] data)
         {
             PutArray(data, 1);
-        }
-
-        public void PutBytesWithLength(byte[] data, int offset, int length)
-        {
-            if (_autoResize)
-                ResizeIfNeed(_position + 2 + length);
-            FastBitConverter.GetBytes(_data, _position, length);
-            Buffer.BlockCopy(data, offset, _data, _position + 2, length);
-            _position += 2 + length;
         }
 
         public void PutBytesWithLength(byte[] data)
@@ -238,8 +159,7 @@ namespace NebulaeModel.Networking.Serialization
             const int intSize = 4;
             int length = arr == null ? 0 : arr.Length;
             sz *= length;
-            if (_autoResize)
-                ResizeIfNeed(_position + sz + intSize);
+            ResizeIfNeed(_position + sz + intSize);
             FastBitConverter.GetBytes(_data, _position, length);
             if (arr != null)
                 Buffer.BlockCopy(arr, 0, _data, _position + intSize, sz);

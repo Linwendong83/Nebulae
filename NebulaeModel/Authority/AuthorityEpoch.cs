@@ -80,13 +80,6 @@ internal readonly struct AuthorityEpoch : IEquatable<AuthorityEpoch>, IComparabl
         Buffer.BlockCopy(BitConverter.GetBytes(low), 0, destination, offset + 8, 8);
     }
 
-    public byte[] ToBytes()
-    {
-        var bytes = new byte[SizeBytes];
-        WriteTo(bytes);
-        return bytes;
-    }
-
     public bool Equals(AuthorityEpoch other) => high == other.high && low == other.low;
 
     public override bool Equals(object obj) => obj is AuthorityEpoch other && Equals(other);

@@ -52,12 +52,12 @@ internal sealed class NetworkReplicationSink : IDeferredReplicationSink
         }
         catch (Exception e)
         {
-            Log.Warn($"[authority] resolving player {subscriberId} for delivery failed: {e.Message}");
+            Diagnostics.Warn("authority:resolve:" + subscriberId, () => $"[authority] resolving player={subscriberId} family={packet.Family} failed", e);
             return;
         }
         if (player == null)
         {
-            Log.Warn($"[authority] cannot deliver {packet.Family} to player {subscriberId}: no connection");
+            Diagnostics.Warn("authority:no-connection:" + subscriberId, () => $"[authority] cannot deliver family={packet.Family} player={subscriberId}: no connection");
             return;
         }
         Multiplayer.Session?.JoinSync?.FlushBeforeAuthority(player.Connection);
@@ -70,8 +70,8 @@ internal sealed class NetworkReplicationSink : IDeferredReplicationSink
         // connection, so a disconnect/reconnect cannot deliver old work to a new socket.
         INebulaePlayer player;
         try { player = resolvePlayer?.Invoke(subscriberId); }
-        catch (Exception error) { Log.Warn($"[authority] resolving player {subscriberId} for delivery failed: {error.Message}"); return; }
-        if (player == null) { Log.Warn($"[authority] cannot deliver WorldState to player {subscriberId}: no connection"); return; }
+        catch (Exception error) { Diagnostics.Warn("authority:resolve:" + subscriberId, () => $"[authority] resolving player={subscriberId} family=WorldState failed", error); return; }
+        if (player == null) { Diagnostics.Warn("authority:no-connection:" + subscriberId, () => $"[authority] cannot deliver family=WorldState player={subscriberId}: no connection"); return; }
         Multiplayer.Session?.JoinSync?.FlushBeforeAuthority(player.Connection);
         if (player.Connection is NebulaeConnection connection) connection.SendDeferredPacket(factory);
         else player.SendPacket(factory());

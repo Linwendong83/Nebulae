@@ -68,13 +68,9 @@ internal sealed class SpaceEnemyBinding
     private readonly ISpaceEnemyPools pools;
     private readonly Dictionary<ObjectKey, SpaceEnemyKind> bindings = [];
     private readonly Dictionary<int, ObjectKey> slotOwner = [];
-
-    private long statesApplied;
     private long statesRefused;
     private long shellsCreated;
-    private long shellsRemoved;
     private long membersRemoved;
-    private long deathsPresented;
 
     public SpaceEnemyBinding(ISpaceEnemyPools pools)
     {
@@ -82,23 +78,22 @@ internal sealed class SpaceEnemyBinding
     }
 
     public int BoundCount => bindings.Count;
-    public long StatesApplied => statesApplied;
     public long StatesRefused => statesRefused;
     public long ShellsCreated => shellsCreated;
-    public long ShellsRemoved => shellsRemoved;
     public long MembersRemoved => membersRemoved;
-    public long DeathsPresented => deathsPresented;
 
     public bool ApplyState(in ObjectKey key, byte[] state)
     {
         if (key.Kind != PoolKind.SpaceEnemy || key.Scope != AuthorityScope.Sector)
         {
             statesRefused++;
+            BindingDiagnostics.Refused("invalid-state-or-identity", key, state?.Length ?? 0);
             return false;
         }
         if (state == null || !AuthorityStateFields.TryReadSpace(state, out var decoded))
         {
             statesRefused++;
+            BindingDiagnostics.Refused("invalid-state-or-identity", key, state?.Length ?? 0);
             return false;
         }
         return ApplyDecoded(key, in decoded);
@@ -123,7 +118,6 @@ internal sealed class SpaceEnemyBinding
             slotOwner[key.NativeId] = key;
             pools.WriteEnemyState(key.NativeId, in decoded);
         }
-        statesApplied++;
         return true;
     }
 
@@ -142,7 +136,6 @@ internal sealed class SpaceEnemyBinding
             if (pools.EnemyExists(key.NativeId))
             {
                 pools.RemoveEnemyShell(key.NativeId);
-                shellsRemoved++;
             }
         }
         membersRemoved++;
@@ -162,7 +155,6 @@ internal sealed class SpaceEnemyBinding
         if (!bindings.ContainsKey(key)) return;
         if (!slotOwner.TryGetValue(key.NativeId, out var owner) || !owner.Equals(key)) return;
         pools.PlayDeathPresentation(key.NativeId);
-        deathsPresented++;
     }
 
     public void ReconcileBaseline(IReadOnlyList<SnapshotMemberRecord> members)

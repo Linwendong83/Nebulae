@@ -11,7 +11,6 @@ namespace NebulaeModel.Logger;
 internal static class Log
 {
     private static ILogger logger;
-    public static string LastInfoMsg { get; set; }
     public static string LastErrorMsg { get; set; }
     public static int PatchDiagnosticCount { get; private set; }
     private static bool recordingPatchDiagnostics;
@@ -31,7 +30,7 @@ internal static class Log
 
     public static void Debug(string message)
     {
-        logger.LogDebug(message);
+        logger?.LogDebug(message);
     }
 
     public static void Debug(object message)
@@ -41,19 +40,13 @@ internal static class Log
 
     public static void Info(string message)
     {
-        logger.LogInfo(message);
-        LastInfoMsg = message;
-    }
-
-    public static void Info(object message)
-    {
-        Info(message?.ToString());
+        logger?.LogInfo(message);
     }
 
     public static void Warn(string message)
     {
         if (recordingPatchDiagnostics) PatchDiagnosticCount++;
-        logger.LogWarning(message);
+        logger?.LogWarning(message);
     }
 
     public static void Warn(object message)
@@ -63,9 +56,7 @@ internal static class Log
 
     public static void Error(string message)
     {
-        if (recordingPatchDiagnostics) PatchDiagnosticCount++;
-        logger.LogError(message);
-        LastErrorMsg = message;
+        ErrorWithoutPopup(message);
         if (UIFatalErrorTip.instance != null)
         {
             // Test if current code is executing on the main unity thread
@@ -92,8 +83,16 @@ internal static class Log
 
     public static void Error(string message, Exception ex)
     {
-        Error(message);
-        Error(ex);
+        Error(message + (ex == null ? "" : "\n" + ex));
+    }
+
+    // Background failures must not open Unity UI or produce a popup for every failed tick.
+    public static void ErrorWithoutPopup(string message, Exception ex = null)
+    {
+        if (recordingPatchDiagnostics) PatchDiagnosticCount++;
+        var detail = message + (ex == null ? "" : "\n" + ex);
+        logger?.LogError(detail);
+        LastErrorMsg = detail;
     }
 
     public static void SocketOutput(LogData data, string _)
@@ -104,13 +103,14 @@ internal static class Log
         log = Regex.Replace(log, Ipv4Regex, "(IPv4 Address)");
         log = Regex.Replace(log, Ipv6Regex, "(IPv6 Address)");
 
-        if (data.Level >= LogLevel.Warn)
+        if (data.Level >= LogLevel.Error)
         {
-            Warn(log);
+            Diagnostics.Error("socket:" + data.Level + ":" + data.Message, () => log);
         }
-        else
+        else if (data.Level == LogLevel.Warn)
         {
-            Info(log);
+            Diagnostics.Warn("socket:" + data.Message, () => log);
         }
+        else Debug(log);
     }
 }

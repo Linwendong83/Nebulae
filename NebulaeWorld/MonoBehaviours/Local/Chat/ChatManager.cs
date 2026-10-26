@@ -81,7 +81,6 @@ public class ChatManager : MonoBehaviour
             return;
         }
         var name = Multiplayer.Session.LocalPlayer?.Data?.Username ?? "Unknown";
-        // The preview treats slash-prefixed text as ordinary chat, so bypass command parsing.
         ChatService.Instance.AddMessage(input, ChatMessageType.PlayerMessage, name);
         Multiplayer.Session.Network.SendPacket(new NewChatMessagePacket(ChatMessageType.PlayerMessage, input,
             DateTime.Now, name));

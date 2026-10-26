@@ -25,7 +25,7 @@ internal class BuildEntityRequestProcessor : PacketProcessor<BuildEntityRequest>
             if (!Multiplayer.Session.Vegetation.AcceptCommand(sender.Id, packet.CommandSequence)) return;
             if (!GameMain.sandboxToolsEnabled &&
                 (!Multiplayer.Session.BuildDispatch.TryGet(packet.PlanetId, packet.PrebuildId, out var claim) ||
-                 !claim.Launched || claim.OwnerKind == NebulaeModel.DataStructures.BuildOwnerKind.Player &&
+                 !claim.Launched || claim.OwnerKind != NebulaeModel.DataStructures.BuildOwnerKind.Player ||
                  claim.OwnerId != sender.Id)) return;
         }
         if (IsHost && !Multiplayer.Session.Factories.ContainsPrebuildRequest(packet.PlanetId, packet.PrebuildId))
@@ -59,6 +59,7 @@ internal class BuildEntityRequestProcessor : PacketProcessor<BuildEntityRequest>
                         packet.EntityId, FactoryManager.GetNextEntityId(planet.factory), planet.displayName);
                 Log.Warn(warningText);
                 WarningManager.DisplayTemporaryWarning(warningText, 5000);
+                return; // Do not construct under a different id and cascade the mismatch.
             }
 
             if (planet.factoryLoaded)

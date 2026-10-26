@@ -49,7 +49,7 @@ internal sealed class BattleEffectStream
 
     public void Capture(BattleEffectData effect) =>
         Capture(effect.Kind, effect.Id, effect.Generation, effect.Tick, effect.Life,
-            effect.SourceAstroId, effect.Payload, effect.Payload.Length, effect.SourceObjectId);
+            effect.SourceAstroId, effect.Payload, effect.Payload.Length, effect.SourceObjectId, effect);
 
     /// <summary>
     /// Captures an effect whose payload the caller exported into a buffer it owns.
@@ -69,7 +69,7 @@ internal sealed class BattleEffectStream
     /// </para>
     /// </remarks>
     public void Capture(BattleEffectKind kind, int id, long generation, long tick, int life,
-        int sourceAstroId, byte[] payload, int length, int sourceObjectId = 0)
+        int sourceAstroId, byte[] payload, int length, int sourceObjectId = 0, BattleEffectData launch = null)
     {
         if (!active.TryGetValue((kind, id), out var entry) || entry.Generation != generation)
             throw new InvalidOperationException("Cannot capture a retired combat effect.");
@@ -85,6 +85,11 @@ internal sealed class BattleEffectStream
             Tick = tick,
             SourceAstroId = sourceAstroId,
             SourceObjectId = sourceObjectId,
+            SourceGeneration = launch?.SourceGeneration ?? 0,
+            TargetGeneration = launch?.TargetGeneration ?? 0,
+            LaunchTick = launch?.LaunchTick ?? -1,
+            SourcePort = launch?.SourcePort ?? -1,
+            MuzzleIndex = launch?.MuzzleIndex ?? -1,
             Life = life,
             // A fresh array, never the caller's buffer: the copy is what makes the reuse safe.
             Payload = CopyOf(payload, length)
@@ -117,6 +122,11 @@ internal sealed class BattleEffectStream
             End = true,
             SourceAstroId = entry.Sample.SourceAstroId,
             SourceObjectId = entry.Sample.SourceObjectId,
+            SourceGeneration = entry.Sample.SourceGeneration,
+            TargetGeneration = entry.Sample.TargetGeneration,
+            LaunchTick = entry.Sample.LaunchTick,
+            SourcePort = entry.Sample.SourcePort,
+            MuzzleIndex = entry.Sample.MuzzleIndex,
             Payload = Array.Empty<byte>()
         }));
     }

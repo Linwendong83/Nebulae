@@ -15,18 +15,29 @@ internal static class AtomicFile
     public static void Write(string path, byte[] bytes, int count)
     {
         var directory = Path.GetDirectoryName(Path.GetFullPath(path));
-        Directory.CreateDirectory(directory);
         // Do not append two GUIDs to a long profile path: Unity's Windows Mono still has MAX_PATH limits.
         var temporary = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".tmp");
+        var stage = "create-directory";
         try
         {
+            Directory.CreateDirectory(directory);
+            stage = "write-temporary";
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
                 stream.Write(bytes, 0, count);
+                stage = "flush-temporary";
                 stream.Flush(true);
             }
+            stage = "publish";
             if (File.Exists(path)) File.Replace(temporary, path, path + ".bak");
             else File.Move(temporary, path);
+        }
+        catch (Exception error)
+        {
+            error.Data["Nebulae.FileStage"] = stage;
+            error.Data["Nebulae.FileTarget"] = path;
+            error.Data["Nebulae.FileSource"] = temporary;
+            throw;
         }
         finally
         {

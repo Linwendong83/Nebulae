@@ -1,9 +1,3 @@
-#region
-
-using System;
-
-#endregion
-
 namespace NebulaeModel.Packets.Routers;
 
 /// <summary>

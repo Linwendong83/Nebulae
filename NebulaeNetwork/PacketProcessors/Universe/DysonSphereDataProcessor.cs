@@ -7,6 +7,8 @@ using NebulaeModel.Packets;
 using NebulaeModel.Packets.Universe;
 using NebulaeWorld;
 using NebulaeWorld.GameStates;
+using NebulaeWorld.Universe;
+using NebulaeModel.Utils;
 
 #endregion
 
@@ -17,6 +19,18 @@ internal class DysonSphereDataProcessor : PacketProcessor<DysonSphereData>
     {
         if (IsHost)
         {
+            return;
+        }
+        var manager = Multiplayer.Session.DysonSpheres;
+        var spheres = GameMain.data?.dysonSpheres;
+        if (spheres == null || packet.StarIndex < 0 || packet.StarIndex >= spheres.Length)
+        {
+            if (packet.Event is DysonSphereRespondEvent.Load or DysonSphereRespondEvent.Missing &&
+                manager.FailRequest(packet.StarIndex, packet.RequestId))
+            {
+                if (manager.ClearLoadingNotice(packet.StarIndex)) InGamePopup.FadeOut();
+                Log.Debug($"[dyson] discarded response without its world star={packet.StarIndex} request={packet.RequestId}; baseline can be requested again");
+            }
             return;
         }
 
@@ -43,41 +57,33 @@ internal class DysonSphereDataProcessor : PacketProcessor<DysonSphereData>
                 break;
 
             case DysonSphereRespondEvent.Load:
+                if (!manager.Expects(packet.StarIndex, packet.RequestId)) return;
                 // The whole fragment is received
                 GameStatesManager.FragmentSize = 0;
-                //Failsafe, if client does not have instantiated sphere for the star, it will create dummy one that will be replaced during import
-                GameMain.data.dysonSpheres[packet.StarIndex] = new DysonSphere();
-                GameMain.data.statistics.production.Init(GameMain.data);
-                //Another failsafe, DysonSphere import requires initialized factory statistics
-                if (GameMain.data.statistics.production.factoryStatPool[0] == null)
+                try { ImportSnapshot(packet); }
+                catch
                 {
-                    GameMain.data.statistics.production.factoryStatPool[0] = new FactoryProductionStat();
-                    GameMain.data.statistics.production.factoryStatPool[0].Init();
+                    if (manager.ClearLoadingNotice(packet.StarIndex)) InGamePopup.FadeOut();
+                    throw;
                 }
-                GameMain.data.dysonSpheres[packet.StarIndex].Init(GameMain.data, GameMain.data.galaxy.stars[packet.StarIndex]);
-
-                var star = GameMain.galaxy.stars[packet.StarIndex];
-                using (var reader = new BinaryUtils.Reader(packet.BinaryData, 3))
+                var requestedView = manager.CompleteEditorRequest(packet.StarIndex, out var openEditor);
+                var editor = UIRoot.instance?.uiGame?.dysonEditor;
+                if (manager.ClearLoadingNotice(packet.StarIndex)) InGamePopup.FadeOut();
+                if (openEditor && Multiplayer.Session.IsGameLoaded)
+                    editor?._Open();
+                else if (editor?.active == true && (requestedView || editor.selection.viewStar?.index == packet.StarIndex))
                 {
-                    GameMain.data.dysonSpheres[packet.StarIndex].Import(reader.BinaryReader);
-                    reader.RequireEnd();
-                }
-                if (UIRoot.instance.uiGame.dysonEditor.active)
-                {
-                    UIRoot.instance.uiGame.dysonEditor.selection.SetViewStar(GameMain.galaxy.stars[packet.StarIndex]);
-                    var dysonBox2 = UIRoot.instance.uiGame.dysonEditor.controlPanel.topFunction.dysonBox;
+                    editor.selection.SetViewStar(GameMain.galaxy.stars[packet.StarIndex]);
+                    var dysonBox2 = editor.controlPanel.topFunction.dysonBox;
                     var index2 = dysonBox2.ItemsData.FindIndex(x =>
                         x == UIRoot.instance.uiGame.dysonEditor.selection.viewStar?.index);
                     dysonBox2.itemIndex = index2 >= 0 ? index2 : 0;
                 }
-                if (Multiplayer.Session.IsGameLoaded)
-                {
-                    // Don't fade out when client is still joining
-                    InGamePopup.FadeOut();
-                }
-                Multiplayer.Session.DysonSpheres.RequestingIndex = -1;
-                Multiplayer.Session.DysonSpheres.IsNormal = true;
-
+                break;
+            case DysonSphereRespondEvent.Missing:
+                if (!manager.Expects(packet.StarIndex, packet.RequestId)) return;
+                manager.FailRequest(packet.StarIndex, packet.RequestId);
+                if (manager.ClearLoadingNotice(packet.StarIndex)) InGamePopup.FadeOut();
                 break;
             case DysonSphereRespondEvent.Desync:
                 Multiplayer.Session.DysonSpheres.HandleDesync(packet.StarIndex, conn);
@@ -85,5 +91,53 @@ internal class DysonSphereDataProcessor : PacketProcessor<DysonSphereData>
             default:
                 throw new ArgumentOutOfRangeException(nameof(packet), "Unknown DysonSphereRespondEvent: " + packet.Event);
         }
+    }
+
+    internal static void ImportSnapshot(DysonSphereData packet)
+    {
+        var manager = Multiplayer.Session.DysonSpheres;
+        if (!manager.Expects(packet.StarIndex, packet.RequestId)) return;
+        var game = GameMain.data;
+        var production = game.statistics.production;
+        // Existing factory history and register references must survive a sphere refresh.
+        if (production.factoryStatPool == null) production.Init(game);
+        if (production.factoryStatPool.Length > 0 && production.factoryStatPool[0] == null)
+        {
+            production.factoryStatPool[0] = new FactoryProductionStat();
+            production.factoryStatPool[0].Init();
+        }
+        var sphere = new DysonSphere();
+        var committed = false;
+        var previousBlueprint = manager.InBlueprint;
+        manager.InBlueprint = true;
+        using var incoming = manager.IsIncomingRequest.On();
+        using var swarmIncoming = manager.IncomingDysonSwarmPacket.On();
+        try
+        {
+            sphere.Init(game, game.galaxy.stars[packet.StarIndex]);
+            using var reader = new BinaryUtils.Reader(packet.BinaryData, 3);
+            sphere.Import(reader.BinaryReader);
+            reader.RequireEnd();
+            ValidateSwarm(sphere.swarm);
+            committed = manager.Commit(packet.StarIndex, packet.RequestId, sphere, packet.SnapshotTick);
+        }
+        catch
+        {
+            manager.FailRequest(packet.StarIndex, packet.RequestId);
+            throw;
+        }
+        finally
+        {
+            manager.InBlueprint = previousBlueprint;
+            if (!committed && sphere.swarm != null)
+            {
+                DysonSphereManager.ReleaseSphere(sphere);
+            }
+        }
+    }
+
+    internal static void ValidateSwarm(DysonSwarm swarm)
+    {
+        SolarSailState.Validate(swarm);
     }
 }

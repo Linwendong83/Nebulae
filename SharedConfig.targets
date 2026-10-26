@@ -73,7 +73,7 @@
               Condition="Exists('..\NebulaeWorld\Assets\nebulaenametag')"/>
     </Target>
 
-    <Target Name="BeforeBuild" Condition="'$(IsolatedBuild)' != 'true'">
+    <Target Name="BeforeBuild" Condition="'$(IsolatedBuild)' != 'true' And '$(MSBuildProjectName)' == 'NebulaeWorld'">
         <Copy
                 Condition="Exists('..\NebulaeUnity\Assets\StreamingAssets\AssetBundles\nebulaebundle')"
                 SourceFiles="..\NebulaeUnity\Assets\StreamingAssets\AssetBundles\nebulaebundle"

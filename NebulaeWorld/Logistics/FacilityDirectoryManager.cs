@@ -5,7 +5,6 @@ using System.Linq;
 using NebulaeModel.DataStructures;
 using NebulaeModel.Networking;
 using NebulaeModel.Packets.Logistics.ControlPanel;
-using NebulaeWorld.GameStates;
 using UnityEngine;
 
 namespace NebulaeWorld.Logistics;
@@ -25,7 +24,6 @@ internal sealed class FacilityDirectoryManager : IDisposable
     private string rowTargets = "";
     public long Revision { get; private set; }
     public bool HasSnapshot { get; private set; }
-    public IReadOnlyList<FacilityDirectoryEntry> Entries => entries;
     public Action<INebulaeConnection, LCPObjectEntryRequest> SendRow { get; set; }
 
     public void Subscribe(object consumer)
@@ -90,7 +88,7 @@ internal sealed class FacilityDirectoryManager : IDisposable
         if (!sentRows.TryGetValue(connection, out var sent)) sentRows[connection] = sent = new Dictionary<string, byte[]>();
         var key = typeof(T).FullName + ":" + index;
         var bytes = Multiplayer.Session.Network.WriteOnce(packet);
-        if (sent.TryGetValue(key, out var previous) && LocalPlayerPreferences.Equal(bytes, previous)) return;
+        if (sent.TryGetValue(key, out var previous) && FieldDeltaCodec.Equal(bytes, previous)) return;
         sent[key] = bytes;
         connection.SendRawPacket(bytes);
     }
@@ -157,7 +155,7 @@ internal sealed class FacilityDirectoryManager : IDisposable
         writer.BinaryWriter.Write(data.Count);
         foreach (var entry in data) entry.Write(writer.BinaryWriter);
         var bytes = writer.CloseAndGetBytes();
-        if (snapshot != null && LocalPlayerPreferences.Equal(bytes, snapshot.Data)) return;
+        if (snapshot != null && FieldDeltaCodec.Equal(bytes, snapshot.Data)) return;
         snapshot = new FacilityDirectoryPacket { Revision = ++Revision, Data = bytes };
         byte[] encoded = null;
         foreach (var viewer in viewers)

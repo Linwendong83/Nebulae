@@ -92,9 +92,9 @@ internal class UIDysonBrush_Paint_Transpiler
 
             return matcher.InstructionEnumeration();
         }
-        catch
+        catch (System.Exception error)
         {
-            Log.Error("UIDysonBrush_Paint._OnUpdate_Transpiler failed. Mod version not compatible with game version.");
+            Log.Error("UIDysonBrush_Paint._OnUpdate_Transpiler failed. Mod version not compatible with game version.", error);
             return codeInstructions;
         }
     }

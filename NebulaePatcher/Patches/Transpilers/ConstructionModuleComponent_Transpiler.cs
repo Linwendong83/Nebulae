@@ -1,77 +1,56 @@
-﻿#region
-
+﻿using System;
 using System.Collections.Generic;
-using System.Reflection;
 using System.Reflection.Emit;
 using HarmonyLib;
-using NebulaeModel.Packets.Factory;
 using NebulaePatcher.Patches.Authority;
 using NebulaeWorld;
 
-#endregion
-
 namespace NebulaePatcher.Patches.Transpilers;
 
-/// <summary>Reports consumed prebuild material so peers see the same required item count.</summary>
-/// <remarks>
-/// The transpiler checks its instruction-pattern match count. A missing insertion would leave peers disagreeing
-/// about the construction site's material requirements.
-/// </remarks>
+/// <summary>Report every completed material handoff, including base storage, after its native debit.</summary>
 [HarmonyPatch(typeof(ConstructionModuleComponent))]
 internal class ConstructionModuleComponent_Transpiler
 {
+    [ThreadStatic] private static int lastInc;
     [HarmonyTranspiler, HarmonyPriority(Priority.High)]
     [HarmonyPatch(nameof(ConstructionModuleComponent.PlaceItems))]
     public static IEnumerable<CodeInstruction> PlaceItems_Transpiler(IEnumerable<CodeInstruction> instructions)
     {
-        /*  Sync Prebuild.itemRequired changes by player, insert local method call after player.package.TakeTailItems
-            After:  player.package.TakeTailItems(ref itemId, ref count, out inc, false);
-            Insert: SendPacket(factory, ptr3, count);
-            Before: Assert.True(count == ptr3.itemRequired);
-        */
-        var matches = new[]
-        {
-            new CodeMatch(OpCodes.Ldarg_2),
-            new CodeMatch(OpCodes.Callvirt, AccessTools.DeclaredPropertyGetter(typeof(Player), nameof(Player.package))),
-            new CodeMatch(OpCodes.Ldloca_S),
-            new CodeMatch(OpCodes.Ldloca_S),
-            new CodeMatch(OpCodes.Ldloca_S),
-            new CodeMatch(OpCodes.Ldc_I4_0),
-            new CodeMatch(i => i.opcode == OpCodes.Callvirt && ((MethodInfo)i.operand).Name == "TakeTailItems"),
-            new CodeMatch(OpCodes.Ldloc_S),
-            new CodeMatch(OpCodes.Ldloc_S),
-            new CodeMatch(OpCodes.Ldfld, AccessTools.Field(typeof(PrebuildData), nameof(PrebuildData.itemRequired)))
-        };
-
         var codes = new List<CodeInstruction>(instructions);
-        var label = typeof(ConstructionModuleComponent).Name + "." + nameof(ConstructionModuleComponent.PlaceItems) +
-                    ".itemRequired";
-        if (!AuthorityTranspilerGuard.VerifyCount(label, codes, 1, exact: false, matches))
+        var field = AccessTools.Field(typeof(PrebuildData), nameof(PrebuildData.itemRequired));
+        var matches = new[] { new CodeMatch(i => i.IsLdloc()), new CodeMatch(OpCodes.Ldflda, field),
+            new CodeMatch(OpCodes.Dup), new CodeMatch(OpCodes.Ldind_I4), new CodeMatch(i => i.IsLdloc()),
+            new CodeMatch(OpCodes.Sub), new CodeMatch(OpCodes.Stind_I4) };
+        if (!AuthorityTranspilerGuard.VerifyCount("ConstructionModuleComponent.PlaceItems.itemRequired", codes, 2, true, matches)) return codes;
+        var take = AccessTools.Method(typeof(StorageComponent), nameof(StorageComponent.TakeTailItems),
+            new[] { typeof(int).MakeByRefType(), typeof(int).MakeByRefType(), typeof(int).MakeByRefType(), typeof(bool) });
+        var result = new List<CodeInstruction>();
+        for (var i = 0; i < codes.Count; i++)
         {
-            return codes;
+            var code = codes[i];
+            if (code.Calls(take))
+            {
+                result.Add(new CodeInstruction(OpCodes.Ldarg_1).MoveLabelsFrom(code));
+                code.opcode = OpCodes.Call; code.operand = AccessTools.Method(typeof(ConstructionModuleComponent_Transpiler), nameof(TakeItems));
+            }
+            result.Add(code);
+            if (i < 6 || code.opcode != OpCodes.Stind_I4 || codes[i - 5].opcode != OpCodes.Ldflda || !Equals(codes[i - 5].operand, field)) continue;
+            result.Add(new CodeInstruction(OpCodes.Ldarg_1));
+            result.Add(new CodeInstruction(codes[i - 6].opcode, codes[i - 6].operand));
+            result.Add(new CodeInstruction(codes[i - 2].opcode, codes[i - 2].operand));
+            result.Add(new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(ConstructionModuleComponent_Transpiler), nameof(Report))));
         }
-
-        return new CodeMatcher(codes)
-            .MatchForward(true, matches)
-            .Repeat(
-                matcher => matcher
-                    .Advance(-2)
-                    .InsertAndAdvance(
-                        new CodeInstruction(OpCodes.Ldarg_1),
-                        new CodeInstruction(OpCodes.Ldloc_S, matcher.InstructionAt(1).operand),
-                        new CodeInstruction(OpCodes.Ldloc_S, matcher.InstructionAt(-4).operand),
-                        new CodeInstruction(OpCodes.Call,
-                            AccessTools.Method(typeof(ConstructionModuleComponent_Transpiler), nameof(SendPacket)))
-                    )
-            )
-            .InstructionEnumeration();
+        return result;
     }
-
-    private static void SendPacket(PlanetFactory factory, ref PrebuildData prebuild, int itemCount)
+    private static void TakeItems(StorageComponent storage, ref int item, ref int count, out int inc, bool useBan, PlanetFactory factory)
     {
-        if (!Multiplayer.IsActive) return;
-
-        var packet = new PrebuildItemRequiredUpdate(factory.planetId, prebuild.id, itemCount);
-        Multiplayer.Session.Network.SendPacketToLocalStar(packet);
+        storage.TakeTailItems(ref item, ref count, out inc, useBan); lastInc = inc;
+        if (Multiplayer.IsActive && Multiplayer.Session.IsServer && storage.entityId > 0 && count > 0)
+            Multiplayer.Session.BuildDispatch.StorageSupplied(factory, storage);
+    }
+    private static void Report(PlanetFactory factory, ref PrebuildData site, int count)
+    {
+        if (Multiplayer.IsActive && count > 0 && site.itemRequired == 0)
+            Multiplayer.Session.BuildDispatch.ReportSupply(factory, site, count, lastInc);
     }
 }

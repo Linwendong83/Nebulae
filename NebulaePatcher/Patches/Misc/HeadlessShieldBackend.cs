@@ -65,10 +65,11 @@ internal static class HeadlessShieldBackend
                 {
                     if (mode == ShieldBackendMode.Native) throw;
                     kind = ShieldBackendKind.Cpu;
-                    Log.Warn($"[shield-backend] native initialization failed: {ex.Message}; fallback={kind}");
+                    Diagnostics.Warn("shield:initialize", () => $"[shield-backend] native initialization failed mode={mode} fallback={kind}", ex);
                 }
             }
             initialized = true;
+            Log.Debug($"[shield-backend] initialized mode={mode} backend={kind}");
             AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
         }
     }
@@ -120,7 +121,7 @@ internal static class HeadlessShieldBackend
                     if (mode != ShieldBackendMode.Auto) throw;
                     native.Dispose(); native = null;
                     kind = ShieldBackendKind.Cpu;
-                    Log.Warn($"[shield-backend] native computation failed: {ex.Message}; fallback={kind}. No retry until session reset.");
+                    Diagnostics.Warn("shield:compute", () => $"[shield-backend] native computation failed mode={mode} fallback={kind} planet={field.planet.id} generators={field.generatorCount}; no retry until session reset", ex);
                 }
             }
             ShieldCpuKernel.Compute(field.physicsMeshVertsOriginal, field.generatorMatrix, field.generatorCount,

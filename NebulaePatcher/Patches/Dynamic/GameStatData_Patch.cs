@@ -1,5 +1,6 @@
 ﻿#region
 
+using System;
 using HarmonyLib;
 using NebulaeWorld;
 
@@ -14,8 +15,13 @@ internal class GameStatData_Patch
     [HarmonyPatch(nameof(GameStatData.RecordTechHashed))]
     public static void RecordTechHashed_Prefix(GameStatData __instance)
     {
-        if (!Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost)
+        if (!Multiplayer.IsActive)
         {
+            return;
+        }
+        if (Multiplayer.Session.LocalPlayer.IsHost)
+        {
+            Multiplayer.Session.Research.RecordStatistics(__instance);
             return;
         }
         if (GameMain.history.currentTech == 0)
@@ -28,7 +34,9 @@ internal class GameStatData_Patch
         {
             ++hostShare;
         }
-        __instance.techHashedThisFrame = hostShare;
+        // The host rate already includes this player's confirmed batches. Keep immediate local
+        // activity visible between reports without counting it twice when the host catches up.
+        __instance.techHashedThisFrame = Math.Max(__instance.techHashedThisFrame, hostShare);
     }
 
     [HarmonyPostfix]

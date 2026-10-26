@@ -45,7 +45,7 @@ internal static class SaveManager
             if (loadedServerIdentity && !string.Equals(WorldId, worldId, StringComparison.Ordinal))
             {
                 serverDataLoadFailed = true;
-                throw new InvalidDataException("The world and multiplayer save have different identities");
+                throw new InvalidDataException($"The world and multiplayer save have different identities: world={worldId}, server={WorldId}");
             }
             WorldId = worldId;
             return;
@@ -67,6 +67,21 @@ internal static class SaveManager
     public static IReadOnlyDictionary<string, IPlayerData> PlayerSaves => playerSaves;
 
     public static void SaveServerData(string saveName)
+    {
+        var started = Diagnostics.Now;
+        try
+        {
+            SaveServerDataCore(saveName);
+            Log.Debug($"[save] server data committed path={GameConfig.gameSaveFolder + saveName + FILE_EXTENSION} world={WorldId} revision={REVISION} elapsed={Diagnostics.Now - started:F2}s rotated={saveName == GameSave.AutoSaveTmp}");
+        }
+        catch (Exception error)
+        {
+            Log.ErrorWithoutPopup($"[save] companion save failed after native save path={GameConfig.gameSaveFolder + saveName + FILE_EXTENSION} world={WorldId} revision={REVISION} stage={error.Data["Nebulae.FileStage"] ?? "capture-or-serialize"} source={error.Data["Nebulae.FileSource"]} target={error.Data["Nebulae.FileTarget"]} elapsed={Diagnostics.Now - started:F2}s", error);
+            throw;
+        }
+    }
+
+    private static void SaveServerDataCore(string saveName)
     {
         if (!CanSave)
             throw new InvalidOperationException("Multiplayer data could not be loaded; refusing to overwrite the save.");
@@ -171,7 +186,9 @@ internal static class SaveManager
         if (!File.Exists(path))
         {
             TryReadLegacyIdentity(path);
-            Log.Info("No server file");
+            if (GameMain.data?.history?.featureValues.TryGetValue(-1708469024, out var marker) == true && marker == 0x4e42574c)
+                Diagnostics.Warn("save:missing-companion", () => $"[save] multiplayer world has no companion file path={path}; player records are unavailable");
+            else Log.Debug($"[save] no companion file path={path}; initializing player records");
             return;
         }
 
@@ -229,8 +246,7 @@ internal static class SaveManager
         {
             serverDataLoadFailed = true;
             playerSaves.Clear();
-            Log.Warn("Multiplayer data load failed; saving is disabled to preserve the original file:\n".Translate() + e.Message);
-            Log.Warn(e);
+            Log.ErrorWithoutPopup($"[save] multiplayer data load failed path={path} world={WorldId} savingDisabled=true; original file preserved", e);
             return;
         }
 
@@ -244,7 +260,7 @@ internal static class SaveManager
         var identityPath = serverPath + ".world-id";
         if (!File.Exists(identityPath)) return;
         try { SetWorldId(System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(identityPath))); }
-        catch (Exception error) { Log.Warn("Ignoring obsolete world identity file: " + error.Message); }
+        catch (Exception error) { Diagnostics.Warn("save:legacy-identity", () => $"[save] obsolete world identity ignored path={identityPath}", error); }
     }
 
     private static void ReadLegacyAuthorityArchive(string serverPath)
@@ -266,7 +282,7 @@ internal static class SaveManager
             {
                 // These retired simulation records must not override native player/world facts
                 // or disable saving. Leave the original file untouched for recovery.
-                Log.Warn("Legacy authority archive was not imported: " + path + ": " + error.Message);
+                Diagnostics.Warn("save:legacy-archive:" + path, () => $"[save] legacy authority archive not imported path={path} world={WorldId}", error);
             }
         }
     }

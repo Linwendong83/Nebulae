@@ -13,6 +13,8 @@ internal sealed class PlayerLifeManager : IDisposable
     private PlayerLifePacket pending;
     private long lastSend;
     private long lastCheckpoint;
+    private long retryAfter;
+    private int consecutiveRetries;
     private int lastStage = -1;
     private readonly Dictionary<ushort, long> received = new();
 
@@ -23,6 +25,8 @@ internal sealed class PlayerLifeManager : IDisposable
     public bool BlocksInventory => requestedTicket != 0 || pending != null;
     public bool IsExiting => exiting;
     internal long AcceptedTicket => acceptedTicket;
+    internal long DiagnosticSequence => pendingTicket > acceptedTicket ? pendingTicket : requestedTicket;
+    internal string DiagnosticState => $"requested={requestedTicket} pending={pendingTicket} accepted={acceptedTicket} exitTicket={exitTicket} exiting={exiting} revision={pending?.Life.Revision} requiredCombatRevision={requiredCombatRevision} commandAck={pending?.LastCombatCommand} inventorySequence={pending?.InventoryTransferSequence}";
 
     public long RequestCheckpoint()
     {
@@ -58,7 +62,7 @@ internal sealed class PlayerLifeManager : IDisposable
             if (now - lastSend >= TimeSpan.TicksPerSecond * 2) Send();
             return;
         }
-        if (requestedTicket == 0 || session.IsClient && session.InventoryTransfers.Pending) return;
+        if (requestedTicket == 0 || now < retryAfter || session.IsClient && session.InventoryTransfers.Pending) return;
         if (requiredCombatRevision >= 0 && session.CombatAuthority.LastAppliedRevision <= requiredCombatRevision) return;
         requiredCombatRevision = -1;
         var bytes = MetadataTransactionManager.CapturePlayer();
@@ -106,15 +110,23 @@ internal sealed class PlayerLifeManager : IDisposable
             if (receipt.AcceptedRevision < pending.Life.Revision) return;
             acceptedTicket = Math.Max(acceptedTicket, pendingTicket);
             pending = null; lastCheckpoint = DateTime.UtcNow.Ticks;
+            retryAfter = 0; consecutiveRetries = 0;
         }
         else if (status is CheckpointReceiptStatus.Retry or CheckpointReceiptStatus.Rejected)
         {
             requestedTicket = requestedTicket == 0 ? pendingTicket : Math.Max(requestedTicket, pendingTicket);
-            requiredCombatRevision = (CheckpointRejectReason)receipt.RejectReason == CheckpointRejectReason.CombatBaseline
+            var reason = (CheckpointRejectReason)receipt.RejectReason;
+            requiredCombatRevision = (reason is CheckpointRejectReason.CombatBaseline or CheckpointRejectReason.InvalidLedger or CheckpointRejectReason.CombatLedger) &&
+                Multiplayer.Session.CombatAuthority.LastAppliedRevision > 0
                 ? Multiplayer.Session.CombatAuthority.LastAppliedRevision : -1;
+            // The host republishes combat facts after a refused checkpoint. Wait for that
+            // reconciliation and back off rather than recapturing the same bad ledger every frame.
+            retryAfter = DateTime.UtcNow.Ticks + TimeSpan.TicksPerSecond * (1 << Math.Min(consecutiveRetries++, 3));
+            var refusedState = DiagnosticState;
             pending = null;
             if (status == CheckpointReceiptStatus.Rejected)
-                Log.Warn("Personal checkpoint refused: " + (CheckpointRejectReason)receipt.RejectReason);
+                Diagnostics.Warn("checkpoint:refused:" + receipt.RejectReason, () => $"[checkpoint] refused reason={reason} receiptRevision={receipt.Life.Revision} acceptedRevision={receipt.AcceptedRevision} {refusedState}");
+            else Log.Debug($"[checkpoint] retry reason={reason} revision={receipt.Life.Revision} {refusedState}");
         }
     }
 
@@ -153,13 +165,13 @@ internal sealed class PlayerLifeManager : IDisposable
         itemAcks ??= Array.Empty<int>(); debitAcks ??= Array.Empty<int>();
         if (Multiplayer.Session?.IsServer == true &&
             !Multiplayer.Session.CombatAuthority.ValidateCheckpoint(player.PlayerId, commandAck, debitAck, itemAcks, debitAcks))
-        { reason = CheckpointRejectReason.InvalidLedger; return CheckpointReceiptStatus.Retry; }
+        { reason = CheckpointRejectReason.CombatLedger; return CheckpointReceiptStatus.Retry; }
         var requestedRespawn = checkpoint.Life.IsAlive;
         var personalFight = checkpoint.Mecha.FightData;
         if (player.CombatAuthoritative && !Multiplayer.Session.CombatAuthority.ValidatePersonalStocks(player.PlayerId, combatRevision, personalFight))
         { reason = CheckpointRejectReason.CombatBaseline; return CheckpointReceiptStatus.Retry; }
         if (Multiplayer.Session?.IsServer == true && !Multiplayer.Session.InventoryTransfers.Replay(player.PlayerId, inventoryTransferSequence, checkpoint.Mecha))
-        { reason = CheckpointRejectReason.InvalidLedger; return CheckpointReceiptStatus.Retry; }
+        { reason = CheckpointRejectReason.InventoryLedger; return CheckpointReceiptStatus.Retry; }
         if (!player.TryApplyPersonalSnapshot(checkpoint))
         { reason = CheckpointRejectReason.InvalidSnapshot; return CheckpointReceiptStatus.Rejected; }
         if (Multiplayer.Session?.IsServer == true && player.CombatAuthoritative)
@@ -183,7 +195,7 @@ internal sealed class PlayerLifeManager : IDisposable
         }
         catch (Exception e)
         {
-            Log.Warn($"Ignoring unreadable player snapshot: {e.Message}");
+            Diagnostics.Warn("checkpoint:decode", () => $"[checkpoint] unreadable player snapshot bytes={bytes?.Length ?? 0}", e);
             return null;
         }
     }

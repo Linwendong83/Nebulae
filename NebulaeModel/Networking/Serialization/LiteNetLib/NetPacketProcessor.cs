@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using NebulaeModel.Contracts;
-using NebulaeModel.Networking;
 
 namespace NebulaeModel.Networking.Serialization
 {
@@ -20,11 +19,6 @@ namespace NebulaeModel.Networking.Serialization
         public NetPacketProcessor()
         {
             _netSerializer = new NetSerializer();
-        }
-
-        public NetPacketProcessor(int maxStringLength)
-        {
-            _netSerializer = new NetSerializer(maxStringLength);
         }
 
         internal T ReadFieldLayout<T>(byte[] bytes, out int[] ends) where T : class, new() =>

@@ -5,7 +5,7 @@ using System.Linq;
 using System.Reflection.Emit;
 using HarmonyLib;
 using NebulaeModel.Logger;
-using NebulaeWorld;
+using NebulaeWorld.Statistics;
 
 #endregion
 
@@ -34,7 +34,7 @@ internal static class UIProductEntry_Transpiler
                 )
                 .Repeat(matcher => matcher
                     .SetAndAdvance(OpCodes.Call,
-                        AccessTools.Method(typeof(UIProductEntry_Transpiler), nameof(GetFactoryIndex)))
+                        AccessTools.Method(typeof(LocalReferenceStatistics), nameof(LocalReferenceStatistics.GetFactoryIndex)))
                 )
                 .InstructionEnumeration();
 
@@ -45,15 +45,15 @@ internal static class UIProductEntry_Transpiler
                     new CodeMatch(OpCodes.Brfalse)
                 )
                 .Repeat(matcher => matcher
-                    .SetAndAdvance(OpCodes.Call, AccessTools.Method(typeof(UIProductEntry_Transpiler), nameof(HasFactory)))
+                    .SetAndAdvance(OpCodes.Call, AccessTools.Method(typeof(LocalReferenceStatistics), nameof(LocalReferenceStatistics.HasFactory)))
                 )
                 .InstructionEnumeration();
 
             return instructions;
         }
-        catch
+        catch (System.Exception error)
         {
-            Log.Error("Transpiler UIProductEntry.UpdateExtraProductTexts failed. Mod version not compatible with game version.");
+            Log.Error("Transpiler UIProductEntry.UpdateExtraProductTexts failed. Mod version not compatible with game version.", error);
             return codeInstructions;
         }
     }
@@ -68,36 +68,9 @@ internal static class UIProductEntry_Transpiler
                 new CodeMatch(OpCodes.Ldfld, AccessTools.Field(typeof(GameData), nameof(GameData.factoryCount)))
             )
             .Repeat(matcher => matcher
-                .SetAndAdvance(OpCodes.Call, AccessTools.Method(typeof(UIProductEntry_Transpiler), nameof(GetFactoryCount)))
+                .SetAndAdvance(OpCodes.Call, AccessTools.Method(typeof(LocalReferenceStatistics), nameof(LocalReferenceStatistics.GetFactoryCount)))
                 .RemoveInstructions(2)
             )
             .InstructionEnumeration();
-    }
-
-    private static int GetFactoryCount()
-    {
-        if (!Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost)
-        {
-            return GameMain.data.factoryCount;
-        }
-        return Multiplayer.Session.Statistics.FactoryCount;
-    }
-
-    private static int GetFactoryIndex(PlanetData planet)
-    {
-        if (!Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost)
-        {
-            return planet.factoryIndex;
-        }
-        return Multiplayer.Session.Statistics.GetFactoryIndex(planet);
-    }
-
-    private static bool HasFactory(PlanetData planet)
-    {
-        if (!Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost)
-        {
-            return planet.factory != null;
-        }
-        return Multiplayer.Session.Statistics.HasFactory(planet);
     }
 }

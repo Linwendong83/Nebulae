@@ -19,6 +19,9 @@ internal class DysonSphereRequestProcessor : PacketProcessor<DysonSphereLoadRequ
         {
             return;
         }
+        var spheres = GameMain.data?.dysonSpheres;
+        if (spheres == null || (packet.Event != DysonSphereRequestEvent.List &&
+            (packet.StarIndex < 0 || packet.StarIndex >= spheres.Length))) return;
         switch (packet.Event)
         {
             case DysonSphereRequestEvent.List:
@@ -48,7 +51,8 @@ internal class DysonSphereRequestProcessor : PacketProcessor<DysonSphereLoadRequ
                     dysonSphere.Export(writer.BinaryWriter);
                     var data = writer.CloseAndGetBytes();
                     conn.SendPacket(new FragmentInfo(data.Length));
-                    conn.SendPacket(new DysonSphereData(packet.StarIndex, data, DysonSphereRespondEvent.Load));
+                    conn.SendPacket(new DysonSphereData(packet.StarIndex, data, DysonSphereRespondEvent.Load,
+                        packet.RequestId, GameMain.gameTick));
                     Multiplayer.Session.DysonSpheres.RegisterPlayer(conn, packet.StarIndex);
                 }
                 break;
@@ -65,6 +69,8 @@ internal class DysonSphereRequestProcessor : PacketProcessor<DysonSphereLoadRequ
                 dysonSphere = GameMain.data.dysonSpheres[packet.StarIndex];
                 if (dysonSphere == null)
                 {
+                    conn.SendPacket(new DysonSphereData(packet.StarIndex, Array.Empty<byte>(),
+                        DysonSphereRespondEvent.Missing, packet.RequestId));
                     return;
                 }
                 using (var writer = new BinaryUtils.Writer())
@@ -72,7 +78,8 @@ internal class DysonSphereRequestProcessor : PacketProcessor<DysonSphereLoadRequ
                     dysonSphere.Export(writer.BinaryWriter);
                     var data = writer.CloseAndGetBytes();
                     conn.SendPacket(new FragmentInfo(data.Length));
-                    conn.SendPacket(new DysonSphereData(packet.StarIndex, data, DysonSphereRespondEvent.Load));
+                    conn.SendPacket(new DysonSphereData(packet.StarIndex, data, DysonSphereRespondEvent.Load,
+                        packet.RequestId, GameMain.gameTick));
                     Multiplayer.Session.DysonSpheres.RegisterPlayer(conn, packet.StarIndex);
                 }
                 break;

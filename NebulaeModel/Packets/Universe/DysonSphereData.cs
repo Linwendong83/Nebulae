@@ -5,11 +5,13 @@ internal class DysonSphereData
 {
     public DysonSphereData() { }
 
-    public DysonSphereData(int starIndex, byte[] data, DysonSphereRespondEvent respondEvent)
+    public DysonSphereData(int starIndex, byte[] data, DysonSphereRespondEvent respondEvent, int requestId = 0, long snapshotTick = 0)
     {
         StarIndex = starIndex;
         BinaryData = data;
         Event = respondEvent;
+        RequestId = requestId;
+        SnapshotTick = snapshotTick;
     }
 
     [NebulaeModel.Networking.WireOrder(0)]
@@ -18,11 +20,16 @@ internal class DysonSphereData
     public byte[] BinaryData { get; set; }
     [NebulaeModel.Networking.WireOrder(2)]
     public DysonSphereRespondEvent Event { get; set; }
+    [NebulaeModel.Networking.WireOrder(3)]
+    public int RequestId { get; set; }
+    [NebulaeModel.Networking.WireOrder(4)]
+    public long SnapshotTick { get; set; }
 }
 
 internal enum DysonSphereRespondEvent
 {
     List = 1,
     Load = 2,
-    Desync = 3
+    Desync = 3,
+    Missing = 4
 }

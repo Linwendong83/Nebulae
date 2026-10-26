@@ -56,9 +56,7 @@ internal class SkillSystem_Common_Patch
         if (playerData.mecha?.player?.transform == null) return;
         skillSystem.mecha = playerData.mecha;
         skillSystem.playerAlive = playerData.isAlive;
-        skillSystem.playerSkillTargetL = playerData.skillTargetL;
-        skillSystem.playerSkillTargetULast = playerData.skillTargetULast;
-        skillSystem.playerSkillTargetU = playerData.skillTargetU;
+        SetCollisionPose(skillSystem, ref playerData, playerData.mecha.skillTargetLCenter, playerData.mecha.skillTargetUCenter);
         skillSystem.playerSkillCastLeftL = playerData.mecha.skillCastLeftL;
         skillSystem.playerSkillCastLeftU = playerData.mecha.skillCastLeftU;
         skillSystem.playerSkillCastRightL = playerData.mecha.skillCastRightL;
@@ -75,9 +73,7 @@ internal class SkillSystem_Common_Patch
         if (playerData.mecha?.player?.transform == null) return;
         skillSystem.mecha = playerData.mecha;
         skillSystem.playerAlive = playerData.isAlive;
-        skillSystem.playerSkillTargetL = playerData.skillTargetL;
-        skillSystem.playerSkillTargetULast = playerData.skillTargetULast;
-        skillSystem.playerSkillTargetU = playerData.skillTargetU;
+        SetCollisionPose(skillSystem, ref playerData, playerData.mecha.skillTargetLCenter, playerData.mecha.skillTargetUCenter);
         SetCollisionState(skillSystem, ref playerData);
     }
 
@@ -95,6 +91,19 @@ internal class SkillSystem_Common_Patch
         skills.playerVelocityU = player.mecha.player.uVelocity;
         skills.playerVelocityL = player.mecha.player.controller.velocity;
         skills.playerAltL = player.mecha.player.planetData == null ? 0 : player.position.magnitude - player.mecha.player.planetData.realRadius;
+    }
+
+    internal static void SetCollisionPose(SkillSystem skills, ref NebulaeWorld.Combat.CombatManager.PlayerPosition player,
+        UnityEngine.Vector3 currentLocal, VectorLF3 currentUniversal)
+    {
+        // The table is captured after LogicFrame. Before the next native frame the
+        // host accepts a newer actor pose and updates its body collider. Use that
+        // same current pose for the shield; the table's current entry is LAST tick.
+        // Reading table.skillTargetULast here uses two old samples and can leave
+        // the shield 100-200 m behind a body after a high-speed movement packet.
+        skills.playerSkillTargetL = currentLocal;
+        skills.playerSkillTargetULast = player.skillTargetU;
+        skills.playerSkillTargetU = currentUniversal;
     }
 
     [HarmonyPrefix]

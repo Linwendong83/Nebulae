@@ -427,12 +427,10 @@ namespace NebulaeModel.Networking.Serialization
 
         protected class StringSerializer<T> : FastCallSpecific<T, string>
         {
-            private readonly int _maxLength;
-            public StringSerializer(int maxLength) { _maxLength = maxLength > 0 ? maxLength : short.MaxValue; }
-            public override void Read(T inf, NetDataReader r) { Setter(inf, r.GetString(_maxLength)); }
-            public override void Write(T inf, NetDataWriter w) { w.Put(Getter(inf), _maxLength); }
-            public override void ReadArray(T inf, NetDataReader r) { SetterArr(inf, r.GetStringArray(_maxLength)); }
-            public override void WriteArray(T inf, NetDataWriter w) { w.PutArray(GetterArr(inf), _maxLength); }
+            public override void Read(T inf, NetDataReader r) { Setter(inf, r.GetString(short.MaxValue)); }
+            public override void Write(T inf, NetDataWriter w) { w.Put(Getter(inf), short.MaxValue); }
+            public override void ReadArray(T inf, NetDataReader r) { SetterArr(inf, r.GetStringArray(short.MaxValue)); }
+            public override void WriteArray(T inf, NetDataWriter w) { w.PutArray(GetterArr(inf), short.MaxValue); }
         }
 
         protected class EnumByteSerializer<T> : FastCall<T>
@@ -561,17 +559,7 @@ namespace NebulaeModel.Networking.Serialization
             _registeredTypes.Add(typeof(T), new CustomTypeStatic<T>(writer, reader));
         }
 
-        protected readonly int _maxStringLength;
         protected readonly Dictionary<Type, CustomType> _registeredTypes = new Dictionary<Type, CustomType>();
-
-        public NetSerializer() : this(0)
-        {
-        }
-
-        public NetSerializer(int maxStringLength)
-        {
-            _maxStringLength = maxStringLength;
-        }
 
         protected virtual ClassInfo<T> RegisterInternal<T>()
         {
@@ -615,7 +603,7 @@ namespace NebulaeModel.Networking.Serialization
                         throw new InvalidTypeException("Not supported enum underlying type: " + underlyingType.Name);
                 }
                 else if (elementType == typeof(string))
-                    serialzer = new StringSerializer<T>(_maxStringLength);
+                    serialzer = new StringSerializer<T>();
                 else if (elementType == typeof(bool))
                     serialzer = new BoolSerializer<T>();
                 else if (elementType == typeof(byte))

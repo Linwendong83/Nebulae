@@ -1,7 +1,5 @@
 ﻿namespace NebulaeModel.DataStructures.Chat;
 
-using System;
-
 /// <summary>
 /// Represents a raw, data-only chat message, independent of any UI framework.
 /// </summary>
@@ -22,8 +20,4 @@ internal class RawChatMessage
     /// </summary>
     public string UserName { get; set; }
 
-    /// <summary>
-    /// Gets or sets the time the message was sent or received.
-    /// </summary>
-    public DateTime Timestamp { get; set; }
 }

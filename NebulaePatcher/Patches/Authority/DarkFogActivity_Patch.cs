@@ -1,6 +1,7 @@
 using HarmonyLib;
 using NebulaeWorld;
 using NebulaeWorld.Authority.Adapters;
+using NebulaeWorld.Combat;
 
 namespace NebulaePatcher.Patches.Authority;
 
@@ -11,6 +12,12 @@ internal static class DarkFogActivity_Patch
     internal static void Draw(SectorModel __instance)
     {
         if (Multiplayer.IsActive && Multiplayer.Session.IsClient) SpaceEnemyPresentation.PrepareDraw(__instance, false);
+    }
+
+    [HarmonyPrefix, HarmonyPatch(typeof(SectorModel), "UpdateGlobalShaderVars")]
+    internal static void UpdateAlert(SectorModel __instance)
+    {
+        if (Multiplayer.IsActive && !Multiplayer.IsDedicated) HiveSensor.UpdateAlert(__instance.sector);
     }
 
     [HarmonyPrefix, HarmonyPatch(typeof(SectorModel), nameof(SectorModel.DrawStarmapBatches))]

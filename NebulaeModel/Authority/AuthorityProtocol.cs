@@ -1,5 +1,3 @@
-using System;
-
 namespace NebulaeModel.Authority;
 
 /// <summary>Which DTO family an envelope carries.</summary>

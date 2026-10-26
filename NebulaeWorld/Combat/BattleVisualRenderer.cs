@@ -50,9 +50,14 @@ internal sealed class BattleVisualRenderer : IDisposable
         foreach (var effect in frame.Effects)
         {
             var id = (effect.Kind, effect.Id, effect.Generation);
+            if (effect.End && BattleEffectData.IsCraft(effect.Kind)) Multiplayer.Session.BattleVisuals.CraftWeapons.EndEffect(effect);
             var fixedOwner = BattleEffectData.IsCraft(effect.Kind) || BattleEffectData.IsDarkFogTurret(effect.Kind);
             if (fixedOwner && source.NativeOwned.ContainsKey(id)) continue;
-            var native = effect.Kind is BattleEffectKind.GroundTowerLaser or BattleEffectKind.GroundTowerPlasma
+            var native = BattleEffectData.IsCraft(effect.Kind)
+                ? !effect.End && !source.Effects.ContainsKey(id) && (NativeCraftSimulation.IsBase(effect.SourceAstroId, effect.SourceObjectId)
+                    ? NativeCraftSimulation.CanPresent(effect.SourceAstroId, effect.SourceObjectId)
+                    : Multiplayer.Session.BattleVisuals.CraftWeapons.Reconcile(effect))
+                : effect.Kind is BattleEffectKind.GroundTowerLaser or BattleEffectKind.GroundTowerPlasma
                 ? Multiplayer.Session.DarkFogTurrets.OwnsGroundEffect(effect)
                 : NativeTurretEffect(effect.Kind, effect.SourceAstroId, effect.SourceObjectId);
             if ((!fixedOwner || !source.Effects.ContainsKey(id)) && native)

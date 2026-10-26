@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using NebulaeModel.Packets.Authority;
+using NebulaeModel.Logger;
 
 #endregion
 
@@ -39,6 +40,14 @@ internal sealed class ClientSnapshotStaging
     private readonly Dictionary<ScopeKey, ScopeStaging> stagings = new();
 
     public int Count => stagings.Count;
+    internal int ProgressFor(ScopeKey scope) => stagings.TryGetValue(scope, out var staging) ? staging.PlacedChunks.Count : 0;
+    private bool Refuse(string reason, ScopeKey scope, long subscriptionEpoch, long baselineId, string detail)
+    {
+        RefusedTotal++;
+        Diagnostics.Warn("snapshot:staging:" + scope + ":" + reason,
+            () => $"[authority] snapshot staging refused reason={reason} scope={scope} subscription={subscriptionEpoch} baseline={baselineId} {detail}");
+        return false;
+    }
 
     public long BeginsTotal { get; private set; }
     public long ChunksTotal { get; private set; }
@@ -70,21 +79,21 @@ internal sealed class ClientSnapshotStaging
             totalBytes > AuthorityLimits.ScopeSnapshotMaxBytes ||
             chunkCount != AuthoritySnapshotCodec.ChunkCountFor(totalBytes))
         {
-            RefusedTotal++;
-            return false;
+            return Refuse("begin:description", scope, subscriptionEpoch, baselineId, $"chunks={chunkCount} bytes={totalBytes} maxBytes={AuthorityLimits.ScopeSnapshotMaxBytes}");
         }
 
         if (stagings.TryGetValue(scope, out var existing))
         {
-            if (existing.BaselineId == baselineId)
+            if (existing.BaselineId == baselineId && existing.SubscriptionEpoch == subscriptionEpoch &&
+                existing.TotalBytes == totalBytes && existing.ChunkCount == chunkCount && existing.Hash == hash)
             {
                 // A repeated Begin for the baseline already staging is idempotent, not an error.
                 return true;
             }
-            // A different baseline while one is pending means the old attempt is dead; the client
-            // never merges two baselines, so this Begin is refused rather than half-adopted.
-            RefusedTotal++;
-            return false;
+            // A newer host subscription replaces the failed conversation atomically. Old or
+            // conflicting duplicates must leave the current staging buffer intact.
+            if (subscriptionEpoch <= existing.SubscriptionEpoch)
+                return Refuse("begin:overlap", scope, subscriptionEpoch, baselineId, $"activeBaseline={existing.BaselineId} activeSubscription={existing.SubscriptionEpoch}");
         }
 
         stagings[scope] = new ScopeStaging
@@ -105,15 +114,13 @@ internal sealed class ClientSnapshotStaging
     {
         if (!stagings.TryGetValue(scope, out var staging))
         {
-            RefusedTotal++;
-            return false;
+            return Refuse("chunk:no-staging", scope, subscriptionEpoch, baselineId, $"index={chunkIndex} bytes={data?.Length}");
         }
         if (staging.SubscriptionEpoch != subscriptionEpoch || staging.BaselineId != baselineId ||
             data == null || chunkIndex < 0 || chunkIndex >= staging.ChunkCount ||
             data.Length > AuthorityLimits.ChunkMaxBytes)
         {
-            RefusedTotal++;
-            return false;
+            return Refuse("chunk:identity-or-shape", scope, subscriptionEpoch, baselineId, $"index={chunkIndex}/{staging.ChunkCount} bytes={data?.Length} activeBaseline={staging.BaselineId} activeSubscription={staging.SubscriptionEpoch}");
         }
 
         var offset = (long)chunkIndex * AuthorityLimits.ChunkMaxBytes;
@@ -122,8 +129,7 @@ internal sealed class ClientSnapshotStaging
         {
             // Every chunk except the last is exactly the chunk size; a different length means the
             // reassembly would be a different image than the one Begin declared.
-            RefusedTotal++;
-            return false;
+            return Refuse("chunk:length", scope, subscriptionEpoch, baselineId, $"index={chunkIndex} expectedBytes={expected} actualBytes={data.Length}");
         }
 
         if (staging.PlacedChunks.Contains(chunkIndex))
@@ -133,8 +139,7 @@ internal sealed class ClientSnapshotStaging
                 if (staging.Buffer[offset + i] != data[i])
                 {
                     // Same position, different bytes: the senders disagree about the image.
-                    RefusedTotal++;
-                    return false;
+                    return Refuse("chunk:conflicting-duplicate", scope, subscriptionEpoch, baselineId, $"index={chunkIndex} differingOffset={i}");
                 }
             }
             DuplicateChunksTotal++;
@@ -158,15 +163,13 @@ internal sealed class ClientSnapshotStaging
         assembled = null;
         if (!stagings.TryGetValue(scope, out var staging))
         {
-            RefusedTotal++;
-            return false;
+            return Refuse("commit:no-staging", scope, subscriptionEpoch, baselineId, $"chunks={chunkCount} hash={hash}");
         }
         if (staging.SubscriptionEpoch != subscriptionEpoch || staging.BaselineId != baselineId)
         {
             // A late commit from a superseded conversation must not destroy the conversation that
             // is actually in flight; it is refused whole.
-            RefusedTotal++;
-            return false;
+            return Refuse("commit:identity", scope, subscriptionEpoch, baselineId, $"activeBaseline={staging.BaselineId} activeSubscription={staging.SubscriptionEpoch}");
         }
         stagings.Remove(scope);
 
@@ -175,16 +178,14 @@ internal sealed class ClientSnapshotStaging
                        staging.PlacedChunks.Count == staging.ChunkCount;
         if (!coherent)
         {
-            RefusedTotal++;
-            return false;
+            return Refuse("commit:bookkeeping", scope, subscriptionEpoch, baselineId, $"receivedChunks={staging.PlacedChunks.Count} expectedChunks={staging.ChunkCount} declaredChunks={chunkCount} expectedHash={staging.Hash} declaredHash={hash}");
         }
         if (AuthoritySnapshotCodec.Hash(staging.Buffer) != staging.Hash)
         {
             // The bookkeeping agreed, but the reassembled bytes are not the image Begin declared
             // (a corrupted chunk survives length checks). The content hash is the last gate; the
             // buffer is discarded and nothing reaches the active world.
-            RefusedTotal++;
-            return false;
+            return Refuse("commit:checksum", scope, subscriptionEpoch, baselineId, $"bytes={staging.Buffer.Length} expectedHash={staging.Hash} actualHash={AuthoritySnapshotCodec.Hash(staging.Buffer)}");
         }
 
         assembled = staging.Buffer;

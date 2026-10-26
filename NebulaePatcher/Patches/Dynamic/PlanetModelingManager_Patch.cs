@@ -4,7 +4,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using HarmonyLib;
-using NebulaeModel.Logger;
 using NebulaeModel.Packets.Planet;
 using NebulaeWorld;
 
@@ -124,7 +123,7 @@ internal class PlanetModelingManager_Patch
 
         Multiplayer.Session.DysonSpheres.UnloadRemoteDysonSpheres();
         // Request initial dysonSphere data
-        if (GameMain.data.dysonSpheres[star.index] == null)
+        if (!Multiplayer.Session.DysonSpheres.IsReady(star.index))
         {
             Multiplayer.Session.DysonSpheres.RequestDysonSphere(star.index, false);
         }

@@ -13,6 +13,18 @@ namespace NebulaePatcher.Patches.Dynamic;
 internal class GameMain_Patch
 {
     [HarmonyPrefix]
+    [HarmonyPatch(nameof(GameMain.sandboxToolsEnabled), MethodType.Getter)]
+    public static bool SandboxToolsEnabled_Prefix(ref bool __result)
+    {
+        if (!Multiplayer.IsActive || GameMain.data?.gameDesc == null) return true;
+
+        // The save owns the multiplayer mode. Vanilla keeps a separate local tools flag,
+        // which can be disabled on load or overwritten by a joining player's snapshot.
+        __result = GameMain.data.gameDesc.isSandboxMode;
+        return false;
+    }
+
+    [HarmonyPrefix]
     [HarmonyPatch(nameof(GameMain.HandleApplicationQuit))]
     public static void HandleApplicationQuit_Prefix()
     {

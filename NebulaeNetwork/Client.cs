@@ -1,8 +1,7 @@
-﻿using NebulaeModel.Packets;
+using NebulaeModel.Packets;
 #region
 
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -86,12 +85,6 @@ internal class Client : IClient
     /// </summary>
     public string SocketUrl => NetUtils.MakeWebSocketUrl(serverProtocol, ServerHost, ServerPort);
 
-    /// <summary>
-    ///     Endpoint of the peer this client is actually connected to, or null while there is no
-    ///     open connection.
-    /// </summary>
-    public IPEndPoint ServerEndpoint { get; set; }
-
     public void Start()
     {
         RuntimePacketRegistry.Register((NebulaeNetPacketProcessor)PacketProcessor, false);
@@ -134,7 +127,9 @@ internal class Client : IClient
             Multiplayer.Session.JoinSync.CanInteract && GameMain.mainPlayer != null)
         {
             Multiplayer.Session.Life.Publish();
-            serverConnection?.FlushSendQueue();
+            var exitingConnection = serverConnection;
+            if (exitingConnection != null && !exitingConnection.FlushSendQueue())
+                Diagnostics.Warn("client:exit-flush", () => $"[network] final checkpoint send did not flush connection={exitingConnection.Id} {exitingConnection.SendDiagnostics}");
         }
         clientSocket?.Close((ushort)DisconnectionReason.ClientRequestedDisconnect, "Player left the game");
         serverConnection?.StopSending();
@@ -216,6 +211,8 @@ internal class Client : IClient
             !Multiplayer.Session.IsGameLoaded || Multiplayer.Session.JoinSync.LocalPending));
         Multiplayer.Session.Planets.Update();
         Multiplayer.Session.JoinSync.UpdateClient();
+        Multiplayer.Session.InventoryTransfers.CheckDiagnostics();
+        serverConnection?.CheckSendDiagnostics();
 
         if (Multiplayer.Session.IsGameLoaded && Multiplayer.Session.WorldPaused && !Multiplayer.Session.JoinSync.LocalPending)
         {
@@ -229,6 +226,7 @@ internal class Client : IClient
 
         if (Multiplayer.Session.IsGameLoaded)
         {
+            Multiplayer.Session.State.ServiceClock();
             Multiplayer.Session.PowerTowers.SendLocalStateIfChanged();
 
             gameStateUpdateTimer += Time.unscaledDeltaTime;
@@ -310,7 +308,7 @@ internal class Client : IClient
             connection.StopSending();
             // A message the framing cannot read means the stream itself is corrupt: staying on it
             // would only feed the processors garbage, so close and let the close handler surface it.
-            Log.Warn($"Dropping connection after an unreadable message: {exception.Message}");
+            Diagnostics.Warn("client:unreadable:" + connection.Id, () => $"[network] unreadable message connection={connection.Id} status={connection.ConnectionStatus} bytes={e.RawData?.Length} binary={e.IsBinary}", exception);
             UnityDispatchQueue.RunOnMainThread(() =>
                 clientSocket?.Close((ushort)DisconnectionReason.InvalidData, "Corrupt packet stream"));
             return;
@@ -323,9 +321,6 @@ internal class Client : IClient
     {
         DisableNagleAlgorithm(clientSocket);
 
-        // The endpoint we actually reached. The connection itself is identified by the configured
-        // host:port below, so no name lookup is needed to talk to the server.
-        ServerEndpoint = GetRemoteEndPoint(clientSocket);
         Log.Info("Server connection established");
         serverConnection = new NebulaeConnection(clientSocket, new DnsEndPoint(ServerHost, ServerPort),
             PacketProcessor as NebulaeNetPacketProcessor);
@@ -351,6 +346,11 @@ internal class Client : IClient
 
     private void ClientSocket_OnClose(object sender, CloseEventArgs e)
     {
+        var closedConnection = serverConnection;
+        if (e.Code == (ushort)DisconnectionReason.ClientRequestedDisconnect || e.Code == 1000)
+            Log.Debug($"[network] client close connection={closedConnection?.Id} code={e.Code} clean={e.WasClean} reason={e.Reason}");
+        else Diagnostics.Warn("client:close:" + closedConnection?.Id,
+            () => $"[network] client connection lost connection={closedConnection?.Id} status={closedConnection?.ConnectionStatus} loaded={Multiplayer.Session?.IsGameLoaded} joining={Multiplayer.Session?.JoinSync.LocalPending} code={e.Code} clean={e.WasClean} reason={e.Reason}");
         if (serverConnection != null)
         {
             serverConnection.StopSending();
@@ -359,86 +359,93 @@ internal class Client : IClient
 
         UnityDispatchQueue.RunOnMainThread(() =>
         {
-            Multiplayer.Session?.JoinSync.CancelLocal();
-            if (Multiplayer.Session?.IsGameLoaded != true) UIRoot.instance?.CloseLoadingUI();
-            // If the client is Quitting by himself, we don't have to inform him of his disconnection.
-            if (e.Code == (ushort)DisconnectionReason.ClientRequestedDisconnect)
+            // A close queued by the previous client can run after another session starts.
+            if (!ReferenceEquals(Multiplayer.Session?.Client, this)) return;
+            HandleSocketClosed(e);
+        });
+    }
+
+    private void HandleSocketClosed(CloseEventArgs e)
+    {
+        Multiplayer.Session?.JoinSync.CancelLocal();
+        if (Multiplayer.Session?.IsGameLoaded != true) UIRoot.instance?.CloseLoadingUI();
+        // If the client is Quitting by himself, we don't have to inform him of his disconnection.
+        if (e.Code == (ushort)DisconnectionReason.ClientRequestedDisconnect)
+        {
+            return;
+        }
+
+        // Opens the pause menu on disconnection to prevent NRE when leaving the game
+        if (Multiplayer.Session?.IsGameLoaded ?? false)
+        {
+            GameMain.instance._paused = true;
+        }
+
+        switch (e.Code)
+        {
+            case (ushort)DisconnectionReason.ModVersionMismatch:
+                {
+                    var versions = e.Reason.Split(';');
+                    if (versions.Length >= 3 && versions[0] == Config.ModInfo?.Metadata.GUID)
+                    {
+                        versions[1] = NebulaeVersion.Normalize(versions[1]);
+                        versions[2] = NebulaeVersion.Normalize(versions[2]);
+                    }
+                    InGamePopup.ShowWarning(
+                        "Mod Version Mismatch".Translate(),
+                        string.Format("Your mod {0} version is not the same as the Host version.\nYou:{1} - Remote:{2}".Translate(),
+                            versions[0], versions.Length > 1 ? versions[1] : "unknown", versions.Length > 2 ? versions[2] : "unknown"),
+                        "OK".Translate(),
+                        Multiplayer.LeaveGame);
+                    return;
+                }
+            case (ushort)DisconnectionReason.ProtocolError when websocketAuthenticationFailure:
+                if (AuthenticationFailed != null)
+                {
+                    AuthenticationFailed.Invoke();
+                    return;
+                }
+                // Clients without an interactive retry handler still report the rejection.
+                InGamePopup.ShowWarning(
+                    (string.IsNullOrEmpty(serverPassword) ? "Password Required" : "Wrong Password").Translate(),
+                    "Server is protected. Please enter the correct password:".Translate(),
+                    "OK".Translate(),
+                    Multiplayer.LeaveGame);
+                return;
+            case (ushort)DisconnectionReason.HostStillLoading:
+                InGamePopup.ShowWarning(
+                    "Server Busy".Translate(),
+                    "Server is not ready to join. Please try again later.".Translate(),
+                    "OK".Translate(),
+                    Multiplayer.LeaveGame);
+                return;
+        }
+
+        if (Multiplayer.Session != null && (Multiplayer.Session.IsGameLoaded || Multiplayer.Session.IsInLobby))
+        {
+            InGamePopup.ShowWarning(
+                "Connection Lost".Translate(),
+                "You have been disconnected from the server.".Translate() + "\n" + e.Reason.Translate(),
+                "Quit",
+                Multiplayer.LeaveGame);
+            if (!Multiplayer.Session.IsInLobby)
             {
                 return;
             }
 
-            // Opens the pause menu on disconnection to prevent NRE when leaving the game
-            if (Multiplayer.Session?.IsGameLoaded ?? false)
-            {
-                GameMain.instance._paused = true;
-            }
-
-            switch (e.Code)
-            {
-                case (ushort)DisconnectionReason.ModVersionMismatch:
-                    {
-                        var versions = e.Reason.Split(';');
-                        if (versions.Length >= 3 && versions[0] == Config.ModInfo?.Metadata.GUID)
-                        {
-                            versions[1] = NebulaeVersion.Normalize(versions[1]);
-                            versions[2] = NebulaeVersion.Normalize(versions[2]);
-                        }
-                        InGamePopup.ShowWarning(
-                            "Mod Version Mismatch".Translate(),
-                            string.Format("Your mod {0} version is not the same as the Host version.\nYou:{1} - Remote:{2}".Translate(),
-                                versions[0], versions.Length > 1 ? versions[1] : "unknown", versions.Length > 2 ? versions[2] : "unknown"),
-                            "OK".Translate(),
-                            Multiplayer.LeaveGame);
-                        return;
-                    }
-                case (ushort)DisconnectionReason.ProtocolError when websocketAuthenticationFailure:
-                    if (AuthenticationFailed != null)
-                    {
-                        AuthenticationFailed.Invoke();
-                        return;
-                    }
-                    // Clients without an interactive retry handler still report the rejection.
-                    InGamePopup.ShowWarning(
-                        (string.IsNullOrEmpty(serverPassword) ? "Password Required" : "Wrong Password").Translate(),
-                        "Server is protected. Please enter the correct password:".Translate(),
-                        "OK".Translate(),
-                        Multiplayer.LeaveGame);
-                    return;
-                case (ushort)DisconnectionReason.HostStillLoading:
-                    InGamePopup.ShowWarning(
-                        "Server Busy".Translate(),
-                        "Server is not ready to join. Please try again later.".Translate(),
-                        "OK".Translate(),
-                        Multiplayer.LeaveGame);
-                    return;
-            }
-
-            if (Multiplayer.Session != null && (Multiplayer.Session.IsGameLoaded || Multiplayer.Session.IsInLobby))
-            {
-                InGamePopup.ShowWarning(
-                    "Connection Lost".Translate(),
-                    "You have been disconnected from the server.".Translate() + "\n" + e.Reason.Translate(),
-                    "Quit",
-                    Multiplayer.LeaveGame);
-                if (!Multiplayer.Session.IsInLobby)
-                {
-                    return;
-                }
-
-                Multiplayer.ShouldReturnToJoinMenu = false;
-                Multiplayer.Session.IsInLobby = false;
-                UIRoot.instance.galaxySelect.CancelSelect();
-            }
-            else
-            {
-                Log.Warn("Disconnect code: " + e.Code + ", reason:" + e.Reason);
-                InGamePopup.ShowWarning(
-                    "Server Unavailable".Translate(),
-                    "Can't reach the server. Please check the network status.\n(Refer Nebula wiki for troubleshooting)".Translate(),
-                    "OK".Translate(),
-                    Multiplayer.LeaveGame);
-            }
-        });
+            Multiplayer.ShouldReturnToJoinMenu = false;
+            Multiplayer.Session.IsInLobby = false;
+            UIRoot.instance.galaxySelect.CancelSelect();
+        }
+        else
+        {
+            Log.Warn("Disconnect code: " + e.Code + ", reason:" + e.Reason);
+            InGamePopup.ShowWarning(
+                "Server Unavailable".Translate(),
+                "Can't reach the server. Please check the network status.\n(Refer Nebula wiki for troubleshooting)".Translate(),
+                "OK".Translate(),
+                Multiplayer.LeaveGame);
+        }
     }
 
     private static void DisableNagleAlgorithm(WebSocket socket)
@@ -448,12 +455,6 @@ internal class Client : IClient
         {
             tcpClient.NoDelay = true;
         }
-    }
-
-    private static IPEndPoint GetRemoteEndPoint(WebSocket socket)
-    {
-        var tcpClient = AccessTools.FieldRefAccess<WebSocket, TcpClient>("_tcpClient")(socket);
-        return tcpClient?.Client?.RemoteEndPoint as IPEndPoint;
     }
 
     private int GetFragmentBufferLength()

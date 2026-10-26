@@ -1,6 +1,5 @@
 ﻿#region
 
-using System.Net;
 using NebulaeModel.Contracts;
 
 #endregion
@@ -26,16 +25,7 @@ internal interface IClient : INetworkProvider
     /// </summary>
     string ServerProtocol { get; }
 
-    /// <summary>
-    ///     Endpoint of the peer this client is actually connected to, or null while there is no
-    ///     open connection. It is informational only and is never used to build the connection
-    ///     url (that keeps <see cref="ServerHost" /> intact).
-    /// </summary>
-    IPEndPoint ServerEndpoint { get; set; }
-
     public void Update();
 
     public void Start();
-
-    public void Stop();
 }

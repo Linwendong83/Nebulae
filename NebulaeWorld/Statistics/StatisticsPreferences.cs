@@ -16,9 +16,11 @@ internal static class StatisticsPreferences
     {
         if (!Multiplayer.IsActive || !Multiplayer.Session.IsGameLoaded || Multiplayer.IsDedicated ||
             window == null || GameMain.statistics?.production?.favoriteIds == null) return;
+        string path = null;
         try
         {
-            AtomicFile.Write(FilePath(), new StatisticsFavorites
+            path = FilePath();
+            AtomicFile.Write(path, new StatisticsFavorites
             {
                 ProductionMask = window.favoriteMask,
                 KillMask = window.killFavoriteMask,
@@ -26,7 +28,7 @@ internal static class StatisticsPreferences
                 Kills = GameMain.statistics.kill.favoriteIds
             }.Encode());
         }
-        catch (Exception e) { Log.Warn("Could not save statistics favorites: " + e.Message); }
+        catch (Exception e) { Log.Warn($"Could not save statistics favorites path={path}: {e}"); }
     }
 
     public static void Restore()
@@ -52,6 +54,6 @@ internal static class StatisticsPreferences
             window.favoriteMask = favorites.ProductionMask;
             window.killFavoriteMask = favorites.KillMask;
         }
-        catch (Exception e) { Log.Warn("Could not restore statistics favorites: " + e.Message); }
+        catch (Exception e) { Log.Warn($"Could not restore statistics favorites path={path}: {e}"); }
     }
 }

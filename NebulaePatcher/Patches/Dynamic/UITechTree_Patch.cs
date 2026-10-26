@@ -2,7 +2,6 @@
 
 using System.Diagnostics.CodeAnalysis;
 using HarmonyLib;
-using NebulaeModel.Logger;
 using NebulaeModel.Packets.GameHistory;
 using NebulaeWorld;
 

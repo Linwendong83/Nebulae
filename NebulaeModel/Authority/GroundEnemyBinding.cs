@@ -44,7 +44,7 @@ internal interface IGroundEnemyPools
     /// no pool write, no rule, no drop, statistic or experience — the host owns the single death
     /// transaction. A removal that is not a published death never calls this.
     /// </remarks>
-    void PlayDeathPresentation(int enemyId);
+    void PlayDeathPresentation(int enemyId, int builderSp, int builderSpMax);
 }
 
 /// <summary>
@@ -70,6 +70,9 @@ internal sealed class GroundEnemyBinding
     {
         public GroundEnemyKind Kind;
         public int BaseId;
+        public int BuilderSp, BuilderSpMax;
+        public bool DeathPresented;
+        public bool CoreDestroyed;
     }
 
     private readonly IGroundEnemyPools pools;
@@ -79,12 +82,9 @@ internal sealed class GroundEnemyBinding
     private readonly Dictionary<int, ObjectKey> slotOwner = [];
     private readonly HashSet<int> knownBases = [];
     private readonly Dictionary<ObjectKey, byte[]> deferred = [];
-
-    private long statesApplied;
     private long statesRefused;
     private long statesDeferred;
     private long shellsCreated;
-    private long shellsRemoved;
     private long membersRemoved;
     private long deathsPresented;
 
@@ -101,31 +101,33 @@ internal sealed class GroundEnemyBinding
     }
 
     public int BoundCount => bindings.Count;
-    public long StatesApplied => statesApplied;
     public long StatesRefused => statesRefused;
     public long StatesDeferred => statesDeferred;
     public long ShellsCreated => shellsCreated;
-    public long ShellsRemoved => shellsRemoved;
     public long MembersRemoved => membersRemoved;
     public long DeathsPresented => deathsPresented;
     public int DeferredCount => deferred.Count;
 
-    public bool ApplyState(in ObjectKey key, byte[] state)
+    public bool ApplyState(in ObjectKey key, byte[] state) => ApplyState(key, state, presentCoreDeath: true);
+
+    private bool ApplyState(in ObjectKey key, byte[] state, bool presentCoreDeath)
     {
         if (key.Kind != PoolKind.GroundEnemy || key.Scope != planetId)
         {
             statesRefused++;
+            BindingDiagnostics.Refused("invalid-state-or-identity", key, state?.Length ?? 0);
             return false;
         }
         if (state == null || !AuthorityStateFields.TryReadGround(state, out var decoded))
         {
             statesRefused++;
+            BindingDiagnostics.Refused("invalid-state-or-identity", key, state?.Length ?? 0);
             return false;
         }
-        return ApplyDecoded(key, in decoded, state);
+        return ApplyDecoded(key, in decoded, state, presentCoreDeath);
     }
 
-    private bool ApplyDecoded(in ObjectKey key, in GroundEnemyState decoded, byte[] raw)
+    private bool ApplyDecoded(in ObjectKey key, in GroundEnemyState decoded, byte[] raw, bool presentCoreDeath = true)
     {
         if (NeedsBaseCore(in decoded) && !knownBases.Contains(decoded.BaseId))
         {
@@ -134,6 +136,11 @@ internal sealed class GroundEnemyBinding
             return false;
         }
         deferred.Remove(key);
+        // A killed ground core stays in the native enemy pool to own its pit and be rebuilt.
+        // KillEnemyFinally marks it invincible instead of removing it, so no lifecycle Death
+        // follows. Present that host-published transition before zero progress hides the model.
+        var coreDestroyed = decoded.Kind == GroundEnemyKind.GroundBase &&
+            new EnemyData { stateFlags = decoded.StateFlags }.isInvincible;
 
         if (!bindings.TryGetValue(key, out var binding))
         {
@@ -150,17 +157,24 @@ internal sealed class GroundEnemyBinding
         }
         else
         {
+            if (presentCoreDeath && binding.Kind == GroundEnemyKind.GroundBase && !binding.CoreDestroyed && coreDestroyed)
+                PlayDeath(key);
             binding.Kind = decoded.Kind;
             binding.BaseId = decoded.BaseId;
             slotOwner[key.NativeId] = key;
             pools.WriteEnemyState(key.NativeId, in decoded);
         }
+        binding.BuilderSp = decoded.BuilderSp;
+        binding.BuilderSpMax = decoded.BuilderSpMax;
+        binding.CoreDestroyed = coreDestroyed;
+        // Joining/resyncing onto an existing pit is silent, as is a trailing death after the
+        // persistent-core transition. A rebuilt core arrives under a fresh generation.
+        binding.DeathPresented |= coreDestroyed;
         if (decoded.Kind == GroundEnemyKind.GroundBase && decoded.BaseId != 0)
         {
             knownBases.Add(decoded.BaseId);
             RetryDeferredForBase(decoded.BaseId);
         }
-        statesApplied++;
         return true;
     }
 
@@ -182,7 +196,6 @@ internal sealed class GroundEnemyBinding
             if (pools.EnemyExists(key.NativeId))
             {
                 pools.RemoveEnemyShell(key.NativeId);
-                shellsRemoved++;
             }
         }
         if (wasBaseCore)
@@ -204,9 +217,10 @@ internal sealed class GroundEnemyBinding
     /// </remarks>
     public void PlayDeath(in ObjectKey key)
     {
-        if (!bindings.ContainsKey(key)) return;
+        if (!bindings.TryGetValue(key, out var binding) || binding.DeathPresented) return;
         if (!slotOwner.TryGetValue(key.NativeId, out var owner) || !owner.Equals(key)) return;
-        pools.PlayDeathPresentation(key.NativeId);
+        binding.DeathPresented = true;
+        pools.PlayDeathPresentation(key.NativeId, binding.BuilderSp, binding.BuilderSpMax);
         deathsPresented++;
     }
 
@@ -237,7 +251,7 @@ internal sealed class GroundEnemyBinding
         {
             if (member.State != null)
             {
-                ApplyState(member.Key, member.State);
+                ApplyState(member.Key, member.State, presentCoreDeath: false);
             }
         }
         if (deferred.Count > 0)
@@ -250,7 +264,7 @@ internal sealed class GroundEnemyBinding
                 if (!NeedsBaseCore(in decoded) || knownBases.Contains(decoded.BaseId))
                 {
                     deferred.Remove(key);
-                    ApplyDecoded(key, in decoded, raw);
+                    ApplyDecoded(key, in decoded, raw, presentCoreDeath: false);
                 }
             }
         }

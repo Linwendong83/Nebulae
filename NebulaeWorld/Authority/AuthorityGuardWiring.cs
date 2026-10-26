@@ -19,7 +19,6 @@ internal static class AuthorityGuardWiring
         if (installed) return;
         installed = true;
         AuthorityRuleGuard.Probe = ReadSession;
-        AuthorityRuleGuard.EnsureInstalled();
     }
 
     /// <summary>

@@ -151,7 +151,7 @@ internal sealed class GoalManager : IDisposable
         if (!Multiplayer.Session.IsClient) return;
         if (level < (int)EGoalLevel.Off || level > (int)EGoalLevel.Full) return;
         try { ServerMemoryStore.Instance.UpdateGoalLevel(Multiplayer.LastConnection?.RecordId, level); }
-        catch (Exception e) { Log.Warn($"Could not save server goal level: {e.Message}"); }
+        catch (Exception e) { Log.Warn($"Could not save server goal level: {e}"); }
     }
 
     public void SelectInitialLevel(int level, UIGoalSetting setting)
@@ -204,6 +204,11 @@ internal sealed class GoalManager : IDisposable
             ? EGoalStage.Ignored : shared.stage;
         data.currentValue = shared.currentValue;
         data.targetValue = shared.targetValue;
+        // Vanilla GD_Group reports no eligible children with goals turned off.
+        // Reproduce that UI progress so entries animate out and return to the pool,
+        // while the authoritative group continues tracking everyone else's goals.
+        if (localLevel == EGoalLevel.Off && shared.isGroup)
+            data.currentValue = data.targetValue = 0;
         data.isManualIgnore = localIgnored.Contains(id);
         data.isPatched = shared.isPatched;
         data.currentIgnoreLevel = shared.currentIgnoreLevel;
@@ -244,7 +249,7 @@ internal sealed class GoalManager : IDisposable
                 ServerMemoryStore.Instance.SaveProfile(recordId, SaveManager.WorldId,
                     CryptoUtils.GetCurrentUserPublicKeyHash(), profile.Level, profile.IgnoredGoalIds);
             }
-            catch (Exception e) { Log.Warn($"Could not save personal goals: {e.Message}"); }
+            catch (Exception e) { Log.Warn($"Could not save personal goals: {e}"); }
         }
         else if (Multiplayer.LastConnection != null)
         {
@@ -275,7 +280,7 @@ internal sealed class GoalManager : IDisposable
                 legacyIgnored.UnionWith(ids);
                 return;
             }
-            catch (Exception e) { Log.Warn($"Could not load {candidate}: {e.Message}"); }
+            catch (Exception e) { Log.Warn($"Could not load {candidate}: {e}"); }
         }
         if (File.Exists(path)) return; // Keep damaged data for manual recovery.
         using var output = new MemoryStream();
@@ -286,7 +291,7 @@ internal sealed class GoalManager : IDisposable
             foreach (var id in legacyIgnored.OrderBy(x => x)) writer.Write(id);
         }
         try { AtomicFile.Write(path, output.ToArray()); }
-        catch (Exception e) { Log.Warn($"Could not save goal defaults: {e.Message}"); }
+        catch (Exception e) { Log.Warn($"Could not save goal defaults: {e}"); }
     }
 
     public void ReadDefaults(byte[] bytes)

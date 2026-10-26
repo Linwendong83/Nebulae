@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Diagnostics;
 using NebulaeModel.Networking;
+using NebulaeModel.Logger;
 
 namespace NebulaeWorld.Planet;
 
@@ -92,6 +93,9 @@ internal sealed class HostPlanetPreparation
 
     private void Finish(Request request, Exception error)
     {
+        if (error != null)
+            Diagnostics.Error("planet:prepare:" + request.Planet.id, () => $"[factory-load] host preparation failed planet={request.Planet.id} elapsed={(Stopwatch.GetTimestamp() - request.Started) / (double)Stopwatch.Frequency:F1}s loading={request.Planet.loading} loaded={request.Planet.loaded} wanted={request.Planet.wanted} waiters={request.Waiters.Count} prefetchers={request.Prefetchers.Count}", error);
+        else Log.Debug($"[factory-load] host preparation ready planet={request.Planet.id} elapsed={(Stopwatch.GetTimestamp() - request.Started) / (double)Stopwatch.Frequency:F1}s waiters={request.Waiters.Count}");
         var waiters = request.Waiters.ToArray();
         request.Waiters.Clear();
         foreach (var waiter in waiters)

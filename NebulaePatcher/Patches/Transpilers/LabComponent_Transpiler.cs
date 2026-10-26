@@ -38,9 +38,9 @@ internal class LabComponent_Transpiler
                 .InsertAndAdvance(new CodeInstruction(OpCodes.Brfalse_S, label));
             return matcher.InstructionEnumeration();
         }
-        catch
+        catch (System.Exception error)
         {
-            Log.Error("LabComponent.InternalUpdateResearch_Transpiler failed. Mod version not compatible with game version.");
+            Log.Error("LabComponent.InternalUpdateResearch_Transpiler failed. Mod version not compatible with game version.", error);
             return codeInstructions;
         }
     }

@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using NebulaeModel.DataStructures;
 using NebulaeModel.Networking;
 using NebulaeModel.Logger;
@@ -21,12 +22,13 @@ internal class DysonSphereManager : IDisposable
     private readonly List<DysonSphereStatusPacket> statusPackets = []; //Server side
     private readonly ThreadSafe threadSafe = new();
 
-    // Client side: the last hive debuff coefficient the host sent for each subscribed star. The
-    // coefficient is a property of the host's gamma counts, which the replica does not carry, so it
-    // is the one dyson-energy fact that has to travel. The periodic recompute of the sphere's own
-    // energy reads it back, which is what keeps a freshly added sail from being debuffed with a
-    // stale coefficient until the next packet.
-    private readonly Dictionary<int, double> debuffCoefs = [];
+    private readonly Dictionary<int, int> requests = [];
+    private readonly HashSet<int> ready = [];
+    private GameData requestWorld;
+    private int nextRequestId;
+    private int loadingNoticeStar = -1;
+    private int requestedEditorStar = -1;
+    private bool openEditorOnLoad;
 
     // Colour painting is the one editor action the player performs continuously, so it is the one that
     // needs a sender-side accumulator rather than a packet per component.
@@ -35,12 +37,69 @@ internal class DysonSphereManager : IDisposable
 
     // Sandbox sail throwing adds sails one at a time from the throw loop, so they accumulate here and
     // leave as one packet per frame.
-    private readonly List<DysonSailBatchEntry> pendingSails = [];
-    private int pendingSailStar = -1;
+    private readonly Dictionary<int, List<DysonSailBatchEntry>> pendingSails = [];
 
     public bool IsNormal { get; set; } = true; //Client side: is the spheres data normal or desynced
     public bool InBlueprint { get; set; } //In the processing of importing blueprint
-    public int RequestingIndex { get; set; } = -1; //StarIndex of the dyson sphere requesting
+    public bool IsReady(int starIndex) => ReferenceEquals(requestWorld, GameMain.data) && ready.Contains(starIndex);
+    public bool IsRequesting(int starIndex) => ReferenceEquals(requestWorld, GameMain.data) && requests.ContainsKey(starIndex);
+    public bool Expects(int starIndex, int requestId) => ReferenceEquals(requestWorld, GameMain.data) &&
+        requests.TryGetValue(starIndex, out var id) && id == requestId;
+
+    public StarData GetEditorStar()
+    {
+        if (GameMain.localStar != null) return GameMain.localStar;
+        var spheres = GameMain.data?.dysonSpheres;
+        if (spheres != null)
+            foreach (var sphere in spheres)
+                if (sphere?.starData != null && IsReady(sphere.starData.index)) return sphere.starData;
+        return GameMain.galaxy?.stars?.FirstOrDefault();
+    }
+
+    public void WaitForEditor(int starIndex, bool openWhenLoaded)
+    {
+        requestedEditorStar = starIndex;
+        openEditorOnLoad = openWhenLoaded;
+        RequestDysonSphere(starIndex);
+    }
+
+    public bool CompleteEditorRequest(int starIndex, out bool open)
+    {
+        open = false;
+        if (requestedEditorStar != starIndex || !IsReady(starIndex)) return false;
+        open = openEditorOnLoad;
+        requestedEditorStar = -1;
+        openEditorOnLoad = false;
+        return true;
+    }
+
+    public void CancelEditorRequest(int starIndex)
+    {
+        if (requestedEditorStar != starIndex) return;
+        requestedEditorStar = -1;
+        openEditorOnLoad = false;
+    }
+
+    public bool ClearLoadingNotice(int starIndex)
+    {
+        if (loadingNoticeStar != starIndex) return false;
+        loadingNoticeStar = -1;
+        return true;
+    }
+
+    private void ShowLoadingNotice(int starIndex)
+    {
+        if (loadingNoticeStar == starIndex) return;
+        if (loadingNoticeStar >= 0) InGamePopup.FadeOut();
+        loadingNoticeStar = starIndex;
+        InGamePopup.ShowInfo("Loading".Translate(),
+            string.Format("Loading Dyson sphere {0}, please wait".Translate(), GameMain.galaxy.stars[starIndex].displayName),
+            "Cancel".Translate(), () =>
+            {
+                CancelEditorRequest(starIndex);
+                ClearLoadingNotice(starIndex);
+            });
+    }
 
     /// <summary>
     ///     Record one component's colour for the next batch. A later colour for the same component
@@ -64,67 +123,44 @@ internal class DysonSphereManager : IDisposable
     {
         if (pendingColors.Count == 0)
         {
-            return;
-        }
-
-        var type = new List<byte>(pendingColors.Count);
-        var index = new List<int>(pendingColors.Count);
-        var rgba = new List<byte>(pendingColors.Count * 4);
-        var starIndex = 0;
-        var layerId = 0;
-        foreach (var pair in pendingColors)
-        {
-            if (lastSentColors.TryGetValue(pair.Key, out var previous) && previous == pair.Value)
-            {
-                continue;
-            }
-            starIndex = pair.Key.StarIndex;
-            layerId = pair.Key.LayerId;
-            type.Add(pair.Key.Type);
-            index.Add(pair.Key.Index);
-            rgba.Add((byte)(pair.Value & 0xFF));
-            rgba.Add((byte)((pair.Value >> 8) & 0xFF));
-            rgba.Add((byte)((pair.Value >> 16) & 0xFF));
-            rgba.Add((byte)((pair.Value >> 24) & 0xFF));
-            lastSentColors[pair.Key] = pair.Value;
-        }
-        pendingColors.Clear();
-
-        if (type.Count == 0)
-        {
-            // Nothing changed since the last flush, so the stroke is over and the comparison memory can
-            // go with it.
             lastSentColors.Clear();
             return;
         }
-
-        var packet = new DysonSphereColorChangeBatchPacket(starIndex, layerId, type.ToArray(), index.ToArray(),
-            rgba.ToArray());
-        if (Multiplayer.Session.IsServer)
+        foreach (var group in pendingColors.GroupBy(p => (p.Key.StarIndex, p.Key.LayerId)))
         {
-            SendPacketToDysonSphere(packet, starIndex);
+            var entries = group.Where(pair => !lastSentColors.TryGetValue(pair.Key, out var previous) || previous != pair.Value).ToArray();
+            for (var offset = 0; offset < entries.Length; offset += DysonSphereColorChangeBatchPacket.MaxEntries)
+            {
+                var count = Math.Min(DysonSphereColorChangeBatchPacket.MaxEntries, entries.Length - offset);
+                var type = new byte[count]; var index = new int[count]; var rgba = new byte[count * 4];
+                for (var i = 0; i < count; i++)
+                {
+                    var pair = entries[offset + i];
+                    type[i] = pair.Key.Type; index[i] = pair.Key.Index;
+                    for (var b = 0; b < 4; b++) rgba[i * 4 + b] = (byte)(pair.Value >> (b * 8));
+                    lastSentColors[pair.Key] = pair.Value;
+                }
+                var packet = new DysonSphereColorChangeBatchPacket(group.Key.StarIndex, group.Key.LayerId, type, index, rgba);
+                if (Multiplayer.Session.IsServer) SendPacketToDysonSphere(packet, group.Key.StarIndex);
+                else Multiplayer.Session.Network.SendPacket(packet);
+            }
         }
-        else
-        {
-            Multiplayer.Session.Network.SendPacket(packet);
-        }
+        pendingColors.Clear();
     }
 
+    public void InvalidateColor(int star, int layer, byte type, int index) => lastSentColors.Remove((star, layer, type, index));
+
     /// <summary>
-    ///     Record one thrown sail for the next batch. All sails of a frame belong to one star, so the
-    ///     star is taken from the first sail of the batch.
+    ///     Record a thrown sail in its star's batch. Each wire batch is bounded independently.
     /// </summary>
     public void RegisterSolarSail(int starIndex, ref DysonSail sail, int orbitId, long expiryTime)
     {
-        if (pendingSails.Count == 0)
-        {
-            pendingSailStar = starIndex;
-        }
-        pendingSails.Add(new DysonSailBatchEntry(sail, orbitId, expiryTime));
+        if (!pendingSails.TryGetValue(starIndex, out var entries)) pendingSails[starIndex] = entries = [];
+        entries.Add(new DysonSailBatchEntry(sail, orbitId, expiryTime));
     }
 
     /// <summary>
-    ///     Send every sail thrown since the last flush as one packet.
+    ///     Send bounded batches for every star touched since the last flush.
     /// </summary>
     public void GameTick()
     {
@@ -134,42 +170,45 @@ internal class DysonSphereManager : IDisposable
             return;
         }
 
-        var count = pendingSails.Count;
-        var orbitId = new int[count];
-        var expiryTime = new long[count];
-        var st = new float[count];
-        var px = new float[count];
-        var py = new float[count];
-        var pz = new float[count];
-        var vx = new float[count];
-        var vy = new float[count];
-        var vz = new float[count];
-        var gs = new float[count];
-        for (var i = 0; i < count; i++)
-        {
-            var entry = pendingSails[i];
-            orbitId[i] = entry.OrbitId;
-            expiryTime[i] = entry.ExpiryTime;
-            st[i] = entry.Sail.st;
-            px[i] = entry.Sail.px;
-            py[i] = entry.Sail.py;
-            pz[i] = entry.Sail.pz;
-            vx[i] = entry.Sail.vx;
-            vy[i] = entry.Sail.vy;
-            vz[i] = entry.Sail.vz;
-            gs[i] = entry.Sail.gs;
-        }
+        foreach (var group in pendingSails)
+            for (var offset = 0; offset < group.Value.Count; offset += DysonSailBatchPacket.MaxSails)
+            {
+                var count = Math.Min(DysonSailBatchPacket.MaxSails, group.Value.Count - offset);
+                var orbitId = new int[count];
+                var expiryTime = new long[count];
+                var st = new float[count];
+                var px = new float[count];
+                var py = new float[count];
+                var pz = new float[count];
+                var vx = new float[count];
+                var vy = new float[count];
+                var vz = new float[count];
+                var gs = new float[count];
+                for (var i = 0; i < count; i++)
+                {
+                    var entry = group.Value[offset + i];
+                    orbitId[i] = entry.OrbitId;
+                    expiryTime[i] = entry.ExpiryTime;
+                    st[i] = entry.Sail.st;
+                    px[i] = entry.Sail.px;
+                    py[i] = entry.Sail.py;
+                    pz[i] = entry.Sail.pz;
+                    vx[i] = entry.Sail.vx;
+                    vy[i] = entry.Sail.vy;
+                    vz[i] = entry.Sail.vz;
+                    gs[i] = entry.Sail.gs;
+                }
+                var packet = new DysonSailBatchPacket(group.Key, orbitId, expiryTime, st, px, py, pz, vx, vy, vz, gs);
+                if (Multiplayer.Session.IsServer)
+                {
+                    SendPacketToDysonSphere(packet, group.Key);
+                }
+                else
+                {
+                    Multiplayer.Session.Network.SendPacket(packet);
+                }
+            }
         pendingSails.Clear();
-
-        var packet = new DysonSailBatchPacket(pendingSailStar, orbitId, expiryTime, st, px, py, pz, vx, vy, vz, gs);
-        if (Multiplayer.Session.IsServer)
-        {
-            SendPacketToDysonSphere(packet, pendingSailStar);
-        }
-        else
-        {
-            Multiplayer.Session.Network.SendPacket(packet);
-        }
     }
 
     private readonly struct DysonSailBatchEntry
@@ -188,6 +227,12 @@ internal class DysonSphereManager : IDisposable
 
     public void Dispose()
     {
+        loadingNoticeStar = requestedEditorStar = -1;
+        openEditorOnLoad = false;
+        requests.Clear(); ready.Clear(); pendingSails.Clear(); pendingColors.Clear(); lastSentColors.Clear();
+        requestWorld = null;
+        statusPackets.Clear();
+        using (GetSubscribers(out var subscribers)) subscribers.Clear();
         GC.SuppressFinalize(this);
     }
 
@@ -257,7 +302,7 @@ internal class DysonSphereManager : IDisposable
             return;
         }
         value.Add(conn);
-        conn.SendPacket(statusPackets.Find(x => x.StarIndex == starIndex));
+        conn.SendPacket(new DysonSphereStatusPacket(GameMain.data.dysonSpheres[starIndex]));
     }
 
     public void UnRegisterPlayer(INebulaeConnection conn, int starIndex)
@@ -298,73 +343,96 @@ internal class DysonSphereManager : IDisposable
         }
     }
 
-    /// <summary>
-    ///     Last hive debuff coefficient the host reported for a star, or 1 (no debuff) before the
-    ///     first packet. Client side only; the host reads the live property.
-    /// </summary>
-    public double DebuffCoef(int starIndex) => debuffCoefs.TryGetValue(starIndex, out var coef) ? coef : 1.0;
-
-    /// <summary>
-    ///     Store a reported coefficient and fold it into the sphere's aggregate generation at once,
-    ///     so a gamma-driven change shows up without waiting for the next local recompute.
-    /// </summary>
-    public void SetDebuffCoef(int starIndex, double coef)
-    {
-        debuffCoefs[starIndex] = coef;
-        var dysonSphere = GameMain.data.dysonSpheres[starIndex];
-        if (dysonSphere != null)
-        {
-            dysonSphere.energyGenCurrentTick = (long)(dysonSphere.energyGenOriginalCurrentTick * coef);
-        }
-    }
-
     public void UpdateSphereStatusIfNeeded()
     {
-        foreach (var packet in statusPackets)
+        for (var i = 0; i < statusPackets.Count; i++)
         {
-            var dysonSphere = GameMain.data.dysonSpheres[packet.StarIndex];
-            var debuffCoef = dysonSphere.energyDFHivesDebuffCoef;
-            //Update dyson sphere when the status changes.
-            //Generation, radius and the original (pre-debuff) total are not compared: they are
-            //derived from the sphere structure, which every peer replicates and computes for itself.
-            if (packet.EnergyReqCurrentTick == dysonSphere.energyReqCurrentTick &&
-                packet.DebuffCoef == debuffCoef)
-            {
-                continue;
-            }
-            packet.EnergyReqCurrentTick = dysonSphere.energyReqCurrentTick;
-            packet.DebuffCoef = debuffCoef;
+            var previous = statusPackets[i];
+            var sphere = GameMain.data.dysonSpheres[previous.StarIndex];
+            if (sphere == null) continue;
+            var packet = new DysonSphereStatusPacket(sphere);
+            if (previous.SameValues(packet)) continue;
+            statusPackets[i] = packet;
             SendPacketToDysonSphere(packet, packet.StarIndex);
         }
     }
 
-    public void RequestDysonSphere(int starIndex, bool showInfo = true)
+    public void RequestDysonSphere(int starIndex, bool showInfo = true, bool query = false, bool force = false)
     {
-        var starData = GameMain.galaxy.stars[starIndex];
-        RequestingIndex = starIndex;
-        Multiplayer.Session.Network.SendPacket(new DysonSphereLoadRequest(starData.index, DysonSphereRequestEvent.Load));
-        ClearSelection(starIndex);
-        if (showInfo)
+        var world = GameMain.data;
+        // The menu demo can keep ticking while a replacement client connects. Its factories
+        // must not reserve request IDs or fetch data for a world that is about to be destroyed.
+        if (world?.galaxy == null || GameMain.instance?.isMenuDemo == true) return;
+        if (!ReferenceEquals(requestWorld, world))
         {
-            InGamePopup.ShowInfo("Loading".Translate(),
-                string.Format("Loading Dyson sphere {0}, please wait".Translate(), starData.displayName), null);
+            requests.Clear(); ready.Clear();
+            requestWorld = world;
         }
+        var starData = world.galaxy.stars[starIndex];
+        if (!force && IsRequesting(starIndex))
+        {
+            if (showInfo) ShowLoadingNotice(starIndex);
+            return;
+        }
+        var id = checked(++nextRequestId);
+        requests[starIndex] = id;
+        Multiplayer.Session.Network.SendPacket(new DysonSphereLoadRequest(starData.index,
+            query ? DysonSphereRequestEvent.Query : DysonSphereRequestEvent.Load, id));
+        ClearSelection(starIndex);
+        if (showInfo) ShowLoadingNotice(starIndex);
+    }
+
+    public bool Commit(int starIndex, int requestId, DysonSphere sphere, long snapshotTick)
+    {
+        if (!Expects(starIndex, requestId)) return false;
+        var old = GameMain.data.dysonSpheres[starIndex];
+        GameMain.data.dysonSpheres[starIndex] = sphere;
+        requests.Remove(starIndex);
+        ready.Add(starIndex);
+        Multiplayer.Session.Launch.SetBaseline(starIndex, snapshotTick);
+        IsNormal = true;
+        ReleaseSphere(old);
+        return true;
+    }
+
+    public bool FailRequest(int starIndex, int requestId)
+    {
+        // Even a response arriving between worlds must release its own request. A newer
+        // request has a different ID and must remain intact.
+        if (!requests.TryGetValue(starIndex, out var id) || id != requestId) return false;
+        requests.Remove(starIndex);
+        CancelEditorRequest(starIndex);
+        return true;
     }
 
     public void UnloadRemoteDysonSpheres()
     {
+        if (GameMain.instance?.isMenuDemo == true) return;
         //The editor will throw errors if there are no dyson spheres available
-        var currentId = GameMain.localStar?.index ?? UIRoot.instance.uiGame.dysonEditor.selection.viewStar?.index ?? -1;
+        var currentId = GameMain.localStar?.index ?? UIRoot.instance?.uiGame?.dysonEditor?.selection?.viewStar?.index ?? -1;
         for (var i = 0; i < GameMain.data.dysonSpheres.Length; i++)
         {
-            if (GameMain.data.dysonSpheres[i] == null || i == currentId)
+            if (i == currentId || (GameMain.data.dysonSpheres[i] == null && !IsRequesting(i)))
             {
                 continue;
             }
             Multiplayer.Session.Network.SendPacket(new DysonSphereLoadRequest(i, DysonSphereRequestEvent.Unload));
+            var old = GameMain.data.dysonSpheres[i];
             GameMain.data.dysonSpheres[i] = null;
+            requests.Remove(i); ready.Remove(i);
+            CancelEditorRequest(i);
+            if (ClearLoadingNotice(i)) InGamePopup.FadeOut();
+            Multiplayer.Session.Launch.Unregister(i);
+            ReleaseSphere(old);
         }
         IsNormal = true;
+    }
+
+    internal static void ReleaseSphere(DysonSphere sphere)
+    {
+        if (sphere == null) return;
+        try { sphere.Free(); }
+        catch (Exception error) { Log.Warn(error); }
     }
 
     public void HandleDesync(int starIndex, INebulaeConnection conn)
@@ -385,7 +453,7 @@ internal class DysonSphereManager : IDisposable
             InGamePopup.ShowWarning("Desync".Translate(),
                 string.Format("Dyson sphere id[{0}] {1} is desynced.".Translate(), starIndex,
                     GameMain.galaxy.stars[starIndex].displayName),
-                "Reload".Translate(), () => RequestDysonSphere(starIndex));
+                "Reload".Translate(), () => RequestDysonSphere(starIndex, force: true));
         }
     }
 
@@ -405,10 +473,31 @@ internal class DysonSphereManager : IDisposable
         return orbitId;
     }
 
+    public static float[] SailLifeDistribution(DysonSwarm swarm, int division, long tick, float life,
+        ICollection<int> orbits, out float maxCount)
+    {
+        maxCount = 0;
+        if (division <= 1 || swarm?.expiryOrder == null) return null;
+        var result = new float[division];
+        var gap = Math.Max(1.0, life * 60.0 / division);
+        for (var cursor = swarm.expiryCursor; cursor != swarm.expiryEnding; cursor = (cursor + 1) % swarm.sailCapacity)
+        {
+            var entry = swarm.expiryOrder[cursor];
+            if (entry.index < 0 || entry.index >= swarm.sailCursor || entry.time == 0 ||
+                swarm.sailInfos[entry.index].orbit == 0 ||
+                (orbits != null && !orbits.Contains((int)swarm.sailInfos[entry.index].orbit))) continue;
+            var remaining = (entry.time - (double)tick) / gap;
+            var bucket = remaining <= 0 ? 0 : remaining >= division - 1 ? division - 1 : (int)remaining;
+            result[bucket]++;
+            maxCount = Math.Max(maxCount, result[bucket]);
+        }
+        return result;
+    }
+
     public static void ClearSelection(int starIndex, int layerId = -1)
     {
-        var selection = UIRoot.instance.uiGame.dysonEditor.selection;
-        if (selection.viewStar == null || selection.viewStar.index != starIndex)
+        var selection = UIRoot.instance?.uiGame?.dysonEditor?.selection;
+        if (selection?.viewStar == null || selection.viewStar.index != starIndex)
         {
             return;
         }

@@ -51,7 +51,7 @@ internal class LobbyRequestProcessor : PacketProcessor<LobbyRequest>
 
         if (!VersionCheck(packet, out var disconnectionReason, out var reasonMessage))
         {
-            Log.Warn("Reject connection because the handshake declaration was refused");
+            Diagnostics.Warn("handshake:refused:" + conn.Id, () => $"[network] handshake refused connection={conn.Id} player={player.Id} reason={disconnectionReason} localVersion={Config.ModVersion} remoteVersion={packet.ModVersion}");
 
             Multiplayer.Session.Server.Disconnect(conn, disconnectionReason, reasonMessage);
             return;
@@ -90,6 +90,7 @@ internal class LobbyRequestProcessor : PacketProcessor<LobbyRequest>
         }
 
         // Add the username to the player data
+        Log.Debug($"[network] handshake completed connection={conn.Id} player={player.Id} newPlayer={isNewUser} remoteVersion={packet.ModVersion}");
         player.Data.Username = !string.IsNullOrWhiteSpace(packet.Username) ? packet.Username : $"Player {player.Id}";
         if (Multiplayer.Session.IsGameLoaded)
         {
@@ -164,6 +165,7 @@ internal class LobbyRequestProcessor : PacketProcessor<LobbyRequest>
         if (runtime is null || !identity.IsHost || !identity.IsActive) return;
 
         var connectionEpoch = runtime.AssignConnectionEpoch(player.Id);
+        Log.Debug($"[authority] welcome connection={player.Connection.Id} player={player.Id} world={identity.Epoch} connectionEpoch={connectionEpoch}");
         var header = new AuthorityEnvelopeHeader(AuthorityFamily.Welcome, identity.Epoch,
             connectionEpoch, sequence: 1, hostTick: GameMain.gameTick, claimedPlayerId: player.Id,
             payloadLength: 0);

@@ -23,6 +23,9 @@ internal sealed class TurretAuthorityManager : IDisposable
     private readonly Queue<(ObjectKey Key, TurretIntent Intent)> requests = new();
     private long checkpointTicket;
     public bool InventoryPending => pending.Values.Any(x => x.IsInventory);
+    internal long DiagnosticSequence => pending.IsEmpty ? 0 : pending.Keys.DefaultIfEmpty().Min();
+    internal bool DiagnosticWaiting => !pending.IsEmpty || requests.Count > 0;
+    internal string DiagnosticState => $"commands={pending.Count} first={DiagnosticSequence} requests={requests.Count} results={results.Count} checkpoint={checkpointTicket}";
     public void BeginHostWorld(AuthorityEpoch epoch)
     {
         Multiplayer.Session.InventoryTransfers.EnsureWorld();

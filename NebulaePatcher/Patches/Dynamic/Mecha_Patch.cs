@@ -1,7 +1,6 @@
 ﻿#region
 
 using HarmonyLib;
-using NebulaeModel.Packets.Players;
 using NebulaeWorld;
 
 #endregion
@@ -11,6 +10,12 @@ namespace NebulaePatcher.Patches.Dynamic;
 [HarmonyPatch(typeof(Mecha))]
 internal class Mecha_Patch
 {
+    [HarmonyPostfix, HarmonyPatch(nameof(Mecha.Kill))]
+    public static void Kill_Postfix(Mecha __instance)
+    {
+        if (Multiplayer.IsActive) NebulaeWorld.Factory.ConstructionDroneLife.PlayerDied(__instance);
+    }
+
     [HarmonyPrefix]
     [HarmonyPatch(nameof(Mecha.GenerateEnergy))]
     public static bool Mecha_GenerateEnergy_Prefix(Mecha __instance)

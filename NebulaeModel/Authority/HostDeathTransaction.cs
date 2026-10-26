@@ -50,8 +50,6 @@ internal sealed class HostDeathLedger : IHostDeathView
         this.epoch = epoch;
         this.capacity = capacity;
     }
-
-    public AuthorityEpoch Epoch => epoch;
     public int DeathCount => poolDeaths.Count;
     public bool IsSaturated { get; private set; }
 

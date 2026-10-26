@@ -1,9 +1,3 @@
-#region
-
-using NebulaeModel.Networking;
-
-#endregion
-
 namespace NebulaeModel.Packets.GameStates;
 
 [NebulaeModel.Networking.PacketId(3386484553756881438UL)]

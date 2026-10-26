@@ -1,6 +1,5 @@
 #region
 
-using System;
 using HarmonyLib;
 using NebulaeModel.Utils;
 using NebulaeWorld;
@@ -330,107 +329,29 @@ internal class EnemyDFHiveSystem_Patch
     {
         if (!Multiplayer.IsActive) return true;
 
-        var flag = false;
-        float num;
-
-        switch (aggressiveLevel)
-        {
-            case EAggressiveLevel.Rampage: num = 1.25f; break;
-            case EAggressiveLevel.Sharp: num = 1.1f; break;
-            case EAggressiveLevel.Normal: num = 1.0f; break;
-            case EAggressiveLevel.Torpid: num = 0.8f; break;
-            default: return false;
-        }
-
-        var num2 = num * 16000f * (__instance.evolve.rank / 127f);
-        var num3 = num * 6000f;
-        var uPos = __instance.sector.astros[__instance.hiveAstroId - 1000000].uPos;
-
-        // Use ActivedStars instead of this.local_player_exist_alive for multiple mecha
+        // Clients derive warning colors separately and never accumulate hive hatred.
+        if (Multiplayer.Session.IsClient) return false;
         var starId = __instance.starData.id;
-        var localPlayerExist = Multiplayer.Session.Combat.ActivedStars.Contains(starId);
-        if (localPlayerExist && aggressiveLevel > EAggressiveLevel.Passive)
+        var skills = __instance.sector.skillSystem;
+        foreach (var player in Multiplayer.Session.Combat.Players)
         {
-            var players = Multiplayer.Session.Combat.Players;
-            for (var i = 0; i < players.Length; i++)
-            {
-                if (players[i].starId != starId || !players[i].isAlive) continue;
-
-                // Test for player that is alive and in the same system
-                var vectorLF = players[i].uPosition - __instance.starData.uPosition;
-                var num4 = Math.Sqrt(vectorLF.x * vectorLF.x + vectorLF.y * vectorLF.y + vectorLF.z * vectorLF.z);
-                var num5 = __instance.orbitRadius - num4;
-                if (num5 < 0.0)
-                {
-                    num5 = -num5;
-                }
-                if (num5 < (double)num3)
-                {
-                    var vectorLF2 = vectorLF * (__instance.orbitRadius / num4) + __instance.starData.uPosition;
-                    var num6 = vectorLF2.x - uPos.x;
-                    var num7 = vectorLF2.y - uPos.y;
-                    var num8 = vectorLF2.z - uPos.z;
-                    var num9 = Math.Sqrt(num6 * num6 + num7 * num7 + num8 * num8);
-                    var num10 = ((__instance.hatred.max.targetType == ETargetType.Player) ? 1f : 0.8f);
-                    if (num9 < (double)(num2 * num10))
-                    {
-                        var num11 = Maths.Clamp01(((double)num2 - num9) / (double)(num2 - 5500f)) * 15.0 + 3.0;
-                        var num12 = Maths.Clamp01(((double)num3 - num5) / (double)(num3 - 1500f));
-                        var num13 = __instance.sector.skillSystem.maxHatredSpaceTmp * num12 * num11;
-                        // The player is close enough, add hatred
-                        __instance.hatred.HateTarget(ETargetType.Player, players[i].id,
-                            (int)(__instance.sector.skillSystem.enemyAggressiveHatredCoefTmp * num13),
-                            __instance.sector.skillSystem.maxHatredSpaceHiveTmp / 10, EHatredOperation.Add);
-                        flag = true;
-                    }
-                }
-            }
-
-            var craftPool = __instance.sector.craftPool;
-            var craftCursor = __instance.sector.craftCursor;
-            for (var i = 1; i < craftCursor; i++)
-            {
-                ref var ptr = ref craftPool[i];
-                if (ptr.id == i && ptr.astroId == __instance.starData.astroId && !ptr.isInvincible)
-                {
-                    __instance.sector.TransformFromAstro_ref(ptr.astroId, out var upos, ref ptr.pos);
-                    var vectorLF = upos - __instance.starData.uPosition;
-                    var num14 = Math.Sqrt(vectorLF.x * vectorLF.x + vectorLF.y * vectorLF.y + vectorLF.z * vectorLF.z);
-                    var num15 = __instance.orbitRadius - num14;
-                    if (num15 < 0.0)
-                    {
-                        num15 = -num15;
-                    }
-                    if (num15 <= (double)num3)
-                    {
-                        var magnitude = (vectorLF * (__instance.orbitRadius / num14) + __instance.starData.uPosition - uPos).magnitude;
-                        if (magnitude < (double)num2)
-                        {
-                            var num16 = Maths.Clamp01(((double)num2 - magnitude) / (double)(num2 - 5500f)) * 15.0 + 3.0;
-                            var num17 = Maths.Clamp01(((double)num3 - num15) / (double)(num3 - 1500f));
-                            var num18 = __instance.sector.skillSystem.maxHatredSpaceTmp * num17 * num16 * 0.6;
-                            __instance.hatred.HateTarget(ETargetType.Craft, i,
-                                (int)(__instance.sector.skillSystem.enemyAggressiveHatredCoefTmp * num18),
-                                __instance.sector.skillSystem.maxHatredSpaceHiveTmp / 10, EHatredOperation.Add);
-                            flag = true;
-                        }
-                    }
-                }
-            }
+            if (player.starId != starId || !player.isAlive || player.planetId > 0) continue;
+            if (!NebulaeWorld.Combat.HiveSensor.Detect(__instance, player.uPosition, aggressiveLevel, true, out var hatred)) continue;
+            __instance.hatred.HateTarget(ETargetType.Player, player.id,
+                (int)((double)skills.maxHatredSpaceTmp * hatred * skills.enemyAggressiveHatredCoefTmp),
+                skills.maxHatredSpaceHiveTmp / 10, EHatredOperation.Add);
         }
-
-        var model = __instance.sector.model;
-        if (model != null)
-        {
-            if (__instance.isLocal && flag)
+        if (Multiplayer.Session.Combat.ActivedStars.Contains(starId))
+            for (var i = 1; i < __instance.sector.craftCursor; i++)
             {
-                model.aggressiveHiveAstroId = __instance.hiveAstroId;
+                ref var craft = ref __instance.sector.craftPool[i];
+                if (craft.id != i || craft.astroId != __instance.starData.astroId || craft.isInvincible) continue;
+                __instance.sector.TransformFromAstro(craft.astroId, out var position, craft.pos);
+                if (!NebulaeWorld.Combat.HiveSensor.Detect(__instance, position, aggressiveLevel, false, out var hatred)) continue;
+                __instance.hatred.HateTarget(ETargetType.Craft, i,
+                    (int)((double)skills.maxHatredSpaceTmp * hatred * 0.6 * skills.enemyAggressiveHatredCoefTmp),
+                    skills.maxHatredSpaceHiveTmp / 10, EHatredOperation.Add);
             }
-            else if (model.aggressiveHiveAstroId == __instance.hiveAstroId)
-            {
-                model.aggressiveHiveAstroId = 0;
-            }
-        }
         return false;
     }
 }

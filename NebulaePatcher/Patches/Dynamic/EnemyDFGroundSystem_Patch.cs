@@ -122,7 +122,10 @@ internal class EnemyDFGroundSystem_Patch
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(EnemyDFGroundSystem.GameTickLogic_Base))]
-    public static bool GameTickLogic_Base_Prefix() => !Multiplayer.IsActive || Multiplayer.Session.IsServer;
+    // This method only resets per-frame unit statistics and computes sensor ranges.
+    // Client unit loops run too, so suppressing their reset accumulates assault counts.
+    // Decisions/spawning remain guarded in KeyTickLogic and the deferred-change hooks.
+    public static bool GameTickLogic_Base_Prefix() => true;
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(EnemyDFGroundSystem.GameTickLogic_Anim))]

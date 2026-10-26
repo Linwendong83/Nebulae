@@ -19,8 +19,11 @@ internal class CombatTruceUpdateProcessor : PacketProcessor<CombatTruceUpdatePac
             return; // Clients request a transaction; this packet is an authoritative result.
         }
 
-        var truceTime = packet.TruceEndTime - (GameMain.gameTick + GameMain.history.dfTruceTimer);
-        GameMain.history.AddTruceTime(truceTime);
+        var remaining = packet.TruceEndTime - GameMain.gameTick;
+        // Ending a truce must not invoke OnDFTruce and reset hatred/attack waves again.
+        if (remaining > 0)
+            GameMain.history.AddTruceTime(remaining - GameMain.history.dfTruceTimer);
+        else GameMain.history.dfTruceTimer = 0;
 
         var userName = "";
         using (Multiplayer.Session.World.GetRemotePlayersModels(out var remotePlayersModels))

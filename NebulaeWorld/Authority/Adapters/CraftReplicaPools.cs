@@ -161,9 +161,7 @@ internal sealed class GroundCraftReplicaPools : ILocalCraftPools
         craft.stateFlags = state.StateFlags;
         var moved = craft.pos.x != state.PosX || craft.pos.y != state.PosY || craft.pos.z != state.PosZ;
         var rotated = craft.rot.x != state.RotX || craft.rot.y != state.RotY || craft.rot.z != state.RotZ || craft.rot.w != state.RotW;
-        craft.pos.x = state.PosX;
-        craft.pos.y = state.PosY;
-        craft.pos.z = state.PosZ;
+        craft.pos = NativeCraftSimulation.ReconcilePosition(factory, craftId, state, craft.pos);
         craft.rot.x = state.RotX;
         craft.rot.y = state.RotY;
         craft.rot.z = state.RotZ;
@@ -363,9 +361,7 @@ internal sealed class SpaceCraftReplicaPools : ILocalCraftPools
         craft.port = state.Port;
         craft.stateFlags = state.StateFlags;
         craft.astroId = state.AstroId;
-        craft.pos.x = state.PosX;
-        craft.pos.y = state.PosY;
-        craft.pos.z = state.PosZ;
+        craft.pos = NativeCraftSimulation.ReconcilePosition(sector, craftId, state, craft.pos);
         craft.rot.x = state.RotX;
         craft.rot.y = state.RotY;
         craft.rot.z = state.RotZ;

@@ -1,6 +1,9 @@
-#region
+﻿#region
 
 using HarmonyLib;
+using System;
+using System.Collections.Generic;
+using System.Reflection.Emit;
 using NebulaeModel.Authority;
 using NebulaeWorld;
 
@@ -11,29 +14,71 @@ namespace NebulaePatcher.Patches.Dynamic;
 [HarmonyPatch(typeof(ConstructionSystem))]
 internal class ConstructionSystem_Patch
 {
+    [ThreadStatic] private static int currentNativeDrone;
+    [HarmonyPrefix, HarmonyPatch(nameof(ConstructionSystem.DetermineLaunch))]
+    public static void DetermineLaunch(ConstructionSystem __instance)
+    {
+        if (!Multiplayer.IsActive) return;
+        Multiplayer.Session.BuildDispatch.PrepareLaunches(__instance.factory);
+        Multiplayer.Session.Repairs?.Prepare(__instance.factory);
+    }
+
     [HarmonyPrefix]
     [HarmonyPatch(nameof(ConstructionSystem.UpdateModules))]
     public static bool UpdateModules_Prefix(ConstructionSystem __instance, long time)
     {
-        if (!Multiplayer.IsActive || Multiplayer.Session.IsServer || Multiplayer.Session.Authority?.IsActive != true)
-            return true;
-        // Client modules still maintain construction targets and native base drones, but may not
-        // clear the host's repairer counters just because remote drones live in a separate pool.
-        var modules = __instance.constructionModules;
-        for (var id = 1; id < modules.cursor; id++)
+        if (Multiplayer.IsActive && Multiplayer.Session.IsServer)
+            Multiplayer.Session.Repairs?.TickFactory(__instance.factory, time);
+        return !Multiplayer.IsActive || Multiplayer.Session.IsServer;
+    }
+
+    [HarmonyPostfix, HarmonyPatch(nameof(ConstructionSystem.UpdateModules))]
+    public static void RecountRepairers(ConstructionSystem __instance)
+    {
+        if (Multiplayer.IsActive && Multiplayer.Session.IsServer) Multiplayer.Session.Repairs?.Recount(__instance.factory);
+    }
+
+    [HarmonyTranspiler, HarmonyPatch(nameof(ConstructionSystem.UpdateModules))]
+    public static IEnumerable<CodeInstruction> UpdateModules_Transpiler(IEnumerable<CodeInstruction> instructions)
+    {
+        var getter = AccessTools.PropertyGetter(typeof(ConstructionModuleComponent), nameof(ConstructionModuleComponent.allDronesIdle));
+        var count = 0;
+        foreach (var code in instructions)
         {
-            var module = modules.buffer[id];
-            if (module != null && module.id == id && module.entityId > 0 &&
-                module.entityId < __instance.factory.entityCursor &&
-                __instance.factory.entityPool[module.entityId].id == module.entityId)
-                module.GameTick(time, __instance.factory, __instance.player);
+            if (code.Calls(getter))
+            {
+                count++;
+                yield return new CodeInstruction(OpCodes.Ldarg_0).MoveLabelsFrom(code);
+                code.opcode = OpCodes.Call;
+                code.operand = AccessTools.Method(typeof(ConstructionSystem_Patch), nameof(AllDronesIdle));
+            }
+            yield return code;
         }
+        if (count == 0) throw new InvalidOperationException("Native repair idle check changed.");
+    }
+    public static bool AllDronesIdle(ConstructionModuleComponent module, ConstructionSystem system) => module.allDronesIdle &&
+        (!Multiplayer.IsActive || !Multiplayer.Session.IsServer || Multiplayer.Session.Repairs?.HasRemoteRepairs(system.factory) != true);
+
+    [HarmonyPrefix, HarmonyPatch(nameof(ConstructionSystem.FindNextRepair))]
+    public static bool FindNextRepair(ConstructionSystem __instance, int moduleId, ref bool __result)
+    {
+        if (!Multiplayer.IsActive || Multiplayer.Session.IsServer || moduleId != 0) return true;
+        if (Multiplayer.Session.Repairs?.IsReplica(__instance.factory, currentNativeDrone) != true) return true;
+        // Bound repair flights receive their continuation from the host's target search.
+        __result = false;
         return false;
     }
 
-    // Dispatch claims decide who may build; vanilla supplies flight, energy and completion.
-    // The task-ledger executor has no live game adapter, so it must not suppress these loops.
-    // Shared building HP remains host-owned through the guards below.
+    [HarmonyPostfix, HarmonyPatch(nameof(ConstructionSystem.FindNextRepair))]
+    public static void OfferRepairContinuation(ConstructionSystem __instance, int moduleId, int targetId, ref bool __result)
+    {
+        if (!__result || !Multiplayer.IsActive || Multiplayer.Session.IsServer || moduleId != 0) return;
+        Multiplayer.Session.Repairs?.OfferContinuation(__instance.factory, currentNativeDrone, targetId);
+        // The native return leg remains reversible while the host arbitrates this continuation.
+        __result = false;
+    }
+
+    // The host runs native base simulation; client mecha drones keep native local flight.
     [HarmonyPrefix]
     [HarmonyPatch(nameof(ConstructionSystem.Repair))]
     public static bool Repair_Prefix(ConstructionSystem __instance, int entityId, ref bool __result)
@@ -59,53 +104,71 @@ internal class ConstructionSystem_Patch
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(ConstructionSystem.UpdateDrones))]
-    public static void UpdateDrones(ConstructionSystem __instance, ObjectRenderer[] renderers, bool sync_gpu_inst, float dt, long time)
+    public static void UpdateDrones(ConstructionSystem __instance, ObjectRenderer[] renderers, bool sync_gpu_inst, float dt)
     {
         if (!Multiplayer.IsActive) return;
 
         // Update remote drones from other players
         var factory = __instance.factory;
-        Multiplayer.Session.Drones.UpdateDrones(factory, renderers, sync_gpu_inst, dt, time);
+        Multiplayer.Session.Drones.UpdateDrones(factory, renderers, sync_gpu_inst, dt);
+        Multiplayer.Session.Repairs?.Render(factory, renderers, sync_gpu_inst, dt);
+        if (!Multiplayer.Session.IsServer) Multiplayer.Session.BuildDispatch.RenderBaseDrones(factory, renderers, sync_gpu_inst, dt);
     }
 
-    [HarmonyPrefix]
-    [HarmonyPatch(nameof(ConstructionSystem.AddBuildTargetToModules))]
-    public static bool AddBuildTargetToModules_Prefix(ConstructionSystem __instance, int objectId)
+    [HarmonyPostfix, HarmonyPatch(nameof(ConstructionSystem.GameTick))]
+    public static void PublishBaseDrones(ConstructionSystem __instance, long time)
     {
-        if (!Multiplayer.IsActive) return true;
-        Multiplayer.Session.BuildDispatch.ReadyLocally(__instance.factory, objectId);
-        return false;
+        if (!Multiplayer.IsActive || !Multiplayer.Session.IsServer) return;
+        Multiplayer.Session.BuildDispatch.PublishConstructionStorage(__instance.factory, time);
+        Multiplayer.Session.BuildDispatch.PublishBaseDrones(__instance.factory, time);
+    }
+
+    [HarmonyTranspiler, HarmonyPatch(nameof(ConstructionSystem.UpdateDrones))]
+    [HarmonyPatch(nameof(ConstructionSystem.ExecuteBuildTasks))]
+    public static IEnumerable<CodeInstruction> UpdateDrones_Transpiler(IEnumerable<CodeInstruction> instructions)
+    {
+        var field = AccessTools.Field(typeof(DroneComponent), nameof(DroneComponent.id));
+        var count = 0;
+        foreach (var code in instructions)
+        {
+            if (code.LoadsField(field))
+            {
+                count++;
+                code.opcode = OpCodes.Call;
+                yield return new CodeInstruction(OpCodes.Ldarg_0).MoveLabelsFrom(code);
+                code.operand = AccessTools.Method(typeof(ConstructionSystem_Patch), nameof(SimulatedDroneId));
+            }
+            yield return code;
+        }
+        if (count == 0) throw new InvalidOperationException("Native construction drone loop membership changed.");
+    }
+    public static int SimulatedDroneId(ref DroneComponent drone, ConstructionSystem system)
+    {
+        currentNativeDrone = drone.id;
+        return Multiplayer.IsActive && !Multiplayer.Session.IsServer && (drone.owner > 0 ||
+            Multiplayer.Session.Repairs?.IsReplica(system.factory, drone.id) == true) ? 0 : drone.id;
+    }
+
+    [HarmonyPrefix, HarmonyPatch(nameof(ConstructionSystem.ResetDroneTargets))]
+    public static void ResetDroneTargets_Prefix(ConstructionSystem __instance, ref DroneComponent drone, out int[] __state)
+    {
+        if (Multiplayer.IsActive && drone.owner == 0) Multiplayer.Session.Repairs?.BeforeReset(__instance.factory, drone.id);
+        __state = Multiplayer.IsActive ? new[] { drone.targetObjectId, drone.nextTarget1ObjectId,
+            drone.nextTarget2ObjectId, drone.nextTarget3ObjectId } : null;
     }
 
     [HarmonyPostfix]
     [HarmonyPatch(nameof(ConstructionSystem.ResetDroneTargets))]
-    public static void ResetDroneTargets_Postfix(ConstructionSystem __instance, ref DroneComponent drone)
+    public static void ResetDroneTargets_Postfix(ConstructionSystem __instance, ref DroneComponent drone, int[] __state)
     {
         if (!Multiplayer.IsActive) return;
         if (drone.owner < 0 || drone.owner >= __instance.constructionModules.cursor) return;
         var module = drone.owner == 0 ? GameMain.mainPlayer.mecha.constructionModule :
             __instance.constructionModules.buffer[drone.owner];
         if (module == null) return;
-        // Reset clears every carried target and then queues it again. Keep the claim while this
-        // module still has the prebuild queued, so a finished drone does not hand it to someone else.
-        ReleaseIfAbandoned(__instance, module, drone.targetObjectId);
-        ReleaseIfAbandoned(__instance, module, drone.nextTarget1ObjectId);
-        ReleaseIfAbandoned(__instance, module, drone.nextTarget2ObjectId);
-        ReleaseIfAbandoned(__instance, module, drone.nextTarget3ObjectId);
+        if (__state == null) return;
+        foreach (var target in __state)
+            if (target < 0) Multiplayer.Session.BuildDispatch.ReleaseLocalTarget(__instance.factory, -target, module);
     }
 
-    private static void ReleaseIfAbandoned(ConstructionSystem system, ConstructionModuleComponent module, int objectId)
-    {
-        if (objectId >= 0 || ModuleStillTargets(module, -objectId)) return;
-        Multiplayer.Session.BuildDispatch.ReleaseLocalTarget(system.factory, -objectId, module);
-    }
-
-    private static bool ModuleStillTargets(ConstructionModuleComponent module, int prebuildId)
-    {
-        var targets = module.buildTargets;
-        if (targets == null) return false;
-        for (var i = 0; i < targets.Length; i++)
-            if (targets[i].objectId == prebuildId) return true;
-        return false;
-    }
 }

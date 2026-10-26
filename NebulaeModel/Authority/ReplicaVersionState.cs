@@ -173,18 +173,6 @@ internal sealed class ScopeVersionState
     public int TombstoneCount => tombstones.Count;
 
     /// <summary>
-    /// Starts a new subscription and returns its epoch. Existing members and tombstones are kept:
-    /// the previous contents stay displayed until the new baseline replaces them atomically, and a
-    /// resubscribe must not revive a tombstone.
-    /// </summary>
-    public long BeginSubscription(SubscriptionPhase phase = SubscriptionPhase.Snapshotting)
-    {
-        SubscriptionEpoch++;
-        Phase = phase;
-        return SubscriptionEpoch;
-    }
-
-    /// <summary>
     /// Establishes identity for a new object. State may only be applied after this.
     /// </summary>
     /// <remarks>
@@ -410,7 +398,7 @@ internal sealed class ScopeVersionState
     /// The version state keeps the stream position and membership when a client leaves a scope so a
     /// re-subscribe
     /// can continue the same stream instead of restarting it (which would make a late packet look
-    /// like a fresh one). A re-subscribe via <see cref="BeginSubscription"/> is what advances the
+    /// like a fresh one). A re-subscribe via <see cref="AdoptSubscription"/> is what advances the
     /// subscription epoch; this method deliberately does not.
     /// </remarks>
     public void EndSubscription() => Phase = SubscriptionPhase.Unsubscribed;
@@ -434,8 +422,6 @@ internal sealed class ReplicaVersionState
 
     /// <summary>Authority epoch of the world this replica mirrors.</summary>
     public AuthorityEpoch Epoch { get; }
-
-    public int ScopeCount => scopes.Count;
 
     /// <summary>Returns the state of a scope, creating it if this is the first time it is seen.</summary>
     public ScopeVersionState GetOrCreateScope(ScopeKey scope)
@@ -480,22 +466,6 @@ internal sealed class ObjectRevisionTracker
         var next = current + 1;
         revisions[key] = next;
         return next;
-    }
-
-    /// <summary>Current revision, or 0 when the key was never stamped.</summary>
-    public long Peek(ObjectKey key) => revisions.TryGetValue(key, out var current) ? current : 0;
-
-    /// <summary>
-    /// Raises the counter to an imported value without minting, used when a host takes over state
-    /// that was already stamped (a loaded save, or a snapshot the host itself produced).
-    /// </summary>
-    public bool Observe(ObjectKey key, long revision)
-    {
-        if (!key.IsValid || revision <= 0) return false;
-        revisions.TryGetValue(key, out var current);
-        if (revision <= current) return false;
-        revisions[key] = revision;
-        return true;
     }
 
     /// <summary>Forgets a key. Only valid after its generation is over, never for a live object.</summary>

@@ -14,8 +14,4 @@ internal interface IChatLinkHandler
     void OnRightClick(string data);
 
     void OnHover(string data, ChatLinkTrigger trigger, ref MonoBehaviour tipObject);
-
-    string GetIconName(string data);
-
-    string GetDisplayRichText(string data);
 }

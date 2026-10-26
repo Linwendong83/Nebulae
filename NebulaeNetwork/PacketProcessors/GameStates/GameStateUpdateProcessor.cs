@@ -13,6 +13,9 @@ internal class GameStateUpdateProcessor : PacketProcessor<GameStateUpdate>
 {
     protected override void ProcessPacket(GameStateUpdate packet, NebulaeConnection conn)
     {
-        Multiplayer.Session.State.ProcessGameStateUpdatePacket(packet.SentTime, packet.GameTick, packet.UnitsPerSecond, packet.SimSpeed);
+        if (IsHost) return;
+        Multiplayer.Session.State.ProcessGameStateUpdatePacket(packet.SentTime, packet.GameTick,
+            packet.UnitsPerSecond, packet.SimSpeed,
+            NebulaeModel.Networking.Serialization.NebulaeNetPacketProcessor.CurrentPacketQueueSeconds);
     }
 }

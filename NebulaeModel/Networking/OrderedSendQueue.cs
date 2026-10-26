@@ -19,6 +19,17 @@ internal sealed class OrderedSendQueue
     private readonly Func<byte[][], byte[]> combine;
     private readonly Func<byte[], bool> canCombine;
     private bool preparing, sending, stopped, failed;
+    private double oldestQueuedAt;
+    private double lastProgressAt;
+    public string FailureDiagnostics { get; private set; }
+    public string DiagnosticState
+    {
+        get { lock (packets) return $"queued={packets.Count} ready={ready.Count} preparing={preparing} sending={sending} batch={batch != null} stopped={stopped} failed={failed} busyFor={(oldestQueuedAt == 0 ? 0 : Logger.Diagnostics.Now - oldestQueuedAt):F1}s"; }
+    }
+    public bool DiagnosticBacklogged
+    {
+        get { lock (packets) return oldestQueuedAt != 0 && (Logger.Diagnostics.Now - lastProgressAt >= 10 || packets.Count >= 128 && Logger.Diagnostics.Now - oldestQueuedAt >= 10) && (preparing || sending || packets.Count > 0 || ready.Count > 0); }
+    }
     internal bool PreparationBacklogged
     {
         get { lock (packets) return packets.Count >= 8 && ready.Count == 0; }
@@ -56,6 +67,7 @@ internal sealed class OrderedSendQueue
         lock (packets)
         {
             if (stopped) return;
+            if (!preparing && !sending && packets.Count == 0 && ready.Count == 0 && batch == null) oldestQueuedAt = lastProgressAt = Logger.Diagnostics.Now;
             packets.Enqueue(packet); start = StartPreparation();
         }
         if (start) Schedule();
@@ -78,6 +90,7 @@ internal sealed class OrderedSendQueue
     // baselines. It can prepare the next packet while the socket sends the previous one.
     private void SendNext()
     {
+        var stage = "dequeue";
         try
         {
             while (true)
@@ -94,6 +107,7 @@ internal sealed class OrderedSendQueue
                 byte[] framed;
                 if (current != null)
                 {
+                    stage = "snapshot-batch";
                     if (!current.MoveNext())
                     {
                         current.Dispose();
@@ -104,6 +118,7 @@ internal sealed class OrderedSendQueue
                 }
                 else if (pending.Batch != null)
                 {
+                    stage = "snapshot-prepare";
                     var next = pending.Batch().GetEnumerator();
                     lock (packets)
                     {
@@ -114,6 +129,7 @@ internal sealed class OrderedSendQueue
                 }
                 else
                 {
+                    stage = "encode";
                     var packet = pending.Factory == null ? pending.Bytes : pending.Factory();
                     if (packet != null && combine != null && pending.Groupable && packet.Length < RealtimePacketBatch.MaxBytes)
                     {
@@ -131,6 +147,7 @@ internal sealed class OrderedSendQueue
                         }
                         if (group.Count > 1) packet = combine(group.ToArray());
                     }
+                    stage = "delta-compression";
                     framed = packet == null ? null : Prepare(packet);
                 }
                 if (framed == null) continue;
@@ -143,7 +160,7 @@ internal sealed class OrderedSendQueue
                 if (outgoing != null) SendReady(outgoing);
             }
         }
-        catch (Exception error) { Fail(error); }
+        catch (Exception error) { error.Data["Nebulae.SendStage"] = stage; Fail(error); }
     }
 
     private byte[] TakeReady()
@@ -159,7 +176,7 @@ internal sealed class OrderedSendQueue
             lock (packets) { if (stopped) return; }
             send(bytes, Complete);
         }
-        catch (Exception error) { Fail(error); }
+        catch (Exception error) { error.Data["Nebulae.SendStage"] = "socket-send"; Fail(error); }
     }
 
     private byte[] Prepare(byte[] packet)
@@ -175,6 +192,8 @@ internal sealed class OrderedSendQueue
         {
             if (stopped) return;
             sending = false; next = TakeReady(); start = StartPreparation();
+            lastProgressAt = Logger.Diagnostics.Now;
+            if (!preparing && !sending && packets.Count == 0 && ready.Count == 0 && batch == null) oldestQueuedAt = 0;
             Monitor.PulseAll(packets);
         }
         if (next != null) SendReady(next);
@@ -194,7 +213,7 @@ internal sealed class OrderedSendQueue
 
     private void Fail(Exception error)
     {
-        lock (packets) { if (stopped) return; Stop(true); }
+        lock (packets) { if (stopped) return; FailureDiagnostics = DiagnosticState; Stop(true); }
         onFailure?.Invoke(error);
     }
 

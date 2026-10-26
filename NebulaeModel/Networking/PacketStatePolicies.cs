@@ -38,7 +38,16 @@ internal static partial class PacketStateRegistry
         Add<NebulaeModel.Packets.Factory.Belt.ConnectToMonitorPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.Belt.ConnectToSpraycoaterPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.BuildDroneLaunchPacket>(PacketSyncKind.Operation);
+        Add<NebulaeModel.Packets.Factory.ConstructionLaunchOfferPacket>(PacketSyncKind.Control);
+        Add<NebulaeModel.Packets.Factory.ConstructionLaunchGrantPacket>(PacketSyncKind.Operation);
+        Add<NebulaeModel.Packets.Factory.BaseDroneStatePacket>(PacketSyncKind.Operation);
+        Add<NebulaeModel.Packets.Factory.DroneFlightSnapshotRequestPacket>(PacketSyncKind.Operation);
+        Add<NebulaeModel.Packets.Factory.ConstructionStoragePacket>(PacketSyncKind.Operation);
+        Add<NebulaeModel.Packets.Factory.RepairOfferPacket>(PacketSyncKind.Control);
+        Add<NebulaeModel.Packets.Factory.RepairControlPacket>(PacketSyncKind.Operation);
+        Add<NebulaeModel.Packets.Factory.RepairDroneStatePacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.BuildEntityRequest>(PacketSyncKind.Control);
+        Add<NebulaeModel.Packets.Factory.BuildingDeathPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.PrebuildInstancePacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.BuildTargetAssignmentPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.BuildTargetAssignmentReplyPacket>(PacketSyncKind.Operation);
@@ -219,6 +228,8 @@ internal static partial class PacketStateRegistry
         Add<NebulaeModel.Packets.Warning.WarningBroadcastDataPacket>(PacketSyncKind.Operation);
         State<NebulaeModel.Packets.Warning.WarningDataPacket>(System.Array.Empty<int>());
         Add<NebulaeModel.Packets.Warning.WarningDataRequest>(PacketSyncKind.Control);
+        Add<NebulaeModel.Packets.Warning.GreenPrebuildWarningRequest>(PacketSyncKind.Control);
+        State<NebulaeModel.Packets.Warning.GreenPrebuildWarningState>(System.Array.Empty<int>());
         State<NebulaeModel.Packets.Warning.WarningSignalPacket>(System.Array.Empty<int>());
     }
 }

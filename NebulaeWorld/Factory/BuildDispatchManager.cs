@@ -1,861 +1,457 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using NebulaeModel.DataStructures;
+using NebulaeModel.Logger;
 using NebulaeModel.Packets.Factory;
-using UnityEngine;
 
 namespace NebulaeWorld.Factory;
 
-/// <summary>Coordinates ownership of green prebuilds; vanilla modules still order and fly their drones.</summary>
-internal sealed class BuildDispatchManager : IDisposable
+/// <summary>Native queues remain shared. Ownership begins at flight dispatch, never at discovery.</summary>
+internal sealed partial class BuildDispatchManager : IDisposable
 {
     public PrebuildInstances Instances { get; } = new();
     private readonly BuildTargetClaims claims = new();
-    private readonly HashSet<(int PlanetId, int PrebuildId)> pending = new();
     private readonly HashSet<PlanetFactory> seededFactories = new();
     private readonly Dictionary<ushort, BuilderCapability> remoteBuilders = new();
-    private readonly Dictionary<(int PlanetId, int PrebuildId, long Generation), long> awaitingReply = new();
-    private readonly Dictionary<(int PlanetId, int PrebuildId), HashSet<int>> rejectedPlayers = new();
-    private readonly HashSet<(int PlanetId, int PrebuildId)> declinedLocally = new();
-    private readonly HashSet<(int PlanetId, int PrebuildId, long Generation)> localBaseLaunched = new();
-    private readonly HashSet<(int PlanetId, int PrebuildId, long Generation)> renderedRemoteLaunches = new();
-    private readonly HashSet<(int PlanetId, int PrebuildId, long Generation)> releaseSent = new();
-    private readonly Dictionary<(int PlanetId, int PrebuildId, long Generation), HashSet<ushort>> baseRevocations = new();
-    private readonly HashSet<(int PlanetId, int PrebuildId, long Generation)> pendingBaseAcks = new();
-    private readonly Dictionary<(int PlanetId, int PrebuildId, long Generation), long> baseLowEnergySince = new();
+    private readonly Dictionary<(ushort Player, int Planet), (ConstructionLaunchOfferPacket Packet, long Tick)> offers = new();
+    private readonly Dictionary<(ushort Player, int Planet), long> offerSequences = new();
+    private readonly Dictionary<(int Planet, int Target, long Generation), long> awaitingLaunch = new();
+    private readonly HashSet<(int Planet, int Target, long Generation)> revoking = new();
+    private readonly HashSet<(int Planet, int Target, long Generation)> renderedRemoteLaunches = new();
+    private readonly Dictionary<int, (int Head, long Tick)> lastOfferTick = new();
+    private long nextOffer;
+    private readonly DiagnosticWatchdog diagnosticWaits = new();
 
-    public void Dispose()
-    {
-        OnFactoriesUnloaded();
-        remoteBuilders.Clear();
-        GC.SuppressFinalize(this);
-    }
-
+    public void Dispose() { OnFactoriesUnloaded(); remoteBuilders.Clear(); pendingSupply.Clear(); supplySequences.Clear(); GC.SuppressFinalize(this); }
     public void OnFactoriesUnloaded()
     {
-        Instances.Clear();
-        claims.Clear();
-        pending.Clear();
-        seededFactories.Clear();
-        awaitingReply.Clear();
-        rejectedPlayers.Clear();
-        declinedLocally.Clear();
-        localBaseLaunched.Clear();
-        renderedRemoteLaunches.Clear();
-        releaseSent.Clear();
-        baseRevocations.Clear();
-        pendingBaseAcks.Clear();
-        baseLowEnergySince.Clear();
+        Instances.Clear(); claims.Clear(); seededFactories.Clear(); offers.Clear(); offerSequences.Clear();
+        awaitingLaunch.Clear(); revoking.Clear(); renderedRemoteLaunches.Clear(); lastOfferTick.Clear();
+        // Offer/supply sequence numbers live for the connection, across factory unload/reload.
+        // Material receipts must also settle after the player leaves the supplying planet.
+        ClearBaseViews();
+        suppliedStores.Clear(); storeTicks.Clear(); pendingStores.Clear();
+        diagnosticWaits.Clear();
     }
-
-    public bool TryGet(int planetId, int prebuildId, out BuildTargetClaim claim) =>
-        claims.TryGet(planetId, prebuildId, out claim);
-
+    public bool TryGet(int planetId, int prebuildId, out BuildTargetClaim claim) => claims.TryGet(planetId, prebuildId, out claim);
     public static PlanetFactory FindFactory(PrebuildData[] pool)
     {
         var data = GameMain.data;
         if (data == null || pool == null) return null;
         for (var i = 0; i < data.factoryCount; i++)
-        {
-            var factory = data.factories[i];
-            if (factory != null && ReferenceEquals(factory.prebuildPool, pool)) return factory;
-        }
+            if (data.factories[i] != null && ReferenceEquals(data.factories[i].prebuildPool, pool)) return data.factories[i];
         return null;
     }
-
-    public void ReadyLocally(PlanetFactory factory, int prebuildId)
+    public bool CanQueue(PlanetFactory factory, ConstructionModuleComponent module, int id)
     {
-        if (factory == null) return;
-        if (Multiplayer.Session.IsServer) ObserveReady(factory, prebuildId);
-        if (claims.TryGet(factory.planetId, prebuildId, out var claim) &&
-            (!claim.Launched || claim.OwnerKind == BuildOwnerKind.Base &&
-             !localBaseLaunched.Contains((factory.planetId, prebuildId, claim.Generation))))
-            RefreshLocalQueue(factory, claim);
+        if (!IsReady(factory, id) || module == null || !module.droneEnabled || !module.droneConstructEnabled || module.droneCount <= 0 ||
+            claims.TryGet(factory.planetId, id, out _)) return false;
+        if (module.entityId > 0) return Multiplayer.Session.IsServer;
+        var player = GameMain.mainPlayer;
+        return player?.isAlive == true && player.factory == factory && player.speed <= 20f &&
+            (factory.prebuildPool[id].pos - player.position).sqrMagnitude <= player.mecha.buildArea * player.mecha.buildArea;
     }
+    private static bool IsReady(PlanetFactory factory, int id) => factory != null && id > 0 && id < factory.prebuildCursor &&
+        factory.prebuildPool[id].id == id && factory.prebuildPool[id].itemRequired == 0 &&
+        !factory.prebuildPool[id].isDestroyed && !factory.prebuildPool[id].builderLaunched;
 
-    public bool CanQueue(PlanetFactory factory, ConstructionModuleComponent module, int prebuildId)
+    public void BeginLaunchFrame(PlanetFactory factory)
     {
-        if (factory == null || module == null || prebuildId <= 0 || prebuildId >= factory.prebuildCursor ||
-            !claims.TryGet(factory.planetId, prebuildId, out var claim)) return false;
-        if (baseRevocations.ContainsKey((factory.planetId, prebuildId, claim.Generation))) return false;
-        if (claim.Launched && (claim.OwnerKind != BuildOwnerKind.Base ||
-            localBaseLaunched.Contains((factory.planetId, prebuildId, claim.Generation)))) return false;
-        ref var prebuild = ref factory.prebuildPool[prebuildId];
-        if (prebuild.id != prebuildId || prebuild.itemRequired != 0 || prebuild.isDestroyed || prebuild.builderLaunched)
-            return false;
-        if (!module.droneEnabled || !module.droneConstructEnabled || module.droneCount <= 0) return false;
-        if (module.entityId != 0)
-            return claim.OwnerKind == BuildOwnerKind.Base && claim.OwnerId == module.entityId;
-        if (claim.OwnerKind != BuildOwnerKind.Player || claim.OwnerId != Multiplayer.Session.LocalPlayer.Id ||
-            factory != GameMain.mainPlayer.factory || GameMain.mainPlayer.speed > 20f) return false;
-        return (prebuild.pos - GameMain.mainPlayer.position).sqrMagnitude <=
-               GameMain.mainPlayer.mecha.buildArea * GameMain.mainPlayer.mecha.buildArea;
-    }
-
-    public void ObserveReady(PlanetFactory factory, int prebuildId)
-    {
-        if (!Multiplayer.Session.IsServer || !IsReady(factory, prebuildId) ||
-            claims.TryGet(factory.planetId, prebuildId, out _)) return;
-        pending.Add((factory.planetId, prebuildId));
-        if (Multiplayer.Session.IsGameLoaded) TryAssign(factory, prebuildId);
-    }
-
-    public void Tick()
-    {
-        if (!Multiplayer.Session.IsGameLoaded || GameMain.galaxy == null) return;
-        if (!Multiplayer.Session.IsServer)
+        for (var id = 1; id < factory.prebuildCursor; id++)
         {
-            TickClient();
+            ref var site = ref factory.prebuildPool[id];
+            if (site.id != id || site.builderLaunched) continue;
+            site.builderModuleId = 0; site.builderValue = 0f;
+        }
+    }
+    public void OfferLocalFlight(PlanetFactory factory, ConstructionModuleComponent module)
+    {
+        if (Multiplayer.Session.IsServer || module.entityId != 0 || module.droneIdleCount <= 0 || GameMain.mainPlayer.mecha.coreEnergy <= 0 ||
+            module.buildTargets == null || module.buildTargets[0].objectId <= 0) return;
+        var head = module.buildTargets[0].objectId;
+        // PreLaunchDrone has already compared native construction and repair priorities.
+        if (factory.prebuildPool[head].builderModuleId != -1) return;
+        if (lastOfferTick.TryGetValue(factory.planetId, out var last) && last.Head == head && GameMain.gameTick - last.Tick < 10) return;
+        var ids = new int[4]; var instances = new long[4];
+        for (var i = 0; i < 4; i++)
+        {
+            var id = module.buildTargets[i].objectId;
+            if (id <= 0 || !CanQueue(factory, module, id)) continue;
+            ids[i] = -id; instances[i] = Instances.Get(factory, id);
+        }
+        if (ids[0] == 0 || instances[0] <= 0) return;
+        lastOfferTick[factory.planetId] = (head, GameMain.gameTick);
+        Multiplayer.Session.Network.SendPacket(new ConstructionLaunchOfferPacket
+        { PlanetId = factory.planetId, Sequence = ++nextOffer, Targets = ids, Instances = instances, Priority = module.dronePriority });
+    }
+    public void ReceiveOffer(ushort player, ConstructionLaunchOfferPacket packet)
+    {
+        if (!Multiplayer.Session.IsServer || !ConstructionFlight.ValidTargets(packet.Targets, packet.Instances) || packet.Sequence <= 0) return;
+        var key = (player, packet.PlanetId);
+        if (offerSequences.TryGetValue(key, out var previous) && packet.Sequence <= previous) return;
+        offerSequences[key] = packet.Sequence; offers[key] = (packet, GameMain.gameTick);
+    }
+    public void PrepareLaunches(PlanetFactory factory)
+    {
+        if (!Multiplayer.Session.IsServer) { BeginLaunchFrame(factory); return; }
+        var candidates = new List<(ushort Player, ConstructionLaunchOfferPacket Offer, float Score)>();
+        foreach (var entry in offers.ToArray())
+        {
+            if (entry.Key.Planet != factory.planetId) continue;
+            offers.Remove(entry.Key);
+            var player = Multiplayer.Session.Server.Players.Get(entry.Key.Player);
+            if (player?.Data.LocalPlanetId != factory.planetId || ConstructionDroneLife.IsDead(entry.Key.Player) || GameMain.gameTick - entry.Value.Tick > 60 ||
+                !remoteBuilders.TryGetValue(entry.Key.Player, out var capability) || !capability.Enabled || !capability.CanLaunch ||
+                capability.Count <= 0 || GameMain.gameTick - capability.Tick > 120 ||
+                claims.All.Any(c => c.OwnerKind == BuildOwnerKind.Player && c.OwnerId == entry.Key.Player && !c.Launched)) continue;
+            var offer = entry.Value.Packet; var head = -offer.Targets[0];
+            if (!IsReady(factory, head) || Instances.Get(factory, head) != offer.Instances[0] || claims.TryGet(factory.planetId, head, out _)) continue;
+            var distance = (factory.prebuildPool[head].pos - player.Data.LocalPlanetPosition.ToVector3()).sqrMagnitude;
+            var score = BuildCandidateScore.Calculate(BuildOwnerKind.Player, distance, capability.Range);
+            if (score > 0f) candidates.Add((entry.Key.Player, offer, score));
+        }
+        foreach (var candidate in candidates.OrderByDescending(c => c.Score).ThenBy(c => c.Player))
+        {
+            var offer = candidate.Offer; var head = -offer.Targets[0];
+            if (!IsReady(factory, head) || claims.TryGet(factory.planetId, head, out _)) continue;
+            ref var site = ref factory.prebuildPool[head];
+            if (site.builderModuleId != 0 && site.builderValue >= candidate.Score) continue;
+            var ids = (int[])offer.Targets.Clone();
+            for (var i = 1; i < 4; i++)
+                if (ids[i] != 0 && (i >= factory.gameData.history.constructionDroneMovement ||
+                    !IsReady(factory, -ids[i]) || Instances.Get(factory, -ids[i]) != offer.Instances[i] ||
+                    claims.TryGet(factory.planetId, -ids[i], out _))) ids[i] = 0;
+            var generations = new long[4];
+            for (var i = 0; i < 4; i++)
+            {
+                if (ids[i] == 0) continue;
+                var id = -ids[i]; var claim = claims.Assign(factory.planetId, id, BuildOwnerKind.Player, candidate.Player);
+                generations[i] = claim.Generation; awaitingLaunch[(factory.planetId, id, claim.Generation)] = GameMain.gameTick;
+                factory.prebuildPool[id].builderLaunched = true;
+                Multiplayer.Session.Network.SendPacketToStar(new BuildTargetAssignmentPacket(claim), factory.planet.star.id);
+                factory.constructionSystem.RemoveBuildTargetFromModules(id);
+            }
+            var grant = new ConstructionLaunchGrantPacket();
+            Fill(grant, candidate.Player, factory.planetId, ids, generations, offer.Priority);
+            Multiplayer.Session.Server.Players.Get(candidate.Player).Connection.SendPacket(grant);
+        }
+    }
+    internal static void Fill(BuildDroneLaunchPacket p, ushort player, int planet, int[] ids, long[] generations, int priority)
+    {
+        p.PlayerId = player; p.PlanetId = planet; p.TargetObjectId = ids[0];
+        p.Next1ObjectId = ids[1]; p.Next2ObjectId = ids[2]; p.Next3ObjectId = ids[3];
+        p.TargetGeneration = generations[0]; p.Next1Generation = generations[1];
+        p.Next2Generation = generations[2]; p.Next3Generation = generations[3]; p.DronePriority = priority;
+    }
+    private static int[] Targets(BuildDroneLaunchPacket p) => new[] { p.TargetObjectId, p.Next1ObjectId, p.Next2ObjectId, p.Next3ObjectId };
+    private static long[] Generations(BuildDroneLaunchPacket p) => new[] { p.TargetGeneration, p.Next1Generation, p.Next2Generation, p.Next3Generation };
+    public void ReceiveGrant(ConstructionLaunchGrantPacket packet)
+    {
+        if (Multiplayer.Session.IsServer || packet.PlayerId != Multiplayer.Session.LocalPlayer.Id) return;
+        var ids = Targets(packet); var generations = Generations(packet);
+        if (!claims.ValidateLaunch(packet.PlanetId, ids, generations, BuildOwnerKind.Player, packet.PlayerId, true)) return;
+        var player = GameMain.mainPlayer; var factory = player?.factory; var module = player?.mecha.constructionModule;
+        var accepted = player?.isAlive == true && factory?.planetId == packet.PlanetId && module != null && module.droneEnabled &&
+            module.droneConstructEnabled && module.droneIdleCount > 0 && module.dronePriority == packet.DronePriority && player.speed <= 20f && player.mecha.coreEnergy > 0;
+        for (var i = 0; accepted && i < 4; i++)
+        {
+            if (ids[i] == 0) continue;
+            var id = -ids[i];
+            accepted = id > 0 && id < factory.prebuildCursor && factory.prebuildPool[id].id == id &&
+                factory.prebuildPool[id].itemRequired == 0 && !factory.prebuildPool[id].isDestroyed &&
+                (factory.prebuildPool[id].pos - player.position).sqrMagnitude <= player.mecha.buildArea * player.mecha.buildArea;
+        }
+        if (!accepted)
+        {
+            for (var i = 0; i < 4; i++) if (ids[i] < 0)
+                    Multiplayer.Session.Network.SendPacket(new BuildTargetAssignmentReplyPacket(packet.PlanetId, -ids[i], generations[i], false));
             return;
         }
-        if (GameMain.data == null) return;
-        var data = GameMain.data;
-        for (var i = 0; i < data.factoryCount; i++)
-        {
-            var factory = data.factories[i];
-            if (factory == null || !seededFactories.Add(factory)) continue;
-            SeedFactory(factory);
-            ClearQueuedTargets(factory);
-        }
-        if (GameMain.gameTick % 30 != 0) return;
-        var expired = new List<BuildTargetClaim>();
-        foreach (var waiting in awaitingReply)
-            if (GameMain.gameTick - waiting.Value >= 120 && claims.TryGet(waiting.Key.PlanetId, waiting.Key.PrebuildId, out var stalled) &&
-                stalled.Generation == waiting.Key.Generation && !stalled.Launched) expired.Add(stalled);
-        foreach (var stalled in expired)
-        {
-            Release(stalled, retry: true);
-        }
-        FinishBaseRevocations();
-        var invalid = new List<BuildTargetClaim>();
-        foreach (var claim in claims.All)
-        {
-            if (claim.Launched || baseRevocations.ContainsKey((claim.PlanetId, claim.PrebuildId, claim.Generation)))
-                continue;
-            var factory = GameMain.galaxy.PlanetById(claim.PlanetId)?.factory;
-            var baseInvalid = false;
-            if (factory != null && claim.OwnerKind == BuildOwnerKind.Base)
-            {
-                var key = (claim.PlanetId, claim.PrebuildId, claim.Generation);
-                baseInvalid = !BaseStillAvailable(factory, claim.OwnerId);
-                if (!baseInvalid && !BaseHasLaunchEnergy(factory, claim.OwnerId))
-                {
-                    if (!baseLowEnergySince.TryGetValue(key, out var since))
-                        baseLowEnergySince[key] = GameMain.gameTick;
-                    else baseInvalid = GameMain.gameTick - since >= 120;
-                }
-                else baseLowEnergySince.Remove(key);
-            }
-            if (factory == null || !IsReady(factory, claim.PrebuildId) ||
-                claim.OwnerKind == BuildOwnerKind.Player && claim.OwnerId == Multiplayer.Session.LocalPlayer.Id &&
-                !CanQueue(factory, GameMain.mainPlayer.mecha.constructionModule, claim.PrebuildId) ||
-                baseInvalid)
-                invalid.Add(claim);
-        }
-        foreach (var claim in invalid)
-        {
-            if (claim.OwnerKind == BuildOwnerKind.Base) BeginBaseRevocation(claim);
-            else Release(claim, retry: true);
-        }
-        if (pending.Count == 0) return;
-        var tasks = new List<(int PlanetId, int PrebuildId)>(pending);
-        foreach (var task in tasks)
-        {
-            var factory = GameMain.galaxy.PlanetById(task.PlanetId)?.factory;
-            if (!IsReady(factory, task.PrebuildId)) pending.Remove(task);
-            else TryAssign(factory, task.PrebuildId);
-        }
+        module.EjectMechaDrone(factory, player, ids[0], ids[1], ids[2], ids[3]);
+        for (var i = 0; i < 4; i++) if (ids[i] < 0) factory.constructionSystem.RemoveBuildTargetFromModules(-ids[i]);
     }
-
-    private static bool BaseStillAvailable(PlanetFactory factory, int entityId)
-    {
-        if (entityId <= 0 || entityId >= factory.entityCursor || factory.entityPool[entityId].id != entityId)
-            return false;
-        var moduleId = factory.entityPool[entityId].constructionModuleId;
-        if (moduleId <= 0 || moduleId >= factory.constructionSystem.constructionModules.cursor) return false;
-        var module = factory.constructionSystem.constructionModules.buffer[moduleId];
-        if (module == null || !module.droneEnabled || !module.droneConstructEnabled || module.droneCount <= 0 ||
-            module.battleBaseId <= 0 || module.battleBaseId >= factory.defenseSystem.battleBases.cursor)
-            return false;
-        var baseComponent = factory.defenseSystem.battleBases.buffer[module.battleBaseId];
-        return baseComponent != null && baseComponent.id == module.battleBaseId;
-    }
-
-    private static bool BaseHasLaunchEnergy(PlanetFactory factory, int entityId)
-    {
-        var moduleId = factory.entityPool[entityId].constructionModuleId;
-        var module = factory.constructionSystem.constructionModules.buffer[moduleId];
-        return factory.defenseSystem.battleBases.buffer[module.battleBaseId].energy >=
-               Configs.freeMode.droneEjectEnergy;
-    }
-
-    private void BeginBaseRevocation(BuildTargetClaim claim)
-    {
-        var key = (claim.PlanetId, claim.PrebuildId, claim.Generation);
-        if (baseRevocations.ContainsKey(key)) return;
-        var waiting = new HashSet<ushort>();
-        var factory = GameMain.galaxy.PlanetById(claim.PlanetId)?.factory;
-        if (factory != null)
-        {
-            foreach (var entry in Multiplayer.Session.Server.Players.Connected)
-                if (entry.Value.Data.LocalStarId == factory.planet.star.id) waiting.Add(entry.Value.Id);
-            baseRevocations[key] = waiting;
-            Multiplayer.Session.Network.SendPacketToStar(new BuildTargetAssignmentPacket(claim,
-                    removed: true, canceled: true),
-                factory.planet.star.id);
-            RefreshLocalQueue(factory, claim);
-        }
-        else Release(claim, retry: false);
-    }
-
-    private void FinishBaseRevocations()
-    {
-        if (baseRevocations.Count == 0) return;
-        var finished = new List<BuildTargetClaim>();
-        foreach (var entry in baseRevocations)
-        {
-            if (entry.Value.Count != 0 || HasBaseDroneTarget(
-                    GameMain.galaxy.PlanetById(entry.Key.PlanetId)?.factory, entry.Key.PrebuildId)) continue;
-            if (claims.TryGet(entry.Key.PlanetId, entry.Key.PrebuildId, out var claim) &&
-                claim.Generation == entry.Key.Generation) finished.Add(claim);
-        }
-        foreach (var claim in finished) Release(claim, retry: true);
-    }
-
-    private static bool HasBaseDroneTarget(PlanetFactory factory, int prebuildId)
-    {
-        if (factory == null) return false;
-        var drones = factory.constructionSystem.drones;
-        for (var i = 1; i < drones.cursor; i++)
-        {
-            ref var drone = ref drones.buffer[i];
-            if (drone.id != i || drone.owner <= 0 || drone.stage == 0 || drone.stage == 4) continue;
-            if (drone.targetObjectId == -prebuildId || drone.nextTarget1ObjectId == -prebuildId ||
-                drone.nextTarget2ObjectId == -prebuildId || drone.nextTarget3ObjectId == -prebuildId)
-                return true;
-        }
-        return false;
-    }
-
-    public void HandleBaseReleaseAck(ushort playerId, BuildTargetBaseReleaseAckPacket packet)
+    public void RecordBaseLaunch(PlanetFactory factory, int entity, int target, int next1, int next2, int next3)
     {
         if (!Multiplayer.Session.IsServer) return;
-        if (baseRevocations.TryGetValue((packet.PlanetId, packet.PrebuildId, packet.Generation), out var waiting))
-            waiting.Remove(playerId);
+        foreach (var id in new[] { target, next1, next2, next3 })
+            if (id < 0) MarkLaunched(claims.Assign(factory.planetId, -id, BuildOwnerKind.Base, entity));
     }
-
-    private void TickClient()
+    public bool TryCreateMechaLaunch(PlanetFactory factory, int target, int next1, int next2, int next3, int priority, out BuildDroneLaunchPacket packet)
     {
-        if (GameMain.gameTick % 30 != 0 || GameMain.mainPlayer == null) return;
-        if (pendingBaseAcks.Count > 0)
+        packet = null; var ids = new[] { target, next1, next2, next3 }; var generations = new long[4];
+        if (factory == null || target >= 0) return false;
+        var player = Multiplayer.Session.LocalPlayer.Id;
+        for (var i = 0; i < 4; i++)
         {
-            var released = new List<(int PlanetId, int PrebuildId, long Generation)>();
-            foreach (var key in pendingBaseAcks)
+            if (ids[i] == 0) continue;
+            if (ids[i] > 0) return false;
+            if (!claims.TryGet(factory.planetId, -ids[i], out var claim))
             {
-                var factory = GameMain.galaxy.PlanetById(key.PlanetId)?.factory;
-                if (HasBaseDroneTarget(factory, key.PrebuildId)) continue;
-                Multiplayer.Session.Network.SendPacket(new BuildTargetBaseReleaseAckPacket(
-                    key.PlanetId, key.PrebuildId, key.Generation));
-                released.Add(key);
+                if (!Multiplayer.Session.IsServer) return false;
+                claim = claims.Assign(factory.planetId, -ids[i], BuildOwnerKind.Player, player);
+                Multiplayer.Session.Network.SendPacketToStar(new BuildTargetAssignmentPacket(claim), factory.planet.star.id);
             }
-            foreach (var key in released) pendingBaseAcks.Remove(key);
+            if (claim.Launched || claim.OwnerKind != BuildOwnerKind.Player || claim.OwnerId != player) return false;
+            generations[i] = claim.Generation;
         }
-        var current = new List<BuildTargetClaim>();
-        foreach (var claim in claims.All)
-            if (claim.OwnerKind == BuildOwnerKind.Player && claim.OwnerId == Multiplayer.Session.LocalPlayer.Id &&
-                !claim.Launched) current.Add(claim);
-        foreach (var claim in current)
-        {
-            var factory = GameMain.galaxy.PlanetById(claim.PlanetId)?.factory;
-            if (CanQueue(factory, GameMain.mainPlayer.mecha.constructionModule, claim.PrebuildId)) continue;
-            var key = (claim.PlanetId, claim.PrebuildId, claim.Generation);
-            if (!releaseSent.Add(key)) continue;
-            declinedLocally.Add((claim.PlanetId, claim.PrebuildId));
-            Multiplayer.Session.Network.SendPacket(new BuildTargetAssignmentReplyPacket(
-                claim.PlanetId, claim.PrebuildId, claim.Generation, accepted: false));
-            claims.Remove(claim.PlanetId, claim.PrebuildId, claim.Generation);
-            RefreshLocalQueue(factory, claim);
-        }
-        if (declinedLocally.Count == 0) return;
-        var ready = new List<(int PlanetId, int PrebuildId)>();
-        foreach (var target in declinedLocally)
-        {
-            var factory = GameMain.galaxy.PlanetById(target.PlanetId)?.factory;
-            if (!IsReady(factory, target.PrebuildId) || GameMain.mainPlayer.factory != factory) continue;
-            var module = GameMain.mainPlayer.mecha.constructionModule;
-            var distance = (factory.prebuildPool[target.PrebuildId].pos - GameMain.mainPlayer.position).sqrMagnitude;
-            if (module.droneEnabled && module.droneConstructEnabled && module.droneCount > 0 &&
-                GameMain.mainPlayer.speed <= 20f && distance <= GameMain.mainPlayer.mecha.buildArea *
-                GameMain.mainPlayer.mecha.buildArea) ready.Add(target);
-        }
-        foreach (var target in ready)
-        {
-            declinedLocally.Remove(target);
-            Multiplayer.Session.Network.SendPacket(new BuildTargetReadyPacket(target.PlanetId, target.PrebuildId));
-        }
+        packet = new BuildDroneLaunchPacket(); Fill(packet, player, factory.planetId, ids, generations, priority); return true;
     }
-
-    private void SeedFactory(PlanetFactory factory)
+    public bool ValidateAndRecordMechaLaunch(BuildDroneLaunchPacket packet, ushort sender)
     {
-        for (var i = 1; i < factory.prebuildCursor; i++)
-        {
-            ref var prebuild = ref factory.prebuildPool[i];
-            if (prebuild.id != i || prebuild.itemRequired != 0 || prebuild.isDestroyed ||
-                claims.TryGet(factory.planetId, i, out _)) continue;
-            if (prebuild.builderLaunched && TryFindLaunchedOwner(factory, i, out var kind, out var ownerId))
-            {
-                var claim = claims.Assign(factory.planetId, i, kind, ownerId);
-                claims.MarkLaunched(factory.planetId, i, claim.Generation, kind, ownerId);
-            }
-            else
-            {
-                prebuild.builderLaunched = false;
-                prebuild.builderModuleId = 0;
-                prebuild.builderValue = 0f;
-                pending.Add((factory.planetId, i));
-            }
-        }
-    }
-
-    private static bool TryFindLaunchedOwner(PlanetFactory factory, int prebuildId,
-        out BuildOwnerKind kind, out int ownerId)
-    {
-        kind = BuildOwnerKind.None;
-        ownerId = 0;
-        var drones = factory.constructionSystem.drones;
-        for (var i = 1; i < drones.cursor; i++)
-        {
-            ref var drone = ref drones.buffer[i];
-            if (drone.id != i || drone.stage == 0 || drone.stage == 4 ||
-                drone.targetObjectId != -prebuildId && drone.nextTarget1ObjectId != -prebuildId &&
-                drone.nextTarget2ObjectId != -prebuildId && drone.nextTarget3ObjectId != -prebuildId) continue;
-            if (drone.owner == 0)
-            {
-                kind = BuildOwnerKind.Player;
-                ownerId = Multiplayer.Session.LocalPlayer.Id;
-                return true;
-            }
-            if (drone.owner >= factory.constructionSystem.constructionModules.cursor) continue;
-            var module = factory.constructionSystem.constructionModules.buffer[drone.owner];
-            if (module == null || module.id != drone.owner || module.entityId <= 0) continue;
-            kind = BuildOwnerKind.Base;
-            ownerId = module.entityId;
-            return true;
-        }
-        return false;
-    }
-
-    public void SeedForSnapshot(PlanetFactory factory)
-    {
-        if (Multiplayer.Session.IsServer && factory != null && seededFactories.Add(factory))
-        {
-            SeedFactory(factory);
-            ClearQueuedTargets(factory);
-        }
-        if (Multiplayer.Session.IsServer && factory != null)
-        {
-            var tasks = new List<(int PlanetId, int PrebuildId)>(pending);
-            foreach (var task in tasks)
-                if (task.PlanetId == factory.planetId) TryAssign(factory, task.PrebuildId);
-        }
-    }
-
-    public void InitializeLoadedFactories()
-    {
-        if (!Multiplayer.Session.IsServer || GameMain.data == null) return;
-        for (var i = 0; i < GameMain.data.factoryCount; i++)
-        {
-            var factory = GameMain.data.factories[i];
-            if (factory == null || !seededFactories.Add(factory)) continue;
-            SeedFactory(factory);
-            ClearQueuedTargets(factory);
-        }
-        var tasks = new List<(int PlanetId, int PrebuildId)>(pending);
-        foreach (var task in tasks)
-        {
-            var factory = GameMain.galaxy.PlanetById(task.PlanetId)?.factory;
-            if (factory != null) TryAssign(factory, task.PrebuildId);
-        }
-    }
-
-    private static bool IsReady(PlanetFactory factory, int prebuildId)
-    {
-        if (factory == null || prebuildId <= 0 || prebuildId >= factory.prebuildCursor) return false;
-        ref var prebuild = ref factory.prebuildPool[prebuildId];
-        return prebuild.id == prebuildId && prebuild.itemRequired == 0 && !prebuild.isDestroyed &&
-               !prebuild.builderLaunched;
-    }
-
-    private void TryAssign(PlanetFactory factory, int prebuildId)
-    {
-        if (!IsReady(factory, prebuildId)) return;
-        if (!PickOwner(factory, prebuildId, out var kind, out var ownerId)) return;
-        pending.Remove((factory.planetId, prebuildId));
-        var claim = claims.Assign(factory.planetId, prebuildId, kind, ownerId);
-        if (kind == BuildOwnerKind.Player && ownerId != Multiplayer.Session.LocalPlayer.Id)
-            awaitingReply[(claim.PlanetId, claim.PrebuildId, claim.Generation)] = GameMain.gameTick;
-        Multiplayer.Session.Network.SendPacketToStar(new BuildTargetAssignmentPacket(claim), factory.planet.star.id);
-        RefreshLocalQueue(factory, claim);
-    }
-
-    private bool PickOwner(PlanetFactory factory, int prebuildId, out BuildOwnerKind kind, out int ownerId)
-    {
-        var selectedKind = BuildOwnerKind.None;
-        var selectedId = 0;
-        var pos = factory.prebuildPool[prebuildId].pos;
-        var bestScore = 0f;
-
-        void Consider(BuildOwnerKind candidateKind, int candidateId, Vector3 location, float range,
-            bool enabled, int droneCount)
-        {
-            if (candidateKind == BuildOwnerKind.Player &&
-                rejectedPlayers.TryGetValue((factory.planetId, prebuildId), out var rejected) &&
-                rejected.Contains(candidateId)) return;
-            if (!enabled || droneCount <= 0 || CountQueued(factory.planetId, candidateKind, candidateId) >= 120)
-                return;
-            var distance = (pos - location).sqrMagnitude;
-            var score = BuildCandidateScore.Calculate(candidateKind, distance, range);
-            if (BuildCandidateScore.Beats(score, candidateKind, candidateId, bestScore, selectedKind, selectedId))
-            {
-                bestScore = score;
-                selectedKind = candidateKind;
-                selectedId = candidateId;
-            }
-        }
-
-        var local = GameMain.mainPlayer;
-        if (local?.factory == factory && local.planetId == factory.planetId && !Multiplayer.IsDedicated)
-        {
-            var module = local.mecha.constructionModule;
-            Consider(BuildOwnerKind.Player, Multiplayer.Session.LocalPlayer.Id, local.position, local.mecha.buildArea,
-                module.droneEnabled && module.droneConstructEnabled && local.speed <= 20f, module.droneCount);
-        }
-
-        foreach (var entry in Multiplayer.Session.Server.Players.Connected)
-        {
-            var player = entry.Value;
-            if (player.Data.LocalPlanetId != factory.planetId ||
-                !remoteBuilders.TryGetValue(player.Id, out var capability)) continue;
-            Consider(BuildOwnerKind.Player, player.Id, player.Data.LocalPlanetPosition.ToVector3(),
-                capability.BuildArea, capability.Enabled && capability.CanLaunch, capability.DroneCount);
-        }
-
-        var modules = factory.constructionSystem.constructionModules;
-        for (var i = 1; i < modules.cursor; i++)
-        {
-            var module = modules.buffer[i];
-            if (module == null || module.id != i || module.entityId <= 0 || module.entityId >= factory.entityCursor)
-                continue;
-            ref var entity = ref factory.entityPool[module.entityId];
-            if (entity.id != module.entityId || module.battleBaseId <= 0 ||
-                module.battleBaseId >= factory.defenseSystem.battleBases.cursor) continue;
-            var battleBase = factory.defenseSystem.battleBases.buffer[module.battleBaseId];
-            if (battleBase == null || battleBase.id != module.battleBaseId ||
-                battleBase.energy < Configs.freeMode.droneEjectEnergy) continue;
-            Consider(BuildOwnerKind.Base, module.entityId, entity.pos, module.baseBuildRange,
-                module.droneEnabled && module.droneConstructEnabled, module.droneCount);
-        }
-        kind = selectedKind;
-        ownerId = selectedId;
-        return kind != BuildOwnerKind.None;
-    }
-
-    private int CountQueued(int planetId, BuildOwnerKind kind, int ownerId)
-    {
-        var count = 0;
-        foreach (var claim in claims.All)
-            if (claim.PlanetId == planetId && !claim.Launched && claim.OwnerKind == kind && claim.OwnerId == ownerId)
-                count++;
-        return count;
-    }
-
-    public void UpdateRemoteBuilder(ushort playerId, float buildArea, int droneCount, bool enabled, bool canLaunch)
-    {
-        if (!Multiplayer.Session.IsServer) return;
-        if (float.IsNaN(buildArea) || float.IsInfinity(buildArea)) buildArea = 0f;
-        remoteBuilders[playerId] = new BuilderCapability(Math.Max(0f, Math.Min(buildArea, 1000f)),
-            Math.Max(0, Math.Min(droneCount, 256)), enabled, canLaunch);
-    }
-
-    public void PlayerLeft(ushort playerId)
-    {
-        remoteBuilders.Remove(playerId);
-        if (!Multiplayer.Session.IsServer) return;
-        foreach (var waiting in baseRevocations.Values) waiting.Remove(playerId);
-        var released = new List<BuildTargetClaim>();
-        foreach (var claim in claims.All)
-            if (claim.OwnerKind == BuildOwnerKind.Player && claim.OwnerId == playerId) released.Add(claim);
-        foreach (var claim in released) Release(claim, retry: true);
-    }
-
-    public void HandleReply(ushort playerId, BuildTargetAssignmentReplyPacket packet)
-    {
-        if (!Multiplayer.Session.IsServer || !claims.TryGet(packet.PlanetId, packet.PrebuildId, out var claim) ||
-            claim.Generation != packet.Generation || claim.OwnerKind != BuildOwnerKind.Player ||
-            claim.OwnerId != playerId) return;
-        awaitingReply.Remove((claim.PlanetId, claim.PrebuildId, claim.Generation));
-        if (!packet.Accepted)
-        {
-            if (!rejectedPlayers.TryGetValue((claim.PlanetId, claim.PrebuildId), out var rejected))
-                rejectedPlayers[(claim.PlanetId, claim.PrebuildId)] = rejected = new HashSet<int>();
-            rejected.Add(playerId);
-            Release(claim, retry: true);
-        }
-    }
-
-    public void HandleReadyNotice(ushort playerId, BuildTargetReadyPacket packet)
-    {
-        if (!Multiplayer.Session.IsServer) return;
-        rejectedPlayers.TryGetValue((packet.PlanetId, packet.PrebuildId), out var rejected);
-        rejected?.Remove(playerId);
-        var factory = GameMain.galaxy.PlanetById(packet.PlanetId)?.factory;
-        if (IsReady(factory, packet.PrebuildId) && !claims.TryGet(packet.PlanetId, packet.PrebuildId, out _))
-        {
-            pending.Add((packet.PlanetId, packet.PrebuildId));
-            TryAssign(factory, packet.PrebuildId);
-        }
-    }
-
-    private void Release(BuildTargetClaim claim, bool retry)
-    {
-        if (!claims.Remove(claim.PlanetId, claim.PrebuildId, claim.Generation)) return;
-        awaitingReply.Remove((claim.PlanetId, claim.PrebuildId, claim.Generation));
-        localBaseLaunched.Remove((claim.PlanetId, claim.PrebuildId, claim.Generation));
-        var wasRevoking = baseRevocations.Remove((claim.PlanetId, claim.PrebuildId, claim.Generation));
-        baseLowEnergySince.Remove((claim.PlanetId, claim.PrebuildId, claim.Generation));
-        var factory = GameMain.galaxy.PlanetById(claim.PlanetId)?.factory;
-        if (factory != null)
-        {
-            ResetLocalPrebuildClaim(factory, claim.PrebuildId);
-            if (retry && claim.OwnerKind == BuildOwnerKind.Player && claim.Launched &&
-                claim.OwnerId != Multiplayer.Session.LocalPlayer.Id)
-                Multiplayer.Session.Drones.CancelRemoteBuildTarget(factory, (ushort)claim.OwnerId,
-                    claim.PrebuildId);
-            if (!wasRevoking)
-                Multiplayer.Session.Network.SendPacketToStar(new BuildTargetAssignmentPacket(claim,
-                        removed: true, canceled: retry), factory.planet.star.id);
-            RefreshLocalQueue(factory, claim);
-            if (retry && IsReady(factory, claim.PrebuildId))
-                pending.Add((claim.PlanetId, claim.PrebuildId));
-        }
-    }
-
-    public void TargetRemoved(PlanetFactory factory, int prebuildId)
-    {
-        Instances.Remove(factory.planetId, prebuildId);
-        pending.Remove((factory.planetId, prebuildId));
-        rejectedPlayers.Remove((factory.planetId, prebuildId));
-        declinedLocally.Remove((factory.planetId, prebuildId));
-        localBaseLaunched.RemoveWhere(key => key.PlanetId == factory.planetId && key.PrebuildId == prebuildId);
-        renderedRemoteLaunches.RemoveWhere(key => key.PlanetId == factory.planetId && key.PrebuildId == prebuildId);
-        releaseSent.RemoveWhere(key => key.PlanetId == factory.planetId && key.PrebuildId == prebuildId);
-        pendingBaseAcks.RemoveWhere(key => key.PlanetId == factory.planetId && key.PrebuildId == prebuildId);
-        var revoked = new List<(int PlanetId, int PrebuildId, long Generation)>();
-        foreach (var key in baseRevocations.Keys)
-            if (key.PlanetId == factory.planetId && key.PrebuildId == prebuildId) revoked.Add(key);
-        foreach (var key in revoked) baseRevocations.Remove(key);
-        revoked.Clear();
-        foreach (var key in baseLowEnergySince.Keys)
-            if (key.PlanetId == factory.planetId && key.PrebuildId == prebuildId) revoked.Add(key);
-        foreach (var key in revoked) baseLowEnergySince.Remove(key);
-        if (claims.TryGet(factory.planetId, prebuildId, out var claim))
-        {
-            if (Multiplayer.Session.IsServer) Release(claim, retry: false);
-            else claims.Remove(claim.PlanetId, claim.PrebuildId, claim.Generation);
-        }
-    }
-
-    public void ReleaseLocalTarget(PlanetFactory factory, int prebuildId, ConstructionModuleComponent module)
-    {
-        if (factory == null || prebuildId <= 0 || !claims.TryGet(factory.planetId, prebuildId, out var claim))
-            return;
-        var owns = module.entityId == 0
-            ? claim.OwnerKind == BuildOwnerKind.Player && claim.OwnerId == Multiplayer.Session.LocalPlayer.Id
-            : claim.OwnerKind == BuildOwnerKind.Base && claim.OwnerId == module.entityId;
-        if (!owns) return;
-        if (Multiplayer.Session.IsServer)
-        {
-            if (claim.OwnerKind == BuildOwnerKind.Base) BeginBaseRevocation(claim);
-            else Release(claim, retry: true);
-        }
-        else if (claim.OwnerKind == BuildOwnerKind.Player)
-            Multiplayer.Session.Network.SendPacket(new BuildTargetAssignmentReplyPacket(
-                claim.PlanetId, claim.PrebuildId, claim.Generation, accepted: false));
-    }
-
-    public void ReleaseLocalPlayerTargets(int planetId)
-    {
-        var localId = Multiplayer.Session.LocalPlayer.Id;
-        var released = new List<BuildTargetClaim>();
-        foreach (var claim in claims.All)
-            if (claim.PlanetId == planetId && claim.OwnerKind == BuildOwnerKind.Player &&
-                claim.OwnerId == localId && !claim.Launched) released.Add(claim);
-        foreach (var claim in released)
-        {
-            if (Multiplayer.Session.IsServer) Release(claim, retry: true);
-            else Multiplayer.Session.Network.SendPacket(new BuildTargetAssignmentReplyPacket(
-                claim.PlanetId, claim.PrebuildId, claim.Generation, accepted: false));
-        }
-        var module = GameMain.mainPlayer?.mecha?.constructionModule;
-        if (module?.buildTargets != null)
-        {
-            Array.Clear(module.buildTargets, 0, module.buildTargets.Length);
-            module.buildTargetTotalCount = 0;
-        }
-    }
-
-    public void AbortLocalConstructionDrones(PlanetFactory factory)
-    {
-        if (factory == null) return;
-        var drones = factory.constructionSystem.drones;
-        for (var i = 1; i < drones.cursor; i++)
-        {
-            ref var drone = ref drones.buffer[i];
-            if (drone.id != i || drone.owner != 0 || drone.stage == 0 || drone.stage == 4 ||
-                drone.targetObjectId >= 0 && drone.nextTarget1ObjectId >= 0 &&
-                drone.nextTarget2ObjectId >= 0 && drone.nextTarget3ObjectId >= 0) continue;
-            factory.constructionSystem.ResetDroneTargets(ref drone);
-            drone.stage = 4;
-            drone.movement = 0;
-        }
-    }
-
-    public bool TryCreateMechaLaunch(PlanetFactory factory, int target, int next1, int next2, int next3,
-        int priority, out BuildDroneLaunchPacket packet)
-    {
-        packet = null;
-        var playerId = Multiplayer.Session.LocalPlayer.Id;
-        if (factory == null || target >= 0 ||
-            !TryGetLaunchGeneration(factory.planetId, -target, BuildOwnerKind.Player, playerId, out var gen0) ||
-            !TryGetOptionalGeneration(factory.planetId, next1, playerId, out var gen1) ||
-            !TryGetOptionalGeneration(factory.planetId, next2, playerId, out var gen2) ||
-            !TryGetOptionalGeneration(factory.planetId, next3, playerId, out var gen3)) return false;
-        packet = new BuildDroneLaunchPacket(playerId, factory.planetId, target, next1, next2, next3,
-            gen0, gen1, gen2, gen3, priority);
+        if (!Multiplayer.Session.IsServer || packet.PlayerId != sender || ConstructionDroneLife.IsDead(sender) ||
+            !claims.ValidateLaunch(packet.PlanetId, Targets(packet), Generations(packet), BuildOwnerKind.Player, sender, true)) return false;
+        var ids = Targets(packet); var generations = Generations(packet);
+        for (var i = 0; i < 4; i++) if (ids[i] < 0 && revoking.Contains((packet.PlanetId, -ids[i], generations[i]))) return false;
+        foreach (var id in ids) if (id < 0 && claims.TryGet(packet.PlanetId, -id, out var claim)) MarkLaunched(claim);
         return true;
     }
-
-    private bool TryGetOptionalGeneration(int planetId, int targetId, int playerId, out long generation)
-    {
-        generation = 0;
-        return targetId == 0 || targetId < 0 &&
-            TryGetLaunchGeneration(planetId, -targetId, BuildOwnerKind.Player, playerId, out generation);
-    }
-
-    private bool TryGetLaunchGeneration(int planetId, int prebuildId, BuildOwnerKind kind, int ownerId,
-        out long generation)
-    {
-        generation = 0;
-        if (!claims.TryGet(planetId, prebuildId, out var claim) || claim.OwnerKind != kind ||
-            claim.OwnerId != ownerId || claim.Launched) return false;
-        generation = claim.Generation;
-        return true;
-    }
-
-    public bool ValidateAndRecordMechaLaunch(BuildDroneLaunchPacket packet, ushort senderId)
-    {
-        if (!Multiplayer.Session.IsServer || packet == null || packet.PlayerId != senderId ||
-            packet.TargetObjectId >= 0) return false;
-        var ids = new[] { packet.TargetObjectId, packet.Next1ObjectId, packet.Next2ObjectId, packet.Next3ObjectId };
-        var generations = new[] { packet.TargetGeneration, packet.Next1Generation, packet.Next2Generation,
-            packet.Next3Generation };
-        if (!claims.ValidateLaunch(packet.PlanetId, ids, generations, BuildOwnerKind.Player, senderId,
-                requireUnlaunched: true)) return false;
-        for (var i = 0; i < ids.Length; i++)
-            if (ids[i] < 0 && awaitingReply.ContainsKey((packet.PlanetId, -ids[i], generations[i]))) return false;
-        for (var i = 0; i < ids.Length; i++)
-            if (ids[i] < 0) MarkLaunched(packet.PlanetId, -ids[i], generations[i], BuildOwnerKind.Player, senderId);
-        return true;
-    }
-
     public void LocalMechaLaunched(BuildDroneLaunchPacket packet)
     {
         if (Multiplayer.Session.IsServer)
         {
-            if (ValidateAndRecordMechaLaunch(packet, Multiplayer.Session.LocalPlayer.Id))
-                Multiplayer.Session.Server.SendPacketToStar(packet,
-                    GameMain.galaxy.PlanetById(packet.PlanetId).star.id);
+            if (ValidateAndRecordMechaLaunch(packet, packet.PlayerId)) Multiplayer.Session.Server.SendPacketToStar(packet, GameMain.galaxy.PlanetById(packet.PlanetId).star.id);
         }
-        else
-        {
-            ReceiveValidatedLaunch(packet);
-            Multiplayer.Session.Network.SendPacket(packet);
-        }
+        else { ReceiveValidatedLaunch(packet); Multiplayer.Session.Network.SendPacket(packet); }
     }
-
-    public void RecordBaseLaunch(PlanetFactory factory, int baseEntityId, int target, int next1, int next2,
-        int next3)
-    {
-        if (factory == null) return;
-        var ids = new[] { target, next1, next2, next3 };
-        foreach (var id in ids)
-        {
-            if (id >= 0 || !claims.TryGet(factory.planetId, -id, out var claim) ||
-                claim.OwnerKind != BuildOwnerKind.Base || claim.OwnerId != baseEntityId) continue;
-            localBaseLaunched.Add((factory.planetId, -id, claim.Generation));
-            MarkLaunched(factory.planetId, -id, claim.Generation, BuildOwnerKind.Base, baseEntityId);
-        }
-    }
-
-    private void MarkLaunched(int planetId, int prebuildId, long generation, BuildOwnerKind kind, int ownerId)
-    {
-        if (!claims.MarkLaunched(planetId, prebuildId, generation, kind, ownerId)) return;
-        var factory = GameMain.galaxy.PlanetById(planetId)?.factory;
-        if (factory != null && prebuildId < factory.prebuildCursor && factory.prebuildPool[prebuildId].id == prebuildId)
-            factory.prebuildPool[prebuildId].builderLaunched = true;
-        if (Multiplayer.Session.IsServer && claims.TryGet(planetId, prebuildId, out var claim) && factory != null)
-            Multiplayer.Session.Network.SendPacketToStar(new BuildTargetAssignmentPacket(claim), factory.planet.star.id);
-    }
-
     public bool ReceiveValidatedLaunch(BuildDroneLaunchPacket packet)
     {
-        var ids = new[] { packet.TargetObjectId, packet.Next1ObjectId, packet.Next2ObjectId, packet.Next3ObjectId };
-        var generations = new[] { packet.TargetGeneration, packet.Next1Generation, packet.Next2Generation,
-            packet.Next3Generation };
-        if (!claims.ValidateLaunch(packet.PlanetId, ids, generations, BuildOwnerKind.Player,
-                packet.PlayerId, requireUnlaunched: false)) return false;
-        for (var i = 0; i < ids.Length; i++)
-            if (ids[i] < 0) MarkLaunched(packet.PlanetId, -ids[i], generations[i], BuildOwnerKind.Player, packet.PlayerId);
+        if (!claims.ValidateLaunch(packet.PlanetId, Targets(packet), Generations(packet), BuildOwnerKind.Player, packet.PlayerId, false)) return false;
+        foreach (var id in Targets(packet)) if (id < 0 && claims.TryGet(packet.PlanetId, -id, out var claim)) MarkLaunched(claim);
         return true;
     }
-
-    public bool TryRenderRemoteLaunch(BuildDroneLaunchPacket packet) =>
-        renderedRemoteLaunches.Add((packet.PlanetId, -packet.TargetObjectId, packet.TargetGeneration));
-
+    private void MarkLaunched(BuildTargetClaim claim)
+    {
+        if (!claims.MarkLaunched(claim.PlanetId, claim.PrebuildId, claim.Generation, claim.OwnerKind, claim.OwnerId)) return;
+        awaitingLaunch.Remove((claim.PlanetId, claim.PrebuildId, claim.Generation));
+        var factory = GameMain.galaxy.PlanetById(claim.PlanetId)?.factory;
+        if (factory == null || claim.PrebuildId >= factory.prebuildCursor || factory.prebuildPool[claim.PrebuildId].id != claim.PrebuildId) return;
+        factory.prebuildPool[claim.PrebuildId].builderLaunched = true;
+        if (Multiplayer.Session.IsServer && claims.TryGet(claim.PlanetId, claim.PrebuildId, out var launched))
+            Multiplayer.Session.Network.SendPacketToStar(new BuildTargetAssignmentPacket(launched), factory.planet.star.id);
+    }
+    public bool TryRenderRemoteLaunch(BuildDroneLaunchPacket packet) => renderedRemoteLaunches.Add((packet.PlanetId, -packet.TargetObjectId, packet.TargetGeneration));
+    public void Tick()
+    {
+        if (!Multiplayer.Session.IsGameLoaded || GameMain.data == null) return;
+        if (!Multiplayer.Session.IsServer) { FlushConstructionStorage(); return; }
+        InitializeLoadedFactories();
+        if (GameMain.gameTick % 30 != 0) return;
+        diagnosticWaits.Observe("build-flight", awaitingLaunch.Count != 0 || revoking.Count != 0,
+            () => $"[build] awaitingLaunch={awaitingLaunch.Count} revoking={revoking.Count} claims={claims.All.Count()} tick={GameMain.gameTick}",
+            60, progress: awaitingLaunch.Count > 0 ? awaitingLaunch.First().Key.GetHashCode() : revoking.Count > 0 ? revoking.First().GetHashCode() : 0);
+        foreach (var entry in awaitingLaunch.ToArray())
+            if (GameMain.gameTick - entry.Value >= 120 && claims.TryGet(entry.Key.Planet, entry.Key.Target, out var claim) && claim.Generation == entry.Key.Generation)
+                BeginRevocation(claim);
+        // A dismantled/destroyed base may have lost its module before native recycling ran.
+        var activeByPlanet = new Dictionary<int, HashSet<(int Entity, int Target)>>();
+        foreach (var claim in claims.All.ToArray())
+        {
+            if (claim.OwnerKind != BuildOwnerKind.Base) continue;
+            var factory = GameMain.galaxy.PlanetById(claim.PlanetId)?.factory;
+            if (factory == null) continue;
+            if (!activeByPlanet.TryGetValue(claim.PlanetId, out var active))
+            {
+                activeByPlanet[claim.PlanetId] = active = new HashSet<(int Entity, int Target)>();
+                var drones = factory.constructionSystem.drones;
+                for (var id = 1; id < drones.cursor; id++)
+                {
+                    ref var drone = ref drones.buffer[id];
+                    if (drone.id != id || drone.owner <= 0 || drone.owner >= factory.constructionSystem.constructionModules.cursor || drone.stage == 0 || drone.stage == 4) continue;
+                    var module = factory.constructionSystem.constructionModules.buffer[drone.owner];
+                    if (module?.id != drone.owner) continue;
+                    foreach (var target in new[] { drone.targetObjectId, drone.nextTarget1ObjectId, drone.nextTarget2ObjectId, drone.nextTarget3ObjectId })
+                        if (target < 0) active.Add((module.entityId, -target));
+                }
+            }
+            if (!active.Contains((claim.OwnerId, claim.PrebuildId))) Release(claim, true);
+        }
+    }
+    private void BeginRevocation(BuildTargetClaim claim)
+    {
+        if (!revoking.Add((claim.PlanetId, claim.PrebuildId, claim.Generation))) return;
+        awaitingLaunch.Remove((claim.PlanetId, claim.PrebuildId, claim.Generation));
+        var factory = GameMain.galaxy.PlanetById(claim.PlanetId)?.factory;
+        var cancellation = new BuildTargetAssignmentPacket(claim, true, true);
+        if (factory != null) Multiplayer.Session.Network.SendPacketToStar(cancellation, factory.planet.star.id);
+        var owner = Multiplayer.Session.Server.Players.Get((ushort)claim.OwnerId);
+        if (owner != null && (factory == null || owner.Data.LocalStarId != factory.planet.star.id))
+            owner.Connection.SendPacket(cancellation);
+        Log.Debug($"[build] revoking flight planet={claim.PlanetId} target={claim.PrebuildId} generation={claim.Generation} owner={claim.OwnerId}");
+    }
+    public void HandleReply(ushort player, BuildTargetAssignmentReplyPacket packet)
+    {
+        if (!packet.Accepted && claims.TryGet(packet.PlanetId, packet.PrebuildId, out var claim) && claim.OwnerKind == BuildOwnerKind.Player &&
+            claim.OwnerId == player && claim.Generation == packet.Generation) BeginRevocation(claim);
+    }
+    public void HandleBaseReleaseAck(ushort player, BuildTargetBaseReleaseAckPacket packet)
+    {
+        if (!claims.TryGet(packet.PlanetId, packet.PrebuildId, out var claim) || claim.OwnerKind != BuildOwnerKind.Player ||
+            claim.OwnerId != player || claim.Generation != packet.Generation || !revoking.Contains((claim.PlanetId, claim.PrebuildId, claim.Generation))) return;
+        Release(claim, true);
+    }
+    private void Release(BuildTargetClaim claim, bool canceled)
+    {
+        if (!claims.Remove(claim.PlanetId, claim.PrebuildId, claim.Generation)) return;
+        awaitingLaunch.Remove((claim.PlanetId, claim.PrebuildId, claim.Generation)); revoking.Remove((claim.PlanetId, claim.PrebuildId, claim.Generation));
+        var factory = GameMain.galaxy.PlanetById(claim.PlanetId)?.factory;
+        if (factory == null) return;
+        ResetSite(factory, claim.PrebuildId);
+        if (canceled && Multiplayer.Session.IsServer && claim.OwnerKind == BuildOwnerKind.Player && claim.OwnerId != Multiplayer.Session.LocalPlayer.Id)
+            Multiplayer.Session.Drones.CancelRemoteBuildTarget(factory, (ushort)claim.OwnerId, claim.PrebuildId);
+        if (Multiplayer.Session.IsServer) Multiplayer.Session.Network.SendPacketToStar(new BuildTargetAssignmentPacket(claim, true, canceled), factory.planet.star.id);
+        if (IsReady(factory, claim.PrebuildId)) factory.constructionSystem.AddBuildTargetToModules(claim.PrebuildId, ref factory.prebuildPool[claim.PrebuildId].pos);
+    }
     public void ReceiveAssignment(BuildTargetAssignmentPacket packet)
     {
         if (Multiplayer.Session.IsServer || packet.PrebuildId <= 0 || packet.Generation <= 0) return;
-        var old = claims.TryGet(packet.PlanetId, packet.PrebuildId, out var previous) ? previous : default;
+        var factory = GameMain.galaxy.PlanetById(packet.PlanetId)?.factory;
         if (packet.Removed)
         {
-            if (packet.OwnerKind == BuildOwnerKind.Base)
-                pendingBaseAcks.Add((packet.PlanetId, packet.PrebuildId, packet.Generation));
-            if (packet.Canceled && old.OwnerKind == BuildOwnerKind.Player && old.Launched &&
-                old.OwnerId != Multiplayer.Session.LocalPlayer.Id)
-                Multiplayer.Session.Drones.CancelRemoteBuildTarget(
-                    GameMain.galaxy.PlanetById(packet.PlanetId)?.factory, (ushort)old.OwnerId,
-                    packet.PrebuildId);
-            if (claims.Remove(packet.PlanetId, packet.PrebuildId, packet.Generation))
+            var removed = claims.Remove(packet.PlanetId, packet.PrebuildId, packet.Generation);
+            if (packet.Canceled && packet.OwnerKind == BuildOwnerKind.Player && packet.OwnerId == Multiplayer.Session.LocalPlayer.Id)
             {
-                var removedFactory = GameMain.galaxy.PlanetById(packet.PlanetId)?.factory;
-                ResetLocalPrebuildClaim(removedFactory, packet.PrebuildId);
-                RefreshLocalQueue(removedFactory, old);
+                if (removed) CancelLocalFlight(factory, packet.PrebuildId);
+                Multiplayer.Session.Network.SendPacket(new BuildTargetBaseReleaseAckPacket(packet.PlanetId, packet.PrebuildId, packet.Generation));
             }
+            else if (packet.Canceled && packet.OwnerKind == BuildOwnerKind.Player && removed)
+                Multiplayer.Session.Drones.CancelRemoteBuildTarget(factory, (ushort)packet.OwnerId, packet.PrebuildId);
+            if (removed) { ResetSite(factory, packet.PrebuildId); RefreshFactoryQueues(factory); }
             return;
         }
-        var claim = packet.ToClaim();
-        if (!claims.Apply(claim)) return;
-        var factory = GameMain.galaxy.PlanetById(packet.PlanetId)?.factory;
+        if (!claims.Apply(packet.ToClaim()) || factory == null || packet.PrebuildId >= factory.prebuildCursor || factory.prebuildPool[packet.PrebuildId].id != packet.PrebuildId) return;
+        factory.prebuildPool[packet.PrebuildId].builderLaunched = true;
+        factory.constructionSystem.RemoveBuildTargetFromModules(packet.PrebuildId);
+    }
+    private void CancelLocalFlight(PlanetFactory factory, int target)
+    {
         if (factory == null) return;
-        if (old.Generation > 0) RefreshLocalQueue(factory, old);
-        RefreshLocalQueue(factory, claim);
-        if (claim.OwnerKind == BuildOwnerKind.Player && claim.OwnerId == Multiplayer.Session.LocalPlayer.Id &&
-            !claim.Launched)
+        var drones = factory.constructionSystem.drones;
+        for (var id = 1; id < drones.cursor; id++)
         {
-            var accepted = CanQueue(factory, GameMain.mainPlayer.mecha.constructionModule, claim.PrebuildId);
-            Multiplayer.Session.Network.SendPacket(new BuildTargetAssignmentReplyPacket(
-                claim.PlanetId, claim.PrebuildId, claim.Generation, accepted));
-            if (!accepted)
+            ref var drone = ref drones.buffer[id];
+            if (drone.id != id || drone.owner != 0 || !ConstructionFlight.Contains(drone.targetObjectId, drone.nextTarget1ObjectId, drone.nextTarget2ObjectId, drone.nextTarget3ObjectId, -target)) continue;
+            factory.constructionSystem.ResetDroneTargets(ref drone); drone.stage = 4; drone.movement = 0;
+        }
+    }
+    private static void ResetSite(PlanetFactory factory, int id)
+    {
+        if (factory == null || id <= 0 || id >= factory.prebuildCursor || factory.prebuildPool[id].id != id) return;
+        ref var site = ref factory.prebuildPool[id]; site.builderLaunched = false; site.builderModuleId = 0; site.builderValue = 0;
+    }
+    public void ReleaseLocalTarget(PlanetFactory factory, int id, ConstructionModuleComponent module)
+    {
+        if (factory == null || module == null || !claims.TryGet(factory.planetId, id, out var claim)) return;
+        if (claim.OwnerKind == BuildOwnerKind.Base ? module.entityId != claim.OwnerId : module.entityId != 0 || claim.OwnerId != Multiplayer.Session.LocalPlayer.Id) return;
+        if (Multiplayer.Session.IsServer) Release(claim, true);
+        else Multiplayer.Session.Network.SendPacket(new BuildTargetAssignmentReplyPacket(factory.planetId, id, claim.Generation, false));
+    }
+    public void ReleaseLocalPlayerTargets(int planet)
+    {
+        foreach (var claim in claims.All.ToArray())
+            if (claim.PlanetId == planet && claim.OwnerKind == BuildOwnerKind.Player && claim.OwnerId == Multiplayer.Session.LocalPlayer.Id)
             {
-                declinedLocally.Add((claim.PlanetId, claim.PrebuildId));
-                claims.Remove(claim.PlanetId, claim.PrebuildId, claim.Generation);
-                RefreshLocalQueue(factory, claim);
+                if (Multiplayer.Session.IsServer) Release(claim, true);
+                else Multiplayer.Session.Network.SendPacket(new BuildTargetAssignmentReplyPacket(planet, claim.PrebuildId, claim.Generation, false));
             }
-        }
     }
-
-    private void RefreshLocalQueue(PlanetFactory factory, BuildTargetClaim claim)
+    public void AbortLocalConstructionDrones(PlanetFactory factory)
     {
-        if (factory == null || claim.PrebuildId <= 0) return;
-        ConstructionModuleComponent module = null;
-        if (claim.OwnerKind == BuildOwnerKind.Player && claim.OwnerId == Multiplayer.Session.LocalPlayer.Id &&
-            GameMain.mainPlayer.factory == factory)
-            module = GameMain.mainPlayer.mecha.constructionModule;
-        else if (claim.OwnerKind == BuildOwnerKind.Base && claim.OwnerId > 0 &&
-                 claim.OwnerId < factory.entityCursor && factory.entityPool[claim.OwnerId].id == claim.OwnerId)
+        if (factory == null) return;
+        var drones = factory.constructionSystem.drones;
+        for (var id = 1; id < drones.cursor; id++)
         {
-            var moduleId = factory.entityPool[claim.OwnerId].constructionModuleId;
-            if (moduleId > 0 && moduleId < factory.constructionSystem.constructionModules.cursor)
-                module = factory.constructionSystem.constructionModules.buffer[moduleId];
+            ref var drone = ref drones.buffer[id];
+            if (drone.id != id || drone.owner != 0 || drone.stage == 0 || drone.stage == 4 ||
+                drone.targetObjectId >= 0 && drone.nextTarget1ObjectId >= 0 && drone.nextTarget2ObjectId >= 0 && drone.nextTarget3ObjectId >= 0) continue;
+            factory.constructionSystem.ResetDroneTargets(ref drone); drone.stage = 4; drone.movement = 0;
         }
-        if (module == null) return;
-        module.SearchBuildTargets(factory, GameMain.mainPlayer, true);
     }
-
-    private static void ResetLocalPrebuildClaim(PlanetFactory factory, int prebuildId)
+    public void TargetRemoved(PlanetFactory factory, int id)
     {
-        if (factory == null || prebuildId <= 0 || prebuildId >= factory.prebuildCursor ||
-            factory.prebuildPool[prebuildId].id != prebuildId) return;
-        ref var prebuild = ref factory.prebuildPool[prebuildId];
-        prebuild.builderLaunched = false;
-        prebuild.builderModuleId = 0;
-        prebuild.builderValue = 0f;
+        Instances.Remove(factory.planetId, id);
+        if (claims.TryGet(factory.planetId, id, out var claim))
+        {
+            claims.Remove(factory.planetId, id, claim.Generation);
+            awaitingLaunch.Remove((factory.planetId, id, claim.Generation)); revoking.Remove((factory.planetId, id, claim.Generation));
+        }
+        renderedRemoteLaunches.RemoveWhere(k => k.Planet == factory.planetId && k.Target == id);
     }
-
-    public byte[] ExportSnapshot(int planetId)
+    public void UpdateRemoteBuilder(ushort player, float area, int count, bool enabled, bool canLaunch)
     {
-        var entries = new List<BuildTargetClaim>();
-        foreach (var claim in claims.All)
-            if (claim.PlanetId == planetId &&
-                !baseRevocations.ContainsKey((claim.PlanetId, claim.PrebuildId, claim.Generation)))
-                entries.Add(claim);
-        return Instances.Export(GameMain.galaxy.PlanetById(planetId).factory,
-            BuildTargetClaimSnapshot.Export(entries, planetId));
+        if (Multiplayer.Session.IsServer) remoteBuilders[player] = new BuilderCapability(area, count, enabled, canLaunch, GameMain.gameTick);
     }
-
+    public void PlayerDied(ushort player)
+    {
+        remoteBuilders.Remove(player);
+        foreach (var key in offers.Keys.Where(k => k.Player == player).ToArray()) offers.Remove(key);
+        foreach (var claim in claims.All.ToArray())
+        {
+            if (claim.OwnerKind != BuildOwnerKind.Player || claim.OwnerId != player) continue;
+            if (Multiplayer.Session.IsServer) Release(claim, true);
+            else if (player == Multiplayer.Session.LocalPlayer.Id)
+                Multiplayer.Session.Network.SendPacket(new BuildTargetAssignmentReplyPacket(claim.PlanetId, claim.PrebuildId, claim.Generation, false));
+        }
+    }
+    public void PlayerLeft(ushort player)
+    {
+        remoteBuilders.Remove(player);
+        supplySequences.Remove(player);
+        foreach (var key in offerSequences.Keys.Where(k => k.Player == player).ToArray()) { offers.Remove(key); offerSequences.Remove(key); }
+        foreach (var claim in claims.All.ToArray()) if (claim.OwnerKind == BuildOwnerKind.Player && claim.OwnerId == player) Release(claim, true);
+    }
+    public void InitializeLoadedFactories()
+    {
+        if (!Multiplayer.Session.IsServer || GameMain.data == null) return;
+        for (var i = 0; i < GameMain.data.factoryCount; i++) SeedForSnapshot(GameMain.data.factories[i]);
+    }
+    public void SeedForSnapshot(PlanetFactory factory)
+    {
+        if (factory == null || !Multiplayer.Session.IsServer || !seededFactories.Add(factory)) return;
+        var drones = factory.constructionSystem.drones; var active = new HashSet<int>();
+        for (var i = 1; i < drones.cursor; i++)
+        {
+            ref var drone = ref drones.buffer[i];
+            if (drone.id != i || drone.stage == 0 || drone.stage == 4 || drone.owner < 0 || drone.owner >= factory.constructionSystem.constructionModules.cursor) continue;
+            var module = drone.owner == 0 ? null : factory.constructionSystem.constructionModules.buffer[drone.owner];
+            var kind = module == null ? BuildOwnerKind.Player : BuildOwnerKind.Base;
+            var owner = module == null ? Multiplayer.Session.LocalPlayer.Id : module.entityId;
+            foreach (var target in new[] { drone.targetObjectId, drone.nextTarget1ObjectId, drone.nextTarget2ObjectId, drone.nextTarget3ObjectId })
+                if (target < 0 && -target < factory.prebuildCursor && factory.prebuildPool[-target].id == -target && active.Add(-target))
+                {
+                    var claim = claims.Assign(factory.planetId, -target, kind, owner);
+                    claims.MarkLaunched(factory.planetId, -target, claim.Generation, kind, owner);
+                }
+        }
+        for (var id = 1; id < factory.prebuildCursor; id++) if (factory.prebuildPool[id].id == id && !active.Contains(id)) ResetSite(factory, id);
+        RefreshFactoryQueues(factory);
+    }
+    public byte[] ExportSnapshot(int planet) => Instances.Export(GameMain.galaxy.PlanetById(planet).factory,
+        BuildTargetClaimSnapshot.Export(claims.All.Where(c => c.PlanetId == planet), planet));
     public void ImportSnapshot(PlanetFactory factory, byte[] data)
     {
-        if (factory == null || data == null) return;
         var imported = BuildTargetClaimSnapshot.Import(Instances.Import(factory, data), factory.planetId, factory.prebuildCursor);
         claims.ClearPlanet(factory.planetId);
-        ClearQueuedTargets(factory);
-        foreach (var claim in imported)
-        {
-            var id = claim.PrebuildId;
-            if (id > 0 && id < factory.prebuildCursor && factory.prebuildPool[id].id == id)
-                claims.Apply(claim);
-        }
-        foreach (var claim in claims.All)
-            if (claim.PlanetId == factory.planetId && !claim.Launched) RefreshLocalQueue(factory, claim);
+        foreach (var claim in imported) if (claim.PrebuildId < factory.prebuildCursor && factory.prebuildPool[claim.PrebuildId].id == claim.PrebuildId) claims.Apply(claim);
+        RefreshFactoryQueues(factory);
     }
-
     public void RefreshFactoryQueues(PlanetFactory factory)
     {
         if (factory == null) return;
-        foreach (var claim in claims.All)
-            if (claim.PlanetId == factory.planetId && !claim.Launched) RefreshLocalQueue(factory, claim);
-    }
-
-    private static void ClearQueuedTargets(PlanetFactory factory)
-    {
-        var modules = factory.constructionSystem.constructionModules;
-        for (var i = 1; i < modules.cursor; i++)
+        if (Multiplayer.Session.IsServer)
         {
-            var module = modules.buffer[i];
-            if (module?.buildTargets == null) continue;
-            Array.Clear(module.buildTargets, 0, module.buildTargets.Length);
-            module.buildTargetTotalCount = 0;
+            var modules = factory.constructionSystem.constructionModules;
+            for (var id = 1; id < modules.cursor; id++) if (modules.buffer[id]?.id == id) modules.buffer[id].SearchBuildTargets(factory, GameMain.mainPlayer, true);
         }
-        if (GameMain.mainPlayer.factory == factory)
-        {
-            var module = GameMain.mainPlayer.mecha.constructionModule;
-            if (module.buildTargets != null) Array.Clear(module.buildTargets, 0, module.buildTargets.Length);
-            module.buildTargetTotalCount = 0;
-        }
+        if (GameMain.mainPlayer?.factory == factory) GameMain.mainPlayer.mecha.constructionModule.SearchBuildTargets(factory, GameMain.mainPlayer, true);
     }
-
     private readonly struct BuilderCapability
     {
-        public BuilderCapability(float buildArea, int droneCount, bool enabled, bool canLaunch)
-        {
-            BuildArea = buildArea;
-            DroneCount = droneCount;
-            Enabled = enabled;
-            CanLaunch = canLaunch;
-        }
-        public float BuildArea { get; }
-        public int DroneCount { get; }
-        public bool Enabled { get; }
-        public bool CanLaunch { get; }
+        public BuilderCapability(float range, int count, bool enabled, bool canLaunch, long tick)
+        { Range = float.IsNaN(range) || float.IsInfinity(range) ? 0 : Math.Max(0, Math.Min(range, 1000)); Count = Math.Max(0, Math.Min(count, 256)); Enabled = enabled; CanLaunch = canLaunch; Tick = tick; }
+        public readonly float Range;
+        public readonly int Count;
+        public readonly bool Enabled, CanLaunch;
+        public readonly long Tick;
     }
 }

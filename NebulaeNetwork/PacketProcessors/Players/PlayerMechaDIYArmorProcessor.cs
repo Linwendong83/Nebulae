@@ -45,13 +45,10 @@ internal class PlayerMechaDIYArmorProcessor : PacketProcessor<PlayerMechaDIYArmo
                 }
                 appearance.CopyTo(player.mecha.diyAppearance);
 
-                if (packet.DIYItemId.Length > 0)
+                player.mecha.diyItems.Clear();
+                for (var i = 0; i < packet.DIYItemId.Length; i++)
                 {
-                    player.mecha.diyItems.Clear();
-                    for (var i = 0; i < packet.DIYItemId.Length; i++)
-                    {
-                        player.mecha.diyItems.items[packet.DIYItemId[i]] = packet.DIYItemValue[i];
-                    }
+                    player.mecha.diyItems.items[packet.DIYItemId[i]] = packet.DIYItemValue[i];
                 }
 
                 if (editor == null)

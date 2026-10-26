@@ -36,6 +36,8 @@ internal sealed class CombatRecoveryView
         public int DeathCount;
         public double LaserCorrection, CorrectionPerTick;
         public long CorrectionTick, ChargingSince, LaserCapacity;
+        public double ShieldCorrection, ShieldCorrectionPerTick;
+        public long ShieldCorrectionTick, ShieldCapacity;
         public long? LocalRechargeTick;
         public bool DisplayCharging, ChargingTarget, Alive;
     }
@@ -54,6 +56,13 @@ internal sealed class CombatRecoveryView
         }
         if (entry.LaserCapacity != actual.laserEnergyCapacity)
             ResetPresentation(entry, actual, Now);
+        if (entry.ShieldCapacity != actual.energyShieldCapacity)
+        {
+            entry.ShieldCapacity = actual.energyShieldCapacity;
+            entry.ShieldCorrection = entry.ShieldCorrectionPerTick = 0;
+            entry.ShieldCorrectionTick = Now;
+            entry.Value.energyShieldEnergy = Math.Max(0, Math.Min(actual.energyShieldCapacity, entry.Value.energyShieldEnergy));
+        }
         return entry;
     }
     public Mecha Get(Mecha actual)
@@ -84,6 +93,9 @@ internal sealed class CombatRecoveryView
     private static void ResetPresentation(Entry entry, Mecha actual, long now)
     {
         entry.LaserCapacity = actual.laserEnergyCapacity;
+        entry.ShieldCapacity = actual.energyShieldCapacity;
+        entry.ShieldCorrection = entry.ShieldCorrectionPerTick = 0;
+        entry.ShieldCorrectionTick = now;
         entry.Alive = Alive(actual);
         entry.Presentation = null;
         entry.LaserCorrection = entry.CorrectionPerTick = 0;
@@ -124,6 +136,31 @@ internal sealed class CombatRecoveryView
         if (now - entry.ChargingSince >= PresentationCorrectionTicks) entry.DisplayCharging = entry.ChargingTarget;
         return entry.DisplayCharging;
     }
+    private static void CorrectShield(Entry entry, double correction, long now, Entry previous)
+    {
+        var rate = Math.Abs(correction) / PresentationCorrectionTicks;
+        if (correction != 0 && previous != null && Math.Sign(correction) == Math.Sign(previous.ShieldCorrection))
+            rate = Math.Max(rate, previous.ShieldCorrectionPerTick);
+        entry.ShieldCorrection = correction;
+        entry.ShieldCorrectionPerTick = rate;
+        entry.ShieldCorrectionTick = now;
+    }
+    private static void AdvanceShieldCorrection(Entry entry, long now, long gain = 0)
+    {
+        var amount = Math.Min(Math.Abs(entry.ShieldCorrection), entry.ShieldCorrectionPerTick * Math.Max(0, now - entry.ShieldCorrectionTick));
+        if (gain > 0) amount = Math.Min(amount, gain * .5);
+        entry.ShieldCorrection -= Math.Sign(entry.ShieldCorrection) * amount;
+        if (entry.ShieldCorrection == 0) entry.ShieldCorrectionPerTick = 0;
+        entry.ShieldCorrectionTick = now;
+    }
+    private static long PresentedShield(Entry entry, Mecha actual, long now)
+    {
+        if (!Alive(actual) || !actual.energyShieldRechargeEnabled || entry.Value.energyShieldRecoverCD > 0 ||
+            entry.Value.energyShieldEnergy >= actual.energyShieldCapacity || actual.coreEnergy <= entry.CoreSpent ||
+            now - entry.Baseline > PredictionHorizon)
+            AdvanceShieldCorrection(entry, now);
+        return (long)Math.Max(0, Math.Min(actual.energyShieldCapacity, entry.Value.energyShieldEnergy + entry.ShieldCorrection));
+    }
     public Mecha GetDisplay(Mecha actual)
     {
         var value = Get(actual);
@@ -132,7 +169,8 @@ internal sealed class CombatRecoveryView
         display.hp = value.hp;
         display.hpRecoverCD = value.hpRecoverCD;
         display.coreEnergy = value.coreEnergy;
-        display.energyShieldEnergy = value.energyShieldEnergy;
+        display.energyShieldEnergy = PresentedShield(entry, actual, Now);
+        display.energyShieldCapacity = actual.energyShieldCapacity;
         display.energyShieldRecoverCD = value.energyShieldRecoverCD;
         display.energyShieldRechargeCurrent = value.energyShieldRechargeCurrent;
         display.energyShieldResistHistory = value.energyShieldResistHistory;
@@ -151,6 +189,8 @@ internal sealed class CombatRecoveryView
         var continuous = sameLife && previous.LaserCapacity == actual.laserEnergyCapacity;
         var shownLaser = continuous ? PresentedLaser(previous, actual, now) : 0;
         var shownCharging = continuous && PresentedCharging(previous, now);
+        var continuousShield = sameLife && previous.ShieldCapacity == actual.energyShieldCapacity;
+        var shownShield = continuousShield ? PresentedShield(previous, actual, now) : 0;
         var localRecharge = sameLife ? previous.LocalRechargeTick : null;
         if (!sameLife) hits.Remove(actual);
         var entry = CreateEntry(actual, now, sameLife ? previous.LifeVersion : System.Threading.Interlocked.Increment(ref nextLifeVersion));
@@ -211,6 +251,8 @@ internal sealed class CombatRecoveryView
             entry.ChargingTarget = entry.Value.laserRecharging;
             entry.ChargingSince = previous.ChargingTarget == entry.ChargingTarget ? previous.ChargingSince : now;
         }
+        if (continuousShield && hostTick.HasValue && Math.Abs(now - baseline) <= PredictionHorizon && Alive(actual))
+            CorrectShield(entry, shownShield - entry.Value.energyShieldEnergy, now, previous);
     }
     public bool Absorb(Mecha actual, ref int damage)
     {
@@ -221,6 +263,8 @@ internal sealed class CombatRecoveryView
             if (!hits.TryGetValue(actual, out var pending)) hits[actual] = pending = new();
             pending.RemoveAll(x => Now - x.Tick > PredictionHorizon);
             pending.Add((Now, before - view.energyShieldEnergy, view.energyShieldRecoverCD));
+            if (view.energyShieldEnergy == 0)
+                entries[actual].ShieldCorrection = entries[actual].ShieldCorrectionPerTick = 0;
         }
         return result;
     }
@@ -228,7 +272,12 @@ internal sealed class CombatRecoveryView
     {
         var view = Get(actual);
         if (laser != 0) view.laserEnergy = Math.Max(0, Math.Min(actual.laserEnergyCapacity, view.laserEnergy - laser));
-        if (shield != 0) view.energyShieldEnergy = Math.Max(0, Math.Min(actual.energyShieldCapacity, view.energyShieldEnergy - shield));
+        if (shield != 0)
+        {
+            view.energyShieldEnergy = Math.Max(0, Math.Min(actual.energyShieldCapacity, view.energyShieldEnergy - shield));
+            if (shield > 0 && view.energyShieldEnergy == 0)
+                entries[actual].ShieldCorrection = entries[actual].ShieldCorrectionPerTick = 0;
+        }
         if (charging.HasValue)
         {
             view.laserRecharging = charging.Value;
@@ -243,8 +292,10 @@ internal sealed class CombatRecoveryView
         Get(actual);
         var entry = entries[actual];
         var shown = PresentedLaser(entry, actual, Now);
+        var shownShield = PresentedShield(entry, actual, Now);
         PresentedCharging(entry, Now);
         Spend(actual, -laser, -shield, -core);
+        if (shield != 0) CorrectShield(entry, shownShield - entry.Value.energyShieldEnergy, Now, entry);
         if (laser == 0) return;
         // A rejection is a network correction, not a new local firing action.
         // Restore its usable budget now while keeping the rendered bar continuous.
@@ -261,18 +312,21 @@ internal sealed class CombatRecoveryView
     {
         Get(actual);
         var e = entries[actual];
-        if (e.Tick == Now) return;
+        if (Now <= Math.Max(e.Tick, e.Baseline)) return;
         e.Tick = Now;
         // A lost connection must not manufacture unlimited usable shield/laser energy.
         if (Now - e.Baseline > PredictionHorizon)
         {
             AdvanceCorrection(e, Now);
+            AdvanceShieldCorrection(e, Now);
             return;
         }
         var charging = e.Value.laserRecharging;
         var laser = e.Value.laserEnergy;
+        var shield = e.Value.energyShieldEnergy;
         Recover(actual, e, dt);
         AdvanceCorrection(e, Now, Math.Max(0, e.Value.laserEnergy - laser));
+        AdvanceShieldCorrection(e, Now, Math.Max(0, e.Value.energyShieldEnergy - shield));
         if (charging != e.Value.laserRecharging)
         {
             e.DisplayCharging = e.ChargingTarget = e.Value.laserRecharging;

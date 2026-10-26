@@ -3,7 +3,6 @@
 using NebulaeModel.Networking;
 using NebulaeModel.Packets;
 using NebulaeModel.Packets.Planet;
-using NebulaeModel.Packets.Players;
 using NebulaeWorld;
 using UnityEngine;
 

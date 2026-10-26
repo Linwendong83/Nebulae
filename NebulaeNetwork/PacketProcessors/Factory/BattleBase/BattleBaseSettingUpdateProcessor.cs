@@ -13,6 +13,7 @@ internal class BattleBaseSettingUpdateProcessor : PacketProcessor<BattleBaseSett
 {
     protected override void ProcessPacket(BattleBaseSettingUpdatePacket packet, NebulaeConnection conn)
     {
+        if (packet.Event == BattleBaseSettingEvent.ChangeFleetConfig && Multiplayer.Session.Authority.IsActive) return;
         var factory = GameMain.galaxy.PlanetById(packet.PlanetId)?.factory;
         if (IsHost && factory != null)
         {

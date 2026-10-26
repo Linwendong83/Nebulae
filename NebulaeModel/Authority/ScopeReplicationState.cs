@@ -40,7 +40,7 @@ internal enum ScopeEventKind : byte
 internal readonly struct ScopeEvent
 {
     public ScopeEvent(long logSequence, ScopeEventKind kind, in ObjectKey key, long revision, long hostTick,
-        byte[] state, long declaredBaselineId, ReplicationInterest interest = default)
+        byte[] state, ReplicationInterest interest = default)
     {
         LogSequence = logSequence;
         Kind = kind;
@@ -48,7 +48,6 @@ internal readonly struct ScopeEvent
         Revision = revision;
         HostTick = hostTick;
         State = state;
-        DeclaredBaselineId = declaredBaselineId;
         Interest = interest;
     }
 
@@ -66,8 +65,6 @@ internal readonly struct ScopeEvent
     /// <summary>Canonical state bytes for <see cref="ScopeEventKind.State"/> events; null otherwise.</summary>
     public byte[] State { get; }
 
-    /// <summary>Baseline the event is an increment of. 0 before the first baseline.</summary>
-    public long DeclaredBaselineId { get; }
     public ReplicationInterest Interest { get; }
 }
 
@@ -143,8 +140,6 @@ internal sealed class SubscriberCursor
     /// </summary>
     public long StartLogSequence;
 
-    /// <summary>Highest stream sequence the subscriber reported applying. Diagnostics.</summary>
-    public long ClientAppliedSequence;
 }
 
 /// <summary>
@@ -180,24 +175,14 @@ internal sealed class ScopeReplicationState
         if (!epoch.IsValid) throw new ArgumentException("ScopeReplicationState needs a valid epoch.", nameof(epoch));
         if (logCapacity <= 0) throw new ArgumentOutOfRangeException(nameof(logCapacity));
         Scope = scope;
-        Epoch = epoch;
         this.logCapacity = logCapacity;
         log = new Queue<ScopeEvent>(logCapacity);
     }
 
     public ScopeKey Scope { get; }
 
-    public AuthorityEpoch Epoch { get; }
-
     /// <summary>The member table: the last published record of every live member.</summary>
     public Dictionary<ObjectKey, HostMemberRecord> Members { get; } = new();
-
-    /// <summary>
-    /// Baseline most recently minted for this scope. Bookkeeping only: what a subscriber's packets
-    /// declare is that subscriber's own <see cref="SubscriberCursor.BaselineId"/>, because two
-    /// subscribers of one scope can sit on different baselines without either being wrong.
-    /// </summary>
-    public long BaselineId { get; set; }
 
     /// <summary>Log position of the first retained event; events before it were evicted.</summary>
     public long FirstLogSequence { get; private set; } = 1;
@@ -206,8 +191,6 @@ internal sealed class ScopeReplicationState
     public long NextLogSequence { get; private set; } = 1;
 
     public int LogCount => log.Count;
-
-    public int SubscriberCount => subscribers.Count;
 
     /// <summary>Appends one event and evicts the oldest when the log outgrows its capacity.</summary>
     public void Append(in ScopeEvent @event)

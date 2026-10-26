@@ -22,3 +22,28 @@ internal static class FleetLaunchStar_Patch
         return codes;
     }
 }
+
+[HarmonyPatch]
+internal static class FleetDiscoveryScope_Patch
+{
+    [HarmonyTranspiler, HarmonyPatch(typeof(CombatModuleComponent), nameof(CombatModuleComponent.GameTick))]
+    private static IEnumerable<CodeInstruction> Tick(IEnumerable<CodeInstruction> instructions) =>
+        Replace(instructions, nameof(GameMain.localPlanet), nameof(CombatAuthorityManager.CasterPlanet), 1);
+
+    [HarmonyTranspiler, HarmonyPatch(typeof(CombatModuleComponent), nameof(CombatModuleComponent.DiscoverSpaceEnemy))]
+    private static IEnumerable<CodeInstruction> Discover(IEnumerable<CodeInstruction> instructions) =>
+        Replace(instructions, nameof(GameMain.localStar), nameof(CombatAuthorityManager.CasterStar), 2);
+
+    private static IEnumerable<CodeInstruction> Replace(IEnumerable<CodeInstruction> instructions, string property, string method, int expected)
+    {
+        var count = 0;
+        var getter = AccessTools.PropertyGetter(typeof(GameMain), property);
+        foreach (var code in instructions)
+        {
+            if (code.Calls(getter))
+            { code.opcode = OpCodes.Call; code.operand = AccessTools.Method(typeof(CombatAuthorityManager), method); count++; }
+            yield return code;
+        }
+        if (count != expected) throw new InvalidOperationException("Fleet discovery scope reads changed: " + property + " " + count);
+    }
+}

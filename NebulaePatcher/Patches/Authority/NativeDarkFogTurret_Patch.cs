@@ -14,8 +14,14 @@ internal static class NativeDarkFogTurret_Patch
     internal static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
     {
         var sailing = AccessTools.PropertyGetter(typeof(Player), nameof(Player.sailing));
+        var aim = AccessTools.Method(typeof(DFSTurretComponent), nameof(DFSTurretComponent.GetAimTargetDir));
         foreach (var code in instructions)
         {
+            if (code.Calls(aim))
+            {
+                code.opcode = OpCodes.Call;
+                code.operand = AccessTools.Method(typeof(SpaceTurretPlayerInput_Patch), nameof(SpaceTurretPlayerInput_Patch.Aim));
+            }
             if (code.Calls(sailing))
             {
                 yield return new CodeInstruction(OpCodes.Ldarg_0).MoveLabelsFrom(code).MoveBlocksFrom(code);

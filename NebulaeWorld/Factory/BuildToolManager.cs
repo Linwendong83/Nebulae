@@ -134,6 +134,7 @@ internal class BuildToolManager : IDisposable
                         string.Format("(Desync) PrebuildId mismatch {0} != {1} on planet {2}. Please reconnect!".Translate(), packet.PrebuildId, Multiplayer.Session.Factories.GetNextPrebuildId(planet.factory), planet.displayName);
                     Log.Warn(warningText);
                     WarningManager.DisplayTemporaryWarning(warningText, 15000);
+                    return;
                 }
             }
             else

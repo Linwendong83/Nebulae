@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using NebulaeModel.Networking;
+using NebulaeModel.Logger;
 using NebulaeModel.Packets.Session;
 
 #endregion
@@ -67,9 +68,16 @@ internal class GameStatesManager : IDisposable
     public static int FragmentSize { get; set; }
 
     // UPS syncing by GameStateUpdate packet
-    private float averageUPS = 60f;
-    private int averageRTT;
+    private float serverUPS = 60f;
     private bool hasClockSample;
+    private long lastClockTick;
+    private long lastClockRequestTime;
+    private double lastClockCorrectionTime;
+    private bool clockCorrectionActive;
+    private float lastClockSpeed = 1f;
+    internal const double ClockCorrectionLeaseSeconds = 3;
+    internal Func<double> ClockTime { get; set; } = () => Diagnostics.Now;
+    private double ClockNow => ClockTime?.Invoke() ?? Diagnostics.Now;
 
     // Store data get from GlobalGameDataResponse
     private bool sandboxToolsEnabled;
@@ -101,6 +109,7 @@ internal class GameStatesManager : IDisposable
 
     public void Dispose()
     {
+        hasClockSample = clockCorrectionActive = false;
         preservedFeatureKeys.Clear();
         preservedTutorialUnlocked.Clear();
 
@@ -117,52 +126,67 @@ internal class GameStatesManager : IDisposable
 
     public float GetServerUPS()
     {
-        return averageUPS;
+        return serverUPS;
     }
 
-    public void ProcessGameStateUpdatePacket(long sentTime, long gameTick, float unitsPerSecond, float simSpeed)
+    public void ProcessGameStateUpdatePacket(long sentTime, long gameTick, float unitsPerSecond, float simSpeed,
+        double queuedSeconds = 0)
     {
-        var rtt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - sentTime;
-        if (rtt < 0 || unitsPerSecond <= 0 || float.IsNaN(unitsPerSecond) || float.IsInfinity(unitsPerSecond)) return;
-        // Accept the first clock observation before applying an outlier threshold.
-        if (!hasClockSample)
-        {
-            averageRTT = (int)Math.Min(int.MaxValue, rtt);
-            averageUPS = unitsPerSecond;
-            hasClockSample = true;
-        }
-        averageRTT = (int)(averageRTT * 0.8 + rtt * 0.2);
-        averageUPS = averageUPS * 0.8f + unitsPerSecond * 0.2f;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (sentTime <= 0 || sentTime > now || gameTick < 0 || unitsPerSecond <= 0 ||
+            float.IsNaN(unitsPerSecond) || float.IsInfinity(unitsPerSecond) ||
+            float.IsNaN(simSpeed) || float.IsInfinity(simSpeed) || simSpeed < 0.1f || simSpeed > 8f) return;
+        // A delayed duplicate cannot replace a newer host observation or renew its correction.
+        if (hasClockSample && (gameTick < lastClockTick ||
+            gameTick == lastClockTick && sentTime <= lastClockRequestTime)) return;
+        var rttSeconds = (now - sentTime) / 1000d;
+        hasClockSample = true;
+        lastClockTick = gameTick;
+        lastClockRequestTime = sentTime;
+        // A real host slowdown must take effect now. Rejecting it as a rate outlier lets the
+        // client run ahead for several seconds and then crawl while the host catches up.
+        serverUPS = unitsPerSecond;
+        lastClockSpeed = simSpeed;
 
         // The host reports the world sim speed it dialed in with the outer-space UIUPSTool.
         // Adopting it keeps our Time.fixedDeltaTime in step with the host's clock and the
         // vanilla speed readout honest; the vanilla tool lerps toward its own target, so the
         // target is re-aimed as well to stop the two from fighting.
-        var speed = simSpeed > 0.05f ? simSpeed : 1f;
-        ApplyWorldSimSpeed(speed);
-
-        // We offset the tick received to account for the time it took to receive the packet
-        var tickOffsetSinceSent = (long)Math.Round(unitsPerSecond * rtt / 2 / 1000);
-        var currentGameTick = gameTick + tickOffsetSinceSent;
-        var diff = currentGameTick - GameMain.gameTick;
-
-        // Saving or a delayed response can produce an obsolete clock observation.
-        if (rtt > 2 * averageRTT || averageUPS - unitsPerSecond > 15)
+        ApplyWorldSimSpeed(simSpeed);
+        var factor = IsSimulateSpeedActive(simSpeed) ? simSpeed : 1f;
+        var diff = 0d;
+        if (rttSeconds <= ClockCorrectionLeaseSeconds)
         {
-            return;
+            // The host sampled after our request and before this reply reached the receive
+            // queue. Only the local queue age is known; RTT/2 is not a measured one-way delay.
+            // Adjust phase only outside that interval, with one tick for integer quantization.
+            if (double.IsNaN(queuedSeconds) || double.IsInfinity(queuedSeconds)) queuedSeconds = 0;
+            queuedSeconds = Math.Max(0, Math.Min(rttSeconds, queuedSeconds));
+            var earliest = gameTick + unitsPerSecond * queuedSeconds;
+            var latest = gameTick + unitsPerSecond * rttSeconds;
+            var local = (double)GameMain.gameTick;
+            if (local < earliest - 1) diff = earliest - 1 - local;
+            else if (local > latest + 1) diff = latest + 1 - local;
         }
-
-        // Catch up by executing native simulation steps. Changing gameTick here would skip
-        // production, movement and event processing without advancing their actual state.
-        var factor = speedFactor();
-        var fixUps = ComputeFixUPS(diff, averageUPS, factor);
+        // Old replies can still report the host's rate, but cannot justify a large phase
+        // correction. Advance through native steps; never skip or rewind the simulation clock.
+        var fixUps = ComputeFixUPS((float)diff, serverUPS, factor);
+        clockCorrectionActive = fixUps != ComputeFixUPS(0, serverUPS, factor);
+        lastClockCorrectionTime = ClockNow;
         FPSController.SetFixUPS(fixUps);
+    }
 
-        // Multiplayer applies the shared factor to all running peers, including the headless host.
-        float speedFactor()
-        {
-            return IsSimulateSpeedActive(speed) ? speed : 1f;
-        }
+    /// <summary>Expire a phase correction on the render/network loop, independently of local UPS.</summary>
+    public void ServiceClock()
+    {
+        if (!hasClockSample || !clockCorrectionActive || Multiplayer.Session?.WorldPaused == true ||
+            ClockNow - lastClockCorrectionTime < ClockCorrectionLeaseSeconds) return;
+        clockCorrectionActive = false;
+        var speed = Multiplayer.Session?.WorldSimSpeed ?? lastClockSpeed;
+        if (speed < 0.1f || speed > 8f || float.IsNaN(speed)) speed = lastClockSpeed;
+        var factor = IsSimulateSpeedActive(speed) ? speed : 1f;
+        FPSController.SetFixUPS(ComputeFixUPS(0, serverUPS, factor));
+        Diagnostics.Warn("clock:correction-expired", () => $"[clock] phase correction expired; following last host rate={serverUPS:F2} UPS until a new sample arrives");
     }
 
     private static bool IsSimulateSpeedActive(float speed)
@@ -197,9 +221,9 @@ internal class GameStatesManager : IDisposable
     ///     Adjusts the execution rate without inventing or rewinding simulation ticks.
     ///     FPSController applies speedFactor to this rate while sailing.
     /// </summary>
-    internal static float ComputeFixUPS(float diff, float averageUPS, float speedFactor)
+    internal static float ComputeFixUPS(float diff, float hostUPS, float speedFactor)
     {
-        return Math.Max(MinUPS, Math.Min(MaxUPS, (diff + averageUPS) / speedFactor));
+        return Math.Max(MinUPS, Math.Min(MaxUPS, (diff + hostUPS) / speedFactor));
     }
 
     public void ImportGlobalGameData(GlobalGameDataResponse packet)
@@ -481,6 +505,7 @@ internal class GameStatesManager : IDisposable
     internal void InstallWorldClock(GameData data = null)
     {
         if (initialSimulationTick < 0) return;
+        hasClockSample = clockCorrectionActive = false;
         GameMain.gameTick = initialSimulationTick;
         initialSimulationTick = -1;
         // New clients generate orbital poses at t=0. Pose and clock must agree before

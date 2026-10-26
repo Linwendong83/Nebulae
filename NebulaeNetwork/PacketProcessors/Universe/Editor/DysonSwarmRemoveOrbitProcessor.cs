@@ -22,6 +22,13 @@ internal class DysonSwarmRemoveOrbitProcessor : PacketProcessor<DysonSwarmRemove
         {
             return;
         }
+        if (packet.Event == SwarmRemoveOrbitEvent.RemoveSails)
+        {
+            if (packet.OrbitId == 0) return; // Compaction is local maintenance, never a remote command.
+            if (packet.OrbitId != -1 && !sphere.swarm.OrbitExist(packet.OrbitId)) return;
+        }
+        else if (packet.Event != SwarmRemoveOrbitEvent.MakeSailsEternal &&
+                 (packet.OrbitId < 1 || packet.OrbitId > 20 || !sphere.swarm.OrbitExist(packet.OrbitId))) return;
         using (Multiplayer.Session.DysonSpheres.IncomingDysonSwarmPacket.On())
         {
             switch (packet.Event)

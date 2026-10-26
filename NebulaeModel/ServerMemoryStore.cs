@@ -160,7 +160,7 @@ internal sealed class ServerMemoryStore
                 using var stream = File.OpenRead(candidate);
                 return new DataContractJsonSerializer(typeof(T)).ReadObject(stream) as T;
             }
-            catch (Exception e) { Log.Warn($"Could not load {candidate}: {e.Message}"); }
+            catch (Exception e) { Log.Warn($"Could not load {candidate}: {e}"); }
         }
         return null;
     }

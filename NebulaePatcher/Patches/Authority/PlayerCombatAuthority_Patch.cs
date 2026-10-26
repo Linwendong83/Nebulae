@@ -127,15 +127,24 @@ internal static class PlayerCombatAuthority_Patch
     public static bool CombatModuleTick_Prefix() => !Client;
 
     [HarmonyPrefix]
+    [HarmonyPatch(typeof(CombatModuleComponent), nameof(CombatModuleComponent.RemoveFleetDirectly))]
+    public static bool RemoveFleetDirectly_Prefix() => !Client;
+
+    [HarmonyPrefix]
     [HarmonyPatch(typeof(Mecha), nameof(Mecha.TickAmmoFireCondition))]
     [HarmonyPatch(typeof(Mecha), nameof(Mecha.TickLaserFireCondition))]
-    public static void FireClock_Prefix(Mecha __instance, out PlayerWeaponResources.Scope __state) =>
-        __state = Client && !PlayerWeaponResources.Active ? Multiplayer.Session.PlayerWeapons.Resources.Enter(__instance) : null;
+    public static void FireClock_Prefix(Mecha __instance, out PlayerWeaponResources.Scope __state)
+    {
+        __state = null;
+        if (!Client || PlayerWeaponResources.Active) return;
+        Multiplayer.Session.CombatAuthority.SendSettings(GameMain.gameTick, immediate: true);
+        __state = Multiplayer.Session.PlayerWeapons.Resources.Enter(__instance);
+    }
 
     [HarmonyPrefix, HarmonyPatch(typeof(PlayerAction_Combat), "GameTickBombing")]
     [HarmonyPatch(typeof(PlayerAction_Combat), "GameTickShieldBurst")]
     public static void BombClock_Prefix(PlayerAction_Combat __instance, out PlayerWeaponResources.Scope __state) =>
-        __state = Client && !PlayerWeaponResources.Active ? Multiplayer.Session.PlayerWeapons.Resources.Enter(__instance.mecha) : null;
+        FireClock_Prefix(__instance.mecha, out __state);
 
     [HarmonyFinalizer]
     [HarmonyPatch(typeof(Mecha), nameof(Mecha.TickAmmoFireCondition))]

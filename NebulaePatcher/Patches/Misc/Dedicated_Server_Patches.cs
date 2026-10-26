@@ -2,8 +2,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Reflection.Emit;
 using System.Threading;
 using HarmonyLib;
 using NebulaeModel;
@@ -170,46 +168,6 @@ internal class Dedicated_Server_Patches
     public static bool ComputeBuffer_Prefix()
     {
         return false;
-    }
-
-    [HarmonyTranspiler]
-    [HarmonyPatch(typeof(DysonSwarm), nameof(DysonSwarm.GameTick))]
-    private static IEnumerable<CodeInstruction> DysonSwarmGameTick_Transpiler(IEnumerable<CodeInstruction> instructions)
-    {
-        // Remove first part of the functions about computeShader
-        // (this.computeShader.Set..., this.Dispatch_UpdateVel, this.Dispatch_UpdatePos)
-        var codeInstructions = instructions as CodeInstruction[] ?? instructions.ToArray();
-        try
-        {
-            var matcher = new CodeMatcher(codeInstructions)
-                .MatchForward(false,
-                    new CodeMatch(OpCodes.Call, AccessTools.Method(typeof(DysonSwarm), nameof(DysonSwarm.Dispatch_UpdatePos))));
-            var num = matcher.Pos + 1;
-            matcher.Start()
-                .RemoveInstructions(num);
-            return matcher.InstructionEnumeration();
-        }
-        catch
-        {
-            Log.Error("DysonSwarmGameTick_Transpiler failed. Mod version not compatible with game version.");
-            return codeInstructions;
-        }
-    }
-
-    [HarmonyPrefix]
-    [HarmonyPatch(typeof(DysonSwarm), nameof(DysonSwarm.SetSailCapacity))]
-    public static void DysonSwarmSetSailCapacity_Prefix(DysonSwarm __instance)
-    {
-        // Skip the part of computeShader in if (this.swarmBuffer != null)
-        // (this.computeShader.SetBuffer(...), this.Dispatch_BlitBuffer())
-        if (__instance.swarmBuffer == null)
-        {
-            return;
-        }
-        __instance.swarmBuffer.Release();
-        __instance.swarmInfoBuffer.Release();
-        __instance.swarmBuffer = null;
-        __instance.swarmInfoBuffer = null;
     }
 
 

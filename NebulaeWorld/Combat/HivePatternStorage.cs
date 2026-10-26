@@ -254,7 +254,16 @@ internal static class HivePatternStorage
         lock (importGate)
         {
             importScheduler ??= new ConcurrentExclusiveSchedulerPair(TaskScheduler.Default, Math.Min(8, Environment.ProcessorCount));
-            var job = Task.Factory.StartNew(() => Compact(hive), CancellationToken.None, TaskCreationOptions.None, importScheduler.ConcurrentScheduler);
+            var job = Task.Factory.StartNew(() =>
+            {
+                try { Compact(hive); }
+                catch (Exception error)
+                {
+                    NebulaeModel.Logger.Diagnostics.Error("hive:import:" + hive.hiveAstroId,
+                        () => $"[hive] background import failed hive={hive.hiveAstroId} star={hive.starData?.id} realized={hive.realized} preview={hive.isPreview}", error);
+                    throw;
+                }
+            }, CancellationToken.None, TaskCreationOptions.None, importScheduler.ConcurrentScheduler);
             importJobs.Remove(hive); importJobs.Add(hive, job); imports.Add(job);
             Volatile.Write(ref importCount, imports.Count);
         }

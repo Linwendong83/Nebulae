@@ -13,6 +13,9 @@ namespace NebulaeModel.DataStructures
         int AmmoInc { get; set; }
         int AmmoBulletCount { get; set; }
         int AmmoSelectSlot { get; set; }
+        int AmmoSelectSlotState { get; set; }
+        int LaserActiveState { get; set; }
+        bool BombActive { get; set; }
         int AmmoMuzzleFire { get; set; }
         int AmmoRoundFire { get; set; }
         int AmmoMuzzleIndex { get; set; }

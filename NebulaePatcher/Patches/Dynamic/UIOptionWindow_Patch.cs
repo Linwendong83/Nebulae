@@ -206,6 +206,12 @@ internal class UIOptionWindow_Patch
             Log.Error($"Failed to add multiplayer options: {ex}");
         }
 
+        // Cloned game controls may carry their own hover tips.
+        foreach (var button in contentContainer.GetComponentsInChildren<UIButton>(true))
+        {
+            button.tips.corner = 0;
+        }
+
         contentContainer.sizeDelta = new Vector2(contentContainer.sizeDelta.x, TopPadding + RowHeight * visibleRows + 20f);
     }
 
@@ -289,7 +295,6 @@ internal class UIOptionWindow_Patch
             try
             {
                 var displayAttr = prop.GetCustomAttribute<DisplayNameAttribute>();
-                var descriptionAttr = prop.GetCustomAttribute<DescriptionAttribute>();
                 if (displayAttr == null)
                 {
                     continue;
@@ -297,24 +302,24 @@ internal class UIOptionWindow_Patch
 
                 if (prop.PropertyType == typeof(bool))
                 {
-                    CreateBooleanControl(displayAttr, descriptionAttr, prop, row, container);
+                    CreateBooleanControl(displayAttr, prop, row, container);
                 }
                 else if (prop.PropertyType == typeof(int) || prop.PropertyType == typeof(float) ||
                          prop.PropertyType == typeof(ushort))
                 {
-                    CreateNumberControl(displayAttr, descriptionAttr, prop, row, container);
+                    CreateNumberControl(displayAttr, prop, row, container);
                 }
                 else if (prop.PropertyType == typeof(string))
                 {
-                    CreateStringControl(displayAttr, descriptionAttr, prop, row, container);
+                    CreateStringControl(displayAttr, prop, row, container);
                 }
                 else if (prop.PropertyType.IsEnum)
                 {
-                    CreateEnumControl(displayAttr, descriptionAttr, prop, row, container);
+                    CreateEnumControl(displayAttr, prop, row, container);
                 }
                 else if (prop.PropertyType == typeof(KeyboardShortcut))
                 {
-                    CreateHotkeyControl(displayAttr, descriptionAttr, prop, row, container);
+                    CreateHotkeyControl(displayAttr, prop, row, container);
                 }
                 else
                 {
@@ -332,7 +337,7 @@ internal class UIOptionWindow_Patch
         return row;
     }
 
-    private static RectTransform CreateRowBase(Transform container, int row, string labelText, DescriptionAttribute descriptionAttr)
+    private static RectTransform CreateRowBase(Transform container, int row, string labelText)
     {
         var rowGo = new GameObject("row", typeof(RectTransform));
         var rowRect = rowGo.GetComponent<RectTransform>();
@@ -342,13 +347,6 @@ internal class UIOptionWindow_Patch
         rowRect.pivot = new Vector2(0, 1);
         rowRect.sizeDelta = new Vector2(0, RowHeight);
         rowRect.anchoredPosition = new Vector2(0, -(TopPadding + row * RowHeight));
-
-        if (descriptionAttr != null)
-        {
-            var tooltip = rowGo.AddComponent<Tooltip>();
-            tooltip.Title = labelText;
-            tooltip.Text = descriptionAttr.Description;
-        }
 
         // Add label
         var label = Object.Instantiate(labelTemplate, rowRect, false);
@@ -430,10 +428,10 @@ internal class UIOptionWindow_Patch
         controlRect.sizeDelta = new Vector2(width, height);
     }
 
-    private static void CreateBooleanControl(DisplayNameAttribute control, DescriptionAttribute descriptionAttr,
+    private static void CreateBooleanControl(DisplayNameAttribute control,
         PropertyInfo prop, int rowIdx, Transform container)
     {
-        var row = CreateRowBase(container, rowIdx, control.DisplayName, descriptionAttr);
+        var row = CreateRowBase(container, rowIdx, control.DisplayName);
         row.name = prop.Name;
 
         var controlObj = Object.Instantiate(checkboxTemplate, row, false);
@@ -463,10 +461,10 @@ internal class UIOptionWindow_Patch
         }
     }
 
-    private static void CreateNumberControl(DisplayNameAttribute control, DescriptionAttribute descriptionAttr,
+    private static void CreateNumberControl(DisplayNameAttribute control,
         PropertyInfo prop, int rowIdx, Transform container)
     {
-        var row = CreateRowBase(container, rowIdx, control.DisplayName, descriptionAttr);
+        var row = CreateRowBase(container, rowIdx, control.DisplayName);
         row.name = prop.Name;
 
         var rangeAttr = prop.GetCustomAttribute<UIRangeAttribute>();
@@ -566,10 +564,10 @@ internal class UIOptionWindow_Patch
         }
     }
 
-    private static void CreateStringControl(DisplayNameAttribute control, DescriptionAttribute descriptionAttr,
+    private static void CreateStringControl(DisplayNameAttribute control,
         PropertyInfo prop, int rowIdx, Transform container)
     {
-        var row = CreateRowBase(container, rowIdx, control.DisplayName, descriptionAttr);
+        var row = CreateRowBase(container, rowIdx, control.DisplayName);
         row.name = prop.Name;
 
         var contentTypeAttr = prop.GetCustomAttribute<UIContentTypeAttribute>();
@@ -609,10 +607,10 @@ internal class UIOptionWindow_Patch
         input.text = prop.GetValue(tempMultiplayerOptions, null) as string ?? string.Empty;
     }
 
-    private static void CreateEnumControl(DisplayNameAttribute control, DescriptionAttribute descriptionAttr, PropertyInfo prop,
+    private static void CreateEnumControl(DisplayNameAttribute control, PropertyInfo prop,
         int rowIdx, Transform container)
     {
-        var row = CreateRowBase(container, rowIdx, control.DisplayName, descriptionAttr);
+        var row = CreateRowBase(container, rowIdx, control.DisplayName);
         row.name = prop.Name;
 
         var comboObj = Object.Instantiate(comboBoxTemplate, row, false);
@@ -643,10 +641,10 @@ internal class UIOptionWindow_Patch
         combo.itemIndex = (int)prop.GetValue(tempMultiplayerOptions, null);
     }
 
-    private static void CreateHotkeyControl(DisplayNameAttribute control, DescriptionAttribute descriptionAttr,
+    private static void CreateHotkeyControl(DisplayNameAttribute control,
         PropertyInfo prop, int rowIdx, Transform container)
     {
-        var row = CreateRowBase(container, rowIdx, control.DisplayName, descriptionAttr);
+        var row = CreateRowBase(container, rowIdx, control.DisplayName);
         row.name = prop.Name;
 
         var entryPrefab = UIRoot.instance != null ? UIRoot.instance.optionWindow?.entryPrefab : null;
@@ -671,34 +669,6 @@ internal class UIOptionWindow_Patch
         };
 
         keyBinder.SetShortcut(current);
-    }
-
-    public class Tooltip : MonoBehaviour, IPointerEnterHandler, IPointerExitHandler
-    {
-        public string Title;
-        public string Text;
-        private UIButtonTip tip;
-
-        public void OnDisable()
-        {
-            if (tip != null)
-            {
-                Destroy(tip.gameObject);
-            }
-        }
-
-        public void OnPointerEnter(PointerEventData eventData)
-        {
-            tip = UIButtonTip.Create(true, Title.Translate(), Text.Translate(), 2, new Vector2(0, 0), 508, gameObject.transform, "", "");
-        }
-
-        public void OnPointerExit(PointerEventData eventData)
-        {
-            if (tip != null)
-            {
-                Destroy(tip.gameObject);
-            }
-        }
     }
 
     public class KeyBinder : MonoBehaviour

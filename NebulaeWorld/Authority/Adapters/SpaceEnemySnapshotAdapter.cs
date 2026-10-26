@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using NebulaeModel.Authority;
 using NebulaeModel.Logger;
 using NebulaeModel.Packets.Authority;
-using NebulaeWorld.Combat;
 
 #endregion
 

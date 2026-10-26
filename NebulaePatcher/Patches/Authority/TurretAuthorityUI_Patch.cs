@@ -85,7 +85,12 @@ internal static class TurretAuthorityUI_Patch
             var needs = ItemProto.turretNeeds[(uint)turret.ammoType];
             if (needs == null || Array.IndexOf(needs, item) < 0 || turret.itemId != 0 && turret.itemId != item) return false;
             var amount = player.package.AddItemStacked(item, player.inhandItemCount, player.inhandItemInc, out var remainingInc);
-            player.SetHandItems(item, player.inhandItemCount - amount, remainingInc);
+            // SetHandItems returns the old hand stack to the package before picking a new one.
+            // It would credit this stack twice; its third argument is a grid index, not inc.
+            var remainingCount = player.inhandItemCount - amount;
+            player.SetHandItemId_Unsafe(remainingCount > 0 ? item : 0);
+            player.SetHandItemCount_Unsafe(remainingCount);
+            player.SetHandItemInc_Unsafe(remainingInc);
             Multiplayer.Session.Turrets.Deposit(__instance.factory.planetId, __instance.turretId, item, Math.Min(amount, Math.Max(0, 100 - turret.itemCount)));
         }
         else Request(__instance, new TurretIntent(TurretIntentKind.Withdraw));

@@ -1,7 +1,6 @@
 ﻿#region
 
 using System;
-using System.Collections.Generic;
 using System.Net;
 using System.Threading;
 using NebulaeModel.Logger;
@@ -37,9 +36,20 @@ internal class NebulaeConnection : INebulaeConnection
 
     internal void CompleteHandshake() => HandshakeCompleted = true;
 
-    public bool IsAlive => peerSocket?.ReadyState == WebSocketState.Open;
+    public bool IsAlive => !IsStopped && peerSocket?.ReadyState == WebSocketState.Open;
 
     public int Id { get; }
+    private readonly DiagnosticWatchdog sendWatchdog = new();
+    private double nextDiagnosticCheck;
+    public string SendDiagnostics => sender.DiagnosticState;
+    internal void CheckSendDiagnostics()
+    {
+        if (Diagnostics.Now < nextDiagnosticCheck) return;
+        nextDiagnosticCheck = Diagnostics.Now + 1;
+        sendWatchdog.Observe("send:" + Id, sender.DiagnosticBacklogged,
+            () => $"[network] send backlog connection={Id} status={ConnectionStatus} {sender.DiagnosticState}", 10);
+        deltas.CheckDiagnostics(Id);
+    }
 
     public EConnectionStatus ConnectionStatus
     {
@@ -67,15 +77,22 @@ internal class NebulaeConnection : INebulaeConnection
             return state == null ? null : PacketCompression.WrapForSend(state, sender.PreparationBacklogged);
         }, (bytes, done) =>
         {
-            if (peerSocket.ReadyState == WebSocketState.Open)
+            if (!IsStopped && peerSocket.ReadyState == WebSocketState.Open)
             {
                 var success = BlockingWebSocketSender.Send(peerSocket, bytes);
                 done(success);
             }
-            else done(false);
+            else
+            {
+                // The peer can already be closing before its close callback is delivered.
+                StopSending();
+                done(false);
+            }
         }, onFailure: error =>
         {
-            Log.Warn($"Send queue failed for connection {Id} ({this.peerEndpoint}): {error.Message}");
+            if (IsStopped) return;
+            Diagnostics.Error("send:failure:" + Id, () => $"[network] send queue failed connection={Id} addressFamily={this.peerEndpoint?.AddressFamily} status={ConnectionStatus} stage={error.Data["Nebulae.SendStage"]} packet={error.Data["Nebulae.PacketType"]} beforeFailure=({sender.FailureDiagnostics})", error);
+            StopSending();
             NebulaeModel.Utils.UnityDispatchQueue.RunOnMainThread(() =>
                 peerSocket.Close((ushort)DisconnectionReason.InvalidData, "Packet send failed"));
         }, combine: hostSide ? packets =>
@@ -101,7 +118,9 @@ internal class NebulaeConnection : INebulaeConnection
     // now and consumes its bytes in connection order. Factories own immutable inputs only.
     internal void SendDeferredPacket<T>(Func<T> factory) where T : class, new() => sender.Enqueue(encoder.Prepare(() =>
     {
-        var packet = factory();
+        T packet;
+        try { packet = factory(); }
+        catch (Exception error) { error.Data["Nebulae.PacketType"] = typeof(T).Name; throw; }
         // Isolated from the main-thread reader/writer; the ordered worker owns this serializer.
         if (deferredWriter == null)
         {
@@ -122,9 +141,10 @@ internal class NebulaeConnection : INebulaeConnection
     public byte[] ReceivePacket(byte[] rawData) => IsStopped ? null : deltas.Receive(rawData);
     public void StopSending()
     {
-        Interlocked.Exchange(ref stopped, 1);
+        if (Interlocked.Exchange(ref stopped, 1) != 0) return;
         sender.Stop();
         deltas.Clear();
+        sendWatchdog.Clear();
     }
     public bool Equals(INebulaeConnection connection)
     {

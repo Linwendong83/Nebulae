@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using NebulaeModel.DataStructures;
 using NebulaeModel.Packets.Universe;
 using UnityEngine;
@@ -14,6 +15,7 @@ namespace NebulaeWorld.Universe;
 internal class LaunchManager
 {
     private HashSet<int> planetIds = []; //Client side
+    private readonly Dictionary<int, long> baselines = [];
 
     public ConcurrentBag<DysonLaunchData.Projectile> ProjectileBag { get; set; } = [];
     public ConcurrentDictionary<int, DysonLaunchData> Snapshots { get; set; } = new();
@@ -23,6 +25,7 @@ internal class LaunchManager
         ProjectileBag = null;
         Snapshots = null;
         planetIds = null;
+        baselines.Clear();
     }
 
     public void Register(int starIndex)
@@ -38,6 +41,16 @@ internal class LaunchManager
     public void Unregister(int starIndex)
     {
         Snapshots.TryRemove(starIndex, out _);
+        baselines.Remove(starIndex);
+    }
+
+    public void SetBaseline(int starIndex, long tick)
+    {
+        baselines[starIndex] = tick;
+        if (!Snapshots.TryGetValue(starIndex, out var pending)) return;
+        pending.BulletList = pending.BulletList.Skip(pending.BulletCursor).Where(p => p.Tick > tick).ToList();
+        pending.RocketList = pending.RocketList.Skip(pending.RocketCursor).Where(p => p.Tick > tick).ToList();
+        pending.BulletCursor = pending.RocketCursor = 0;
     }
 
     public void CollectProjectile()
@@ -55,28 +68,18 @@ internal class LaunchManager
                 // If the dyson sphere has no subscribers anymore, skip this data
                 continue;
             }
-            // bullet: targetId is orbitId, range 1~40
-            if (data.TargetId <= 40)
+            if (data.LayerId == 0)
             {
-                data.Interval = snapshot.BulletTick;
+                data.Tick = GameMain.gameTick;
                 snapshot.BulletList.Add(data);
-                snapshot.BulletTick = 0;
             }
-            // rocket: targetId is layerId(4 bits) + nodeId(12 bits)
             else
             {
-                data.Interval = snapshot.RocketTick;
+                data.Tick = GameMain.gameTick;
                 snapshot.RocketList.Add(data);
-                snapshot.RocketTick = 0;
             }
         }
 
-        // Increase tick counter
-        foreach (var snapshot in Snapshots.Values)
-        {
-            snapshot.BulletTick++;
-            snapshot.RocketTick++;
-        }
     }
 
     public void SendBroadcastIfNeeded()
@@ -89,9 +92,15 @@ internal class LaunchManager
         //Broadcast the update packet to subscribers
         foreach (var snapshot in Snapshots.Values)
         {
-            if (snapshot.BulletList.Count > 0 || snapshot.RocketList.Count > 0)
+            var count = Math.Max(snapshot.BulletList.Count, snapshot.RocketList.Count);
+            for (var offset = 0; offset < count; offset += DysonLaunchData.MaxProjectiles)
             {
-                Multiplayer.Session.DysonSpheres.SendPacketToDysonSphere(new DysonLaunchDataPacket(snapshot),
+                var batch = new DysonLaunchData(snapshot.StarIndex)
+                {
+                    BulletList = snapshot.BulletList.Skip(offset).Take(DysonLaunchData.MaxProjectiles).ToList(),
+                    RocketList = snapshot.RocketList.Skip(offset).Take(DysonLaunchData.MaxProjectiles).ToList()
+                };
+                Multiplayer.Session.DysonSpheres.SendPacketToDysonSphere(new DysonLaunchDataPacket(batch),
                     snapshot.StarIndex);
             }
         }
@@ -101,37 +110,39 @@ internal class LaunchManager
         {
             snapshot.BulletList.Clear();
             snapshot.RocketList.Clear();
-            snapshot.BulletTick = 0;
-            snapshot.RocketTick = 0;
         }
     }
 
     public void ImportPacket(DysonLaunchDataPacket packet)
     {
-        Snapshots[packet.Data.StarIndex] = packet.Data;
-
-        // Update planetId set of loaded factories
-        planetIds.Clear();
-        for (var i = 0; i < GameMain.data.factoryCount; i++)
-        {
-            planetIds.Add(GameMain.data.factories[i].planetId);
-        }
+        var incoming = packet.Data;
+        if (incoming == null || incoming.StarIndex < 0 || incoming.StarIndex >= GameMain.data.dysonSpheres.Length ||
+            !baselines.TryGetValue(incoming.StarIndex, out var baseline)) return;
+        var pending = Snapshots.GetOrAdd(incoming.StarIndex, i => new DysonLaunchData(i));
+        pending.BulletList = pending.BulletList.Skip(pending.BulletCursor).Concat(incoming.BulletList.Where(p => p.Tick > baseline)).ToList();
+        pending.RocketList = pending.RocketList.Skip(pending.RocketCursor).Concat(incoming.RocketList.Where(p => p.Tick > baseline)).ToList();
+        pending.BulletCursor = pending.RocketCursor = 0;
     }
 
     public void LaunchProjectile()
     {
-        var discardTarget = -1;
+        if (Snapshots.IsEmpty) return;
+        var removals = new List<int>();
+        // Membership can change between two network packets.
+        planetIds.Clear();
+        for (var i = 0; i < GameMain.data.factoryCount; i++)
+            if (GameMain.data.factories[i] != null) planetIds.Add(GameMain.data.factories[i].planetId);
         foreach (var snapshot in Snapshots.Values)
         {
             var sphere = GameMain.data.dysonSpheres[snapshot.StarIndex];
             if (sphere == null)
             {
-                discardTarget = snapshot.StarIndex;
+                removals.Add(snapshot.StarIndex);
                 continue;
             }
             while (snapshot.BulletCursor < snapshot.BulletList.Count)
             {
-                if (snapshot.BulletList[snapshot.BulletCursor].Interval <= snapshot.BulletTick)
+                if (snapshot.BulletList[snapshot.BulletCursor].Tick <= GameMain.gameTick)
                 {
                     // Only fire when the planet factory isn't loaded 
                     if (!planetIds.Contains(snapshot.BulletList[snapshot.BulletCursor].PlanetId))
@@ -139,17 +150,15 @@ internal class LaunchManager
                         AddBullet(sphere.swarm, snapshot.BulletList[snapshot.BulletCursor]);
                     }
                     snapshot.BulletCursor++;
-                    snapshot.BulletTick = 0;
                 }
                 else
                 {
-                    snapshot.BulletTick++;
                     break;
                 }
             }
             while (snapshot.RocketCursor < snapshot.RocketList.Count)
             {
-                if (snapshot.RocketList[snapshot.RocketCursor].Interval <= snapshot.RocketTick)
+                if (snapshot.RocketList[snapshot.RocketCursor].Tick <= GameMain.gameTick)
                 {
                     // Only fire when the planet factory isn't loaded
                     if (!planetIds.Contains(snapshot.RocketList[snapshot.RocketCursor].PlanetId))
@@ -157,24 +166,19 @@ internal class LaunchManager
                         AddRocket(sphere, snapshot.RocketList[snapshot.RocketCursor]);
                     }
                     snapshot.RocketCursor++;
-                    snapshot.RocketTick = 0;
                 }
                 else
                 {
-                    snapshot.RocketTick++;
                     break;
                 }
             }
             if (snapshot.BulletCursor == snapshot.BulletList.Count && snapshot.RocketCursor == snapshot.RocketList.Count)
             {
                 // snapshot is empty, can be removed now
-                discardTarget = snapshot.StarIndex;
+                removals.Add(snapshot.StarIndex);
             }
         }
-        if (discardTarget >= 0)
-        {
-            Snapshots.TryRemove(discardTarget, out _);
-        }
+        foreach (var star in removals) Snapshots.TryRemove(star, out _);
     }
 
     private static void AddBullet(DysonSwarm swarm, DysonLaunchData.Projectile projectile)
@@ -193,6 +197,7 @@ internal class LaunchManager
         bullet.uEnd = starPos + VectorLF3.Cross(swarm.orbits[orbitId].up, starPos - bullet.uBegin).normalized *
             swarm.orbits[orbitId].radius;
         bullet.maxt = (float)((bullet.uEnd - bullet.uBegin).magnitude / 4000.0);
+        bullet.t = (float)Math.Max(0, GameMain.gameTick - projectile.Tick) / 60f;
         bullet.uEndVel = VectorLF3.Cross(bullet.uEnd - starPos, swarm.orbits[orbitId].up).normalized *
                          Math.Sqrt(swarm.dysonSphere.gravity / swarm.orbits[orbitId].radius);
         swarm.AddBullet(bullet, orbitId);
@@ -201,9 +206,8 @@ internal class LaunchManager
     private static void AddRocket(DysonSphere sphere, DysonLaunchData.Projectile projectile)
     {
         ref var astroPoses = ref GameMain.data.galaxy.astrosData;
-        // Assume layerId < 16, nodeId < 4096
-        var layerId = projectile.TargetId >> 12;
-        var nodeId = projectile.TargetId & 0x0FFF;
+        var layerId = projectile.LayerId;
+        var nodeId = projectile.TargetId;
         var node = sphere.FindNode(layerId, nodeId);
         if (node == null)
         {

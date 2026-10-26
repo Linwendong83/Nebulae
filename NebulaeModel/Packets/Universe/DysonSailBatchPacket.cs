@@ -73,6 +73,6 @@ internal class DysonSailBatchPacket
                OrbitId.Length == ExpiryTime.Length && OrbitId.Length == st.Length &&
                OrbitId.Length == px.Length && OrbitId.Length == py.Length && OrbitId.Length == pz.Length &&
                OrbitId.Length == vx.Length && OrbitId.Length == vy.Length && OrbitId.Length == vz.Length &&
-               OrbitId.Length == gs.Length && OrbitId.Length <= MaxSails;
+               OrbitId.Length == gs.Length && OrbitId.Length > 0 && OrbitId.Length <= MaxSails;
     }
 }

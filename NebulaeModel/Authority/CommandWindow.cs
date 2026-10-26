@@ -237,49 +237,11 @@ internal sealed class CommandWindow
         return true;
     }
 
-    /// <summary>
-    /// Gives up an admitted-but-unexecuted command so the client may retry it.
-    /// </summary>
-    /// <remarks>
-    /// Only valid when nothing was committed to the world. A command that partially executed must
-    /// be completed with a rejected outcome instead, because allowing the retry would run the
-    /// committed part twice.
-    /// </remarks>
-    public bool Abandon(CommandKey key)
-    {
-        if (!key.IsValid || !key.Epoch.Equals(Epoch) || !key.Connection.Equals(Connection)) return false;
-        if (!pending.Remove(key.Sequence)) return false;
-        if (key.Sequence == HighWaterSequence)
-        {
-            // Reopen the high-water mark only if no later sequence was admitted; otherwise the
-            // mark must stay where the newest admitted command put it.
-            HighWaterSequence = key.Sequence - 1;
-            foreach (var sequence in pending)
-            {
-                if (sequence > HighWaterSequence) HighWaterSequence = sequence;
-            }
-            foreach (var sequence in results.Keys)
-            {
-                if (sequence > HighWaterSequence) HighWaterSequence = sequence;
-            }
-        }
-        return true;
-    }
-
     /// <summary>True when this window has already answered <paramref name="key"/>.</summary>
     public bool TryGetOutcome(CommandKey key, out CommandOutcome outcome)
     {
         outcome = default;
         if (!key.IsValid || !key.Epoch.Equals(Epoch) || !key.Connection.Equals(Connection)) return false;
         return results.TryGetValue(key.Sequence, out outcome);
-    }
-
-    /// <summary>Drops all cached state. Used when the connection or session ends.</summary>
-    public void Clear()
-    {
-        results.Clear();
-        pending.Clear();
-        resultOrder.Clear();
-        HighWaterSequence = 0;
     }
 }

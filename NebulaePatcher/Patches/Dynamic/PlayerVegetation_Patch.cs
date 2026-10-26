@@ -1,6 +1,4 @@
-using NebulaeModel.Networking;
 using HarmonyLib;
-using NebulaeWorld;
 
 namespace NebulaePatcher.Patches.Dynamic;
 

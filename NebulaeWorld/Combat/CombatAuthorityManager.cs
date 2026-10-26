@@ -1,7 +1,8 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using NebulaeModel.Authority;
 using NebulaeModel.DataStructures;
+using NebulaeModel.Logger;
 using NebulaeModel.Networking.Serialization;
 using NebulaeModel.Packets.Authority;
 using NebulaeModel.Packets.Combat;
@@ -28,6 +29,7 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         public RemoteCombatPose.Frame Pose;
         public long LastCommand;
         public long Revision;
+        public ConnectionEpoch Connection;
         public bool FighterPortsDirty;
         public double CoreDebit;
         public long LastBombTick = -10000;
@@ -69,6 +71,9 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
     private ConnectionEpoch sendingConnection;
     private AuthorityEpoch receivingEpoch;
     private long lastSettingsTick = -1000;
+    /// <summary>Last ground-fleet enable mask the host was told, or -1 before the first report.</summary>
+    private int lastGroundFleetMask = -1;
+    private long lastGroundFleetMaskTick = long.MinValue;
 
     /// <summary>The "nothing sent yet" sentinel: a combination no real settings report can produce.</summary>
     internal static readonly (int Flags, double Energy, double DebitAck, double ShieldSpeed) NoSettingsSent =
@@ -98,6 +103,7 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         receivingEpoch = Multiplayer.Session.Authority.Epoch;
         received.Clear(); receivedConnections.Clear(); acknowledgedDebits.Clear();
         CoreDebitAcknowledged = 0; LastAppliedRevision = LastAppliedCommand = 0;
+        lastGroundFleetMask = -1;
         publishedStockHistory.Clear(); publishedPersonalRevision = 0;
         observedPersonalRevision = data.Life.Revision;
         observedStocks = CopyStocks(GameMain.mainPlayer.mecha);
@@ -200,6 +206,12 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
     }
     public Mecha MechaFor(ushort playerId) => actors.TryGetValue(playerId, out var actor) && actor.DetachedFight == null ? actor.Player.mecha : null;
 
+    // Share the combat energy watermark so a repair debit is applied once, including across checkpoints.
+    public void RecordRepairEnergy(ushort playerId, double amount)
+    {
+        if (amount > 0 && actors.TryGetValue(playerId, out var actor)) actor.CoreDebit += amount;
+    }
+
     public ushort PlayerIdFor(Mecha mecha)
     {
         foreach (var pair in actors)
@@ -254,16 +266,31 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         }
     }
 
+    private Actor RetainActor(ushort playerId, ConnectionEpoch connection)
+    {
+        if (!actors.TryGetValue(playerId, out var actor) || actor.Connection != connection)
+            actors[playerId] = actor = new Actor { Connection = connection };
+        return actor;
+    }
+
     public bool ValidateCheckpoint(ushort id, long commandAck, double debitAck, int[] itemAcks, int[] debitAcks)
     {
         if (!actors.TryGetValue(id, out var actor)) return true;
-        if (commandAck < 0 || commandAck > actor.LastCommand || debitAck < 0 || debitAck > actor.CoreDebit ||
-            itemAcks == null || debitAcks == null || itemAcks.Length != debitAcks.Length || itemAcks.Length > 512) return false;
+        bool Refuse(string reason, int item = 0, int acknowledged = 0, int total = 0)
+        {
+            Diagnostics.Warn("combat:checkpoint:" + id + ":" + reason, () =>
+                $"[combat] checkpoint ledger refused player={id} reason={reason} command={commandAck}/{actor.LastCommand} core={debitAck}/{actor.CoreDebit} item={item} debit={acknowledged}/{total}");
+            return false;
+        }
+        if (commandAck < 0 || commandAck > actor.LastCommand) return Refuse("command-watermark");
+        if (double.IsNaN(debitAck) || double.IsInfinity(debitAck) || debitAck < 0 || debitAck > actor.CoreDebit) return Refuse("core-watermark");
+        if (itemAcks == null || debitAcks == null || itemAcks.Length != debitAcks.Length || itemAcks.Length > 512) return Refuse("item-layout");
         var seen = new HashSet<int>();
         for (var i = 0; i < itemAcks.Length; i++)
         {
             actor.Debits.Totals.TryGetValue(itemAcks[i], out var total);
-            if (itemAcks[i] <= 0 || !seen.Add(itemAcks[i]) || debitAcks[i] < 0 || debitAcks[i] > total) return false;
+            if (itemAcks[i] <= 0 || !seen.Add(itemAcks[i]) || debitAcks[i] < 0 || debitAcks[i] > total)
+                return Refuse("item-watermark", itemAcks[i], debitAcks[i], total);
         }
         return true;
     }
@@ -275,21 +302,40 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         if (!session.IsServer || !session.IsGameLoaded) return;
         if (!hostEpoch.Equals(session.Authority.Epoch))
         { Dispose(); hostEpoch = session.Authority.Epoch; lastCompletedTick = -1; }
-        DrainCheckpoints();
-        if (!GameMain.data.gameDesc.isCombatMode) return;
+        if (!GameMain.data.gameDesc.isCombatMode) { DrainCheckpoints(); return; }
         var online = new HashSet<ushort>();
         using (session.World.GetRemotePlayersModels(out var models))
             foreach (var pair in session.Server.Players.Connected)
             {
                 var data = (PlayerData)pair.Value.Data;
-                if (!models.TryGetValue(data.PlayerId, out var model) || model.PlayerTransform == null || data.Mecha.ReactorStorage == null) continue;
                 online.Add(data.PlayerId);
-                if (actors.TryGetValue(data.PlayerId, out var actor) && actor.Player == model.PlayerInstance) continue;
+                if (!models.TryGetValue(data.PlayerId, out var model) || model.PlayerTransform == null || data.Mecha.ReactorStorage == null) continue;
+                var actorConnection = session.AuthorityRuntime.ConnectionEpochFor(data.PlayerId);
+                var retain = actors.TryGetValue(data.PlayerId, out var actor) && actor.Connection == actorConnection;
+                if (retain && actor.DetachedFight == null && actor.Player == model.PlayerInstance) continue;
+                if (retain)
+                {
+                    // Recreating a Unity body does not start a new consumption ledger. Restore
+                    // its latest host resources along with that ledger, not an older checkpoint.
+                    if (actor.DetachedFight == null)
+                    {
+                        actor.Data.Mecha.CoreEnergy = actor.Mecha.coreEnergy;
+                        actor.Data.Mecha.FightData = new MechaFightData(actor.Player);
+                        actor.Data.Life.IsAlive = actor.Player.isAlive;
+                        actor.Data.Life.DeathCount = actor.Player.deathCount;
+                        actor.Data.Life.InvincibleTicks = actor.Player.invincibleTicks;
+                    }
+                    data.Mecha = actor.Data.Mecha;
+                    data.Life = actor.Data.Life;
+                }
                 // Remote Player has no local inventory UI initialization. Install the approved
                 // checkpoint directly rather than invoking the local-player restore adapter.
                 model.PlayerInstance.SetHiddenProperty(nameof(global::Player.package), data.Mecha.Inventory);
                 (data.Mecha as MechaData)?.ApplyHand(model.PlayerInstance);
                 model.PlayerInstance.SetHiddenProperty(nameof(global::Player.deliveryPackage), data.Mecha.DeliveryPackage);
+                // Remote bodies bypass Player.SetForNewGame/Import, which normally creates
+                // this helper. Native hangar/ammo replenishment still needs it on the host.
+                model.PlayerInstance.SetHiddenProperty(nameof(global::Player.packageUtility), new PlayerPackageUtility(model.PlayerInstance));
                 model.MechaInstance.coreEnergy = data.Mecha.CoreEnergy;
                 model.MechaInstance.reactorEnergy = data.Mecha.ReactorEnergy;
                 if (data.Mecha is MechaData reactor)
@@ -302,11 +348,22 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                 data.Mecha.FightData.UpdateMech(model.PlayerInstance);
                 // Personal checkpoints intentionally omit tech bonuses; derive combat limits from host research.
                 new PlayerTechBonuses(GameMain.mainPlayer.mecha).UpdateMech(model.MechaInstance);
+                RefreshCombatLimits(model.MechaInstance, GameMain.mainPlayer.mecha);
+                if (data.Appearance != null)
+                {
+                    data.Appearance.CopyTo(model.MechaInstance.appearance);
+                    model.PlayerInstance.mechaArmorModel.RefreshAllPartObjects();
+                    model.PlayerInstance.mechaArmorModel.RefreshAllBoneObjects();
+                    MechaCustomizationProperties.Refresh(model.PlayerInstance, preserveRatio: false);
+                }
                 model.PlayerInstance.isAlive = data.Life.IsAlive;
                 model.PlayerInstance.deathCount = data.Life.DeathCount;
                 model.PlayerInstance.invincibleTicks = data.Life.InvincibleTicks;
                 var action = new PlayerAction_Combat(); action.Init(model.PlayerInstance);
-                actors[data.PlayerId] = new Actor { Player = model.PlayerInstance, Mecha = model.MechaInstance, Data = data, Action = action, CombatPlanet = data.LocalPlanetId };
+                actor = RetainActor(data.PlayerId, actorConnection);
+                actor.Player = model.PlayerInstance; actor.Mecha = model.MechaInstance; actor.Data = data;
+                actor.Action = action; actor.CombatPlanet = data.LocalPlanetId;
+                actor.DetachedFight = null; actor.LastPublishedCombat = null;
                 RememberStocks(actors[data.PlayerId]);
                 data.CombatAuthoritative = true;
                 ResetInventoryShadow(actors[data.PlayerId]);
@@ -318,8 +375,10 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                 actors[id].Data.CombatAuthoritative = false; actors.Remove(id);
                 engagementWatches.Remove(id);
             }
+        DrainCheckpoints();
         foreach (var actor in actors.Values)
         {
+            if (actor.DetachedFight != null || actor.Player.transform == null) continue;
             actor.FrameEnergy = actor.Player.mecha.coreEnergy;
             actor.FrameDebit = actor.CoreDebit;
             if (!actor.Player.isAlive) continue;
@@ -357,6 +416,12 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
             try
             {
                 if (!valid) continue;
+                if (actors.TryGetValue(checkpoint.Data.PlayerId, out var unavailable) &&
+                    (unavailable.DetachedFight != null || unavailable.Connection != checkpoint.Connection))
+                {
+                    checkpoint.Finish?.Invoke(CheckpointReceiptStatus.Retry, CheckpointRejectReason.Busy);
+                    continue;
+                }
                 var status = PlayerLifeManager.StoreServerResult(checkpoint.Data, checkpoint.Snapshot, out var reason,
                     checkpoint.Command, checkpoint.CoreDebit, checkpoint.Items, checkpoint.Totals,
                     checkpoint.CombatRevision, checkpoint.InventoryTransferSequence);
@@ -386,7 +451,7 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         { CancelShots(actor); actor.CombatPlanet = actor.Data.LocalPlanetId; }
         var planet = GameMain.galaxy.PlanetById(actor.Data.LocalPlanetId);
         var star = GameMain.galaxy.StarById(actor.Data.LocalStarId);
-        actor.Player.SetHiddenProperty(nameof(global::Player.planetData), planet);
+        NativeGameAccess.SetSimulationPlanet(actor.Player, planet);
         actor.Player.position = new Vector3(actor.Data.LocalPlanetPosition.x, actor.Data.LocalPlanetPosition.y, actor.Data.LocalPlanetPosition.z);
         actor.Player.uPosition = planet == null ? new VectorLF3(actor.Data.UPosition.x, actor.Data.UPosition.y, actor.Data.UPosition.z)
             : RemoteCombatPose.UniversalPoint(planet.uPosition, planet.runtimeRotation, actor.Player.position);
@@ -441,12 +506,16 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         foreach (var pair in actor.InventoryCounts) actor.InventoryShadow[pair.Key] = pair.Value;
     }
 
-    public void SendSettings(long tick)
+    public void SendSettings(long tick, bool immediate = false)
     {
         if (personalStocksDirty && Multiplayer.Session.IsGameLoaded) Multiplayer.Session.Life.Publish();
-        if (tick - lastSettingsTick < 15 || !Multiplayer.Session.IsGameLoaded) return;
-        lastSettingsTick = tick;
+        if (!Multiplayer.Session.IsGameLoaded) return;
         var mecha = GameMain.mainPlayer.mecha;
+        // Ground fleets need one bit each, and the settings word has no room left for that:
+        // bits 17+ already mean shield, relay, building attack and weapon modes. Reporting the
+        // mask separately keeps every ground fleet's enable state its own, instead of aliasing
+        // fleet B/C/D onto those unrelated toggles.
+        PublishGroundFleetMask(mecha.groundCombatModule, tick);
         var flags = mecha.ammoSelectSlot & 3;
         if (mecha.laserActive) flags |= 4;
         if (mecha.groundCombatModule.moduleEnabled) flags |= 8;
@@ -455,17 +524,64 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         if (mecha.autoReplenishHangar) flags |= 64;
         if (mecha.autoReplenishFuel) flags |= 128;
         for (var i = 0; i < mecha.spaceCombatModule.fleetCount; i++) if (mecha.spaceCombatModule.moduleFleets[i].fleetEnabled) flags |= 1 << (8 + i);
-        if (mecha.groundCombatModule.moduleFleets[0].fleetEnabled) flags |= 1 << 16;
         flags = CombatShieldSettings.Encode(flags, mecha.energyShieldRechargeEnabled);
         flags = CombatFleetSettings.Encode(flags, mecha.groundCombatModule, mecha.spaceCombatModule);
+        flags = CombatWeaponSettings.Encode(flags, mecha);
+        // Send configuration changes before the next shot, while keeping energy-only reports throttled.
+        if (tick - lastSettingsTick < 15 && (!immediate || flags == lastSettings.Flags && mecha.energyShieldRechargeSpeed == lastSettings.ShieldSpeed)) return;
+        lastSettingsTick = tick;
         var report = (flags, mecha.coreEnergy, CoreDebitAcknowledged, mecha.energyShieldRechargeSpeed);
         if (IsUnchangedSettingsReport(lastSettings, report)) return;
         lastSettings = report;
         Send(new CombatIntent(CombatIntentKind.Settings, flags, mecha.coreEnergy, CoreDebitAcknowledged, mecha.energyShieldRechargeSpeed));
     }
 
+    /// <summary>
+    /// Reports the ground-fleet enable mask when it changes, on its own command.
+    /// </summary>
+    /// <remarks>
+    /// A fleet's own enable button used to be transmitted only for fleet A, while the host
+    /// decoded fleets B..H from bits that actually mean shield recharge, relay/building attack
+    /// and weapon mode. A player toggling the fourth formation therefore either could not turn
+    /// it on, or had the host force it off on the next settings report. The mask carries all
+    /// eight slots independently and bypasses the settings throttle because a click is an
+    /// explicit configuration change.
+    /// </remarks>
+    private void PublishGroundFleetMask(CombatModuleComponent module, long tick)
+    {
+        var session = Multiplayer.Session;
+        if (!sendingEpoch.Equals(session.Authority.Epoch) || !sendingConnection.Equals(session.Authority.Connection))
+        {
+            lastGroundFleetMask = -1;
+            lastGroundFleetMaskTick = long.MinValue;
+        }
+        var mask = GroundFleetMask(module);
+        // Re-report periodically as well as on change: the first report can race the host's
+        // actor creation and be rejected, and a lost mask would silently disable formations.
+        if (mask == lastGroundFleetMask && long.MinValue != lastGroundFleetMaskTick &&
+            tick - lastGroundFleetMaskTick < 300) return;
+        if (Send(new CombatIntent(CombatIntentKind.GroundFleetMask, mask)))
+        {
+            lastGroundFleetMask = mask;
+            lastGroundFleetMaskTick = tick;
+        }
+    }
+
+    internal static int GroundFleetMask(CombatModuleComponent module)
+    {
+        var mask = 0;
+        var count = Math.Min(module.fleetCount, Math.Min(module.moduleFleets.Length, 8));
+        for (var i = 0; i < count; i++) if (module.moduleFleets[i].fleetEnabled) mask |= 1 << i;
+        return mask;
+    }
+
     public CommandOutcome Execute(in QueuedHostCommand command)
     {
+        if (actors.TryGetValue(command.ConnectionPlayerId, out var commandActor))
+        {
+            if (commandActor.DetachedFight != null) return new CommandOutcome(CommandResultCode.RejectedNotReady);
+            commandActor.LastCommand = Math.Max(commandActor.LastCommand, command.Key.Sequence);
+        }
         if (command.Packet.Category == NebulaeModel.Packets.Factory.ManualBuildIntent.Category)
         {
             actors.TryGetValue(command.ConnectionPlayerId, out var builder);
@@ -498,10 +614,11 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         actor.LastCommand = Math.Max(actor.LastCommand, command.Key.Sequence);
         if (!actor.Player.isAlive) return new CommandOutcome(CommandResultCode.RejectedNotReady);
         Prepare(actor);
-        // Every intent except Settings is a combat action — shooting, bombing, bursting a shield,
-        // waking a hive, launching a fleet. Settings is a configuration sync and says nothing about
-        // a fight, so it must not hold a player's scopes at the hot cadence on its own.
-        if (intent.Kind != CombatIntentKind.Settings) NoteEngagement(command.ConnectionPlayerId);
+        // Every intent except the configuration reports is a combat action — shooting, bombing,
+        // bursting a shield, waking a hive, launching a fleet. Settings and the fleet enable mask
+        // say nothing about a fight, so they must not hold a player's scopes at the hot cadence.
+        if (intent.Kind is not (CombatIntentKind.Settings or CombatIntentKind.GroundFleetMask))
+            NoteEngagement(command.ConnectionPlayerId);
         var mecha = actor.Player.mecha;
         var beforeEnergy = mecha.coreEnergy;
         bool applied;
@@ -514,6 +631,8 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                         return new CommandOutcome(CommandResultCode.RejectedInvalid);
                     if (!CombatShieldSettings.TryDecode(intent, out var shieldEnabled, out var shieldSpeed))
                         return new CommandOutcome(CommandResultCode.RejectedInvalid);
+                    if (!CombatWeaponSettings.TryDecode(intent.Argument, out var ammoMode, out var laserMode, out var bombActive))
+                        return new CommandOutcome(CommandResultCode.RejectedInvalid);
                     mecha.energyShieldRechargeEnabled = shieldEnabled;
                     mecha.energyShieldRechargeSpeed = shieldSpeed;
                     CombatFleetSettings.Apply(intent.Argument, mecha.groundCombatModule, mecha.spaceCombatModule);
@@ -521,16 +640,22 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                     actor.FrameEnergy += mecha.coreEnergy - beforeEnergy;
                     mecha.ammoSelectSlot = intent.Argument & 3;
                     mecha.laserActive = (intent.Argument & 4) != 0;
-                    mecha.groundCombatModule.moduleEnabled = (intent.Argument & 8) != 0;
-                    mecha.spaceCombatModule.moduleEnabled = (intent.Argument & 16) != 0;
+                    mecha.ammoSelectSlotState = ammoMode; mecha.laserActiveState = laserMode; mecha.bombActive = bombActive;
                     mecha.autoReplenishAmmo = (intent.Argument & 32) != 0;
                     mecha.autoReplenishHangar = (intent.Argument & 64) != 0;
                     mecha.autoReplenishFuel = (intent.Argument & 128) != 0;
-                    for (var i = 0; i < mecha.spaceCombatModule.fleetCount; i++) mecha.spaceCombatModule.moduleFleets[i].fleetEnabled = (intent.Argument & (1 << (8 + i))) != 0;
-                    mecha.groundCombatModule.moduleFleets[0].fleetEnabled = (intent.Argument & (1 << 16)) != 0;
-                    if (mecha.ammoSelectSlot == 0) CancelQueue(actor.AmmoIntents);
-                    if (!mecha.laserActive) CancelQueue(actor.LaserIntents);
+                    ApplyFleetEnabled(mecha.spaceCombatModule, (intent.Argument & 16) != 0, intent.Argument >> 8);
+                    // Ground fleet enablement arrives in its own mask; Settings only owns the
+                    // module enable bit here.
+                    ApplyModuleEnabled(mecha.groundCombatModule, (intent.Argument & 8) != 0);
+                    CancelDisallowedShots(actor.AmmoIntents, mecha, false);
+                    CancelDisallowedShots(actor.LaserIntents, mecha, true);
                     return new CommandOutcome(CommandResultCode.Applied, HostTick);
+                case CombatIntentKind.GroundFleetMask:
+                    if (!TryApplyGroundFleetMask(mecha.groundCombatModule, intent.Argument))
+                        return new CommandOutcome(CommandResultCode.RejectedInvalid);
+                    applied = true;
+                    break;
                 case CombatIntentKind.Shoot:
                 case CombatIntentKind.ManualShoot:
                 case CombatIntentKind.Wake:
@@ -546,11 +671,11 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                     };
                     if (key.Kind == PoolKind.GroundEnemy && key.Scope != actor.Data.LocalPlanetId)
                         return new CommandOutcome(CommandResultCode.RejectedTarget);
-                    if (key.Kind == PoolKind.SpaceEnemy && !actor.Player.sailing) return new CommandOutcome(CommandResultCode.RejectedTarget);
                     if (intent.Kind == CombatIntentKind.Wake)
                     {
                         if (key.Kind == PoolKind.SpaceEnemy)
                         {
+                            if (!actor.Player.sailing) return new CommandOutcome(CommandResultCode.RejectedTarget);
                             GameMain.spaceSector.skillSystem.GetObjectUPositionAndVelocity(ref target, out var wakePosition, out _);
                             if ((wakePosition - actor.Player.uPosition).sqrMagnitude > 400000000) return new CommandOutcome(CommandResultCode.RejectedTarget);
                             GameMain.spaceSector.GetHiveByAstroId(target.astroId)?.Realize();
@@ -569,6 +694,8 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                         return new CommandOutcome(CommandResultCode.Applied, HostTick);
                     }
                     var ammo = (EAmmoType)intent.Argument;
+                    if (!CombatWeaponSettings.Allows(mecha, ammo == EAmmoType.Laser, intent.Kind == CombatIntentKind.ManualShoot))
+                        return new CommandOutcome(CommandResultCode.RejectedNotReady);
                     if (!ValidWeaponTarget(actor, key, ammo, intent.Kind == CombatIntentKind.ManualShoot)) return new CommandOutcome(CommandResultCode.RejectedTarget);
                     if (!PlayerWeaponTargets.IsMechaAmmo(ammo)) return new CommandOutcome(CommandResultCode.RejectedInvalid);
                     if (!WithinWeaponRange(actor, key, ammo, intent.Kind == CombatIntentKind.ManualShoot))
@@ -604,7 +731,7 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                     applied = true;
                     break;
                 case CombatIntentKind.Bomb:
-                    if (actor.Player.warping) return new CommandOutcome(CommandResultCode.RejectedNotReady);
+                    if (actor.Player.warping || !mecha.bombActive) return new CommandOutcome(CommandResultCode.RejectedNotReady);
                     if (HostTick - actor.LastBombTick < 10 || mecha.bombStorage.grids[0].count <= 0)
                         return new CommandOutcome(CommandResultCode.RejectedResource);
                     var velocity = new VectorLF3(intent.X, intent.Y, intent.Z);
@@ -628,23 +755,82 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                 case CombatIntentKind.FleetLaunch:
                 case CombatIntentKind.FleetRecall:
                 case CombatIntentKind.FleetConfigure:
+                case CombatIntentKind.FleetCommand:
+                case CombatIntentKind.FleetAttackTarget:
+                case CombatIntentKind.FleetAttackPosition:
+                case CombatIntentKind.FleetOrbit:
+                case CombatIntentKind.FleetCancel:
                     var module = intent.Argument >= 100 ? mecha.spaceCombatModule : mecha.groundCombatModule;
                     var fleet = intent.Argument % 100;
                     if (intent.Argument < 0 || intent.Argument >= 200 || fleet < 0 || fleet >= module.fleetCount)
                         return new CommandOutcome(CommandResultCode.RejectedInvalid);
-                    if (intent.Kind == CombatIntentKind.FleetConfigure)
+                    if (intent.Kind >= CombatIntentKind.FleetAttackTarget)
+                    {
+                        if (!module.moduleEnabled || !module.moduleFleets[fleet].fleetEnabled ||
+                            !module.isSpace && actor.Action.localFactory?.planetId != module.moduleFleets[fleet].fleetAstroId ||
+                            !FleetCommandMode.TryGetPool(module, fleet, out var orderPool))
+                            return new CommandOutcome(CommandResultCode.RejectedNotReady);
+                        ref var orderedFleet = ref orderPool.buffer[module.moduleFleets[fleet].fleetId];
+                        if (intent.Kind == CombatIntentKind.FleetCancel) orderedFleet.CancelOrder();
+                        else
+                        {
+                            if (!module.moduleFleets[fleet].inCommand) return new CommandOutcome(CommandResultCode.RejectedNotReady);
+                            if (intent.Kind == CombatIntentKind.FleetAttackTarget)
+                            {
+                                if (!command.Packet.TryGetTargetKey(out var orderKey) || TargetWorld == null || !TargetWorld.TryReadState(orderKey, out _) ||
+                                    orderKey.Kind != (module.isSpace ? PoolKind.SpaceEnemy : PoolKind.GroundEnemy) ||
+                                    !module.isSpace && orderKey.Scope != actor.Data.LocalPlanetId)
+                                    return new CommandOutcome(CommandResultCode.RejectedTarget);
+                                var enemy = module.isSpace ? GameMain.spaceSector.enemyPool[orderKey.NativeId] : actor.Action.localFactory.enemyPool[orderKey.NativeId];
+                                if (enemy.id != orderKey.NativeId || enemy.isInvincible)
+                                    return new CommandOutcome(CommandResultCode.RejectedTarget);
+                                var orderTarget = new SkillTarget { type = ETargetType.Enemy, id = enemy.id, astroId = enemy.originAstroId };
+                                orderedFleet.GiveAttackTargetOrder(ref orderTarget);
+                            }
+                            else if (intent.Kind == CombatIntentKind.FleetOrbit)
+                            {
+                                var orbit = GameMain.galaxy.PlanetById((int)intent.X);
+                                if (!module.isSpace || intent.X != (int)intent.X || orbit == null || orbit.star.id != actor.Data.LocalStarId)
+                                    return new CommandOutcome(CommandResultCode.RejectedTarget);
+                                orderedFleet.GiveOrbitingAstroOrder(orbit.astroId);
+                            }
+                            else
+                            {
+                                var destination = new VectorLF3(intent.X, intent.Y, intent.Z);
+                                VectorLF3 origin = module.isSpace ? actor.Player.uPosition : actor.Player.position;
+                                var rotation = module.isSpace ? actor.Player.uRotation : Quaternion.Inverse(actor.Player.planetData.runtimeRotation) * actor.Player.uRotation;
+                                if (!module.isSpace && (destination - origin).sqrMagnitude >
+                                    Configs.freeMode.mechaCommandGroundFleetRange * Configs.freeMode.mechaCommandGroundFleetRange)
+                                    return new CommandOutcome(CommandResultCode.RejectedTarget);
+                                orderedFleet.GiveAttackPosOrder(ref origin, ref rotation, destination, module.isSpace);
+                            }
+                        }
+                    }
+                    else if (intent.Kind == CombatIntentKind.FleetCommand)
+                    {
+                        if (intent.X != 0 && intent.X != 1) return new CommandOutcome(CommandResultCode.RejectedInvalid);
+                        if (intent.X == 1 && (!module.moduleEnabled || !module.moduleFleets[fleet].fleetEnabled) ||
+                            module.moduleFleets[fleet].fleetId > 0 && !module.isSpace &&
+                            actor.Action.localFactory?.planetId != module.moduleFleets[fleet].fleetAstroId)
+                            return new CommandOutcome(CommandResultCode.RejectedNotReady);
+                        if (!FleetCommandMode.Apply(module, fleet, intent.X == 1))
+                            return new CommandOutcome(CommandResultCode.RejectedNotReady);
+                    }
+                    else if (intent.Kind == CombatIntentKind.FleetConfigure)
                     {
                         var configuration = (int)intent.X;
                         if (configuration != intent.X || (module.isSpace
                             ? !FleetProto.kMechaFleetSpaceIds.Contains(configuration)
                             : LDB.items.Select(configuration)?.isGroundFighter != true))
                             return new CommandOutcome(CommandResultCode.RejectedInvalid);
-                        if (module.moduleFleets[fleet].fleetId > 0) module.RecycleFleet(fleet);
-                        if (module.moduleFleets[fleet].fleetId > 0) return new CommandOutcome(CommandResultCode.RejectedNotReady);
+                        if (!FleetConfiguration.IsCurrent(module, fleet, configuration) && !FleetConfiguration.TryPrepare(module, fleet))
+                            return new CommandOutcome(CommandResultCode.RejectedNotReady);
+                        var enabledBeforeConfiguration = module.moduleFleets[fleet].fleetEnabled;
                         module.ChangeFleetConfig(fleet, configuration, mecha.fighterStorage, actor.Player);
+                        module.moduleFleets[fleet].fleetEnabled = enabledBeforeConfiguration;
                     }
                     else if (intent.Kind == CombatIntentKind.FleetRecall)
-                    { module.moduleFleets[fleet].inCommand = false; module.RecycleFleet(fleet); }
+                    { module.RecycleFleet(fleet); }
                     else
                     {
                         if (!module.moduleEnabled || !module.moduleFleets[fleet].fleetEnabled || actor.Player.warping ||
@@ -672,7 +858,10 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
             var range = PlayerWeaponTargets.Range(actor.Action.GetAmmoLocalAttackRange(ammo), manual);
             return delta.sqrMagnitude <= range * range * 1.05;
         }
-        var target = new SkillTarget { type = ETargetType.Enemy, id = key.NativeId, astroId = GameMain.spaceSector.enemyPool[key.NativeId].originAstroId };
+        ref var enemy = ref GameMain.spaceSector.enemyPool[key.NativeId];
+        if (!actor.Player.sailing && PlayerWeaponTargets.IsGroundRelay(actor.Action.localFactory, enemy))
+            return PlayerWeaponTargets.GroundRelayInRange(actor.Action, actor.Mecha, enemy, ammo, manual);
+        var target = new SkillTarget { type = ETargetType.Enemy, id = key.NativeId, astroId = enemy.originAstroId };
         if (!GameMain.spaceSector.skillSystem.GetObjectUPositionAndVelocity(ref target, out var position, out _)) return false;
         var spaceRange = PlayerWeaponTargets.Range(actor.Action.GetAmmoSpaceAttackRange(ammo), manual);
         return (position - actor.Player.mecha.skillTargetUCenter).sqrMagnitude <= spaceRange * spaceRange * 1.05;
@@ -687,9 +876,11 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                 factory.enemyPool[key.NativeId].id == key.NativeId && !factory.enemyPool[key.NativeId].isInvincible &&
                 actor.Player.position.magnitude - factory.planet.realRadius < 150f;
         }
-        if (!actor.Player.sailing || actor.Player.warping || key.NativeId >= GameMain.spaceSector.enemyCursor) return false;
+        if (actor.Player.warping || key.NativeId >= GameMain.spaceSector.enemyCursor) return false;
         ref var enemy = ref GameMain.spaceSector.enemyPool[key.NativeId];
         if (enemy.id != key.NativeId || enemy.isInvincible) return false;
+        if (!actor.Player.sailing)
+            return PlayerWeaponTargets.CanAttackGroundRelay(actor.Player, actor.Action.localFactory, enemy, manual);
         var hive = GameMain.spaceSector.GetHiveByAstroId(enemy.originAstroId);
         if (enemy.dfTinderId == 0 && hive?.starData != actor.Action.localStar) return false;
         if (manual || enemy.dfRelayId == 0) return true;
@@ -702,6 +893,15 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         while (queue.Count > 0) Multiplayer.Session.PlayerWeapons.Cancel(queue.Dequeue().Shot);
     }
     private static void CancelShots(Actor actor) { CancelQueue(actor.AmmoIntents); CancelQueue(actor.LaserIntents); }
+    private static void CancelDisallowedShots(Queue<(ObjectKey Target, EAmmoType Ammo, long Tick, PlayerShotId Shot, bool Manual, int Item, int Slot)> queue, Mecha mecha, bool laser)
+    {
+        for (var remaining = queue.Count; remaining > 0; remaining--)
+        {
+            var input = queue.Dequeue();
+            if (CombatWeaponSettings.Allows(mecha, laser, input.Manual)) queue.Enqueue(input);
+            else Multiplayer.Session.PlayerWeapons.Cancel(input.Shot);
+        }
+    }
     private static void ExpireShots(Queue<(ObjectKey Target, EAmmoType Ammo, long Tick, PlayerShotId Shot, bool Manual, int Item, int Slot)> queue, long tick)
     {
         while (queue.Count > 0 && tick - queue.Peek().Tick > 120) Multiplayer.Session.PlayerWeapons.Cancel(queue.Dequeue().Shot);
@@ -715,12 +915,13 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         {
             var input = queue.Dequeue(); var key = input.Target;
             var fired = false;
+            var selectedSlot = actor.Mecha.ammoSelectSlot;
             try
             {
+                if (!CombatWeaponSettings.Allows(actor.Mecha, laser, input.Manual)) continue;
                 if (HostTick - input.Tick > 120 || !actor.Player.isAlive || actor.Player.warping ||
                     TargetWorld == null || !TargetWorld.TryReadState(key, out _) ||
-                    key.Kind == PoolKind.GroundEnemy && key.Scope != actor.Data.LocalPlanetId ||
-                    key.Kind == PoolKind.SpaceEnemy && !actor.Player.sailing) continue;
+                    key.Kind == PoolKind.GroundEnemy && key.Scope != actor.Data.LocalPlanetId) continue;
                 if (!ValidWeaponTarget(actor, key, input.Ammo, input.Manual)) continue;
                 var target = new SkillTarget
                 {
@@ -745,7 +946,12 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                 if (!laser) PlayerWeaponResources.ConsumeRound(mecha);
                 return target;
             }
-            finally { if (!fired) Multiplayer.Session.PlayerWeapons.Cancel(input.Shot); }
+            finally
+            {
+                // An older queued shot may load its own slot, but cannot change the pilot's selection.
+                actor.Mecha.ammoSelectSlot = selectedSlot;
+                if (!fired) Multiplayer.Session.PlayerWeapons.Cancel(input.Shot);
+            }
         }
         return SkillTarget.none;
     }
@@ -760,7 +966,9 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         if (!Multiplayer.Session.IsDedicated) ObserveEngagement(Multiplayer.Session.LocalPlayer.Id, GameMain.mainPlayer?.mecha);
         foreach (var pair in actors)
         {
-            var actor = pair.Value; var player = actor.Player; var mecha = player.mecha;
+            var actor = pair.Value;
+            if (actor.DetachedFight != null) continue;
+            var player = actor.Player; var mecha = player.mecha;
             ObserveEngagement(pair.Key, mecha);
             // Disconnect removes the Unity model before the next completed frame is drained.
             // Let BeginFrame reclaim the actor instead of blocking that cleanup behind a dead transform.
@@ -882,9 +1090,7 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
     /// counter, so save fidelity is unaffected by what goes on the wire.
     /// </para>
     /// </remarks>
-    internal static byte[] SerializeReplicableFightData(IMechaFightData fight) => SerializeReplicableFightData(fight, null);
-
-    internal static byte[] SerializeReplicableFightData(IMechaFightData fight, byte[] previous)
+    internal static byte[] SerializeReplicableFightData(IMechaFightData fight, byte[] previous = null)
     {
         var ground = fight.GroundCombatModule;
         var space = fight.SpaceCombatModule;
@@ -942,6 +1148,9 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         commandSequence = 0;
         var session = Multiplayer.Session;
         if (session.IsServer || !session.Authority.IsActive) return false;
+        if (intent.Kind is CombatIntentKind.FleetLaunch or CombatIntentKind.FleetCommand or
+            CombatIntentKind.FleetAttackTarget or CombatIntentKind.FleetAttackPosition or CombatIntentKind.FleetOrbit)
+            SendSettings(GameMain.gameTick, immediate: true);
         if (!sendingEpoch.Equals(session.Authority.Epoch) || !sendingConnection.Equals(session.Authority.Connection))
         { sendingEpoch = session.Authority.Epoch; sendingConnection = session.Authority.Connection; sequence = 0; }
         var key = default(ObjectKey);
@@ -971,11 +1180,18 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
     public bool ApplyState(AuthorityPlayerCombatStatePacket packet)
     {
         if (packet.SettledAttacks == null || packet.SettledAttacks.Length > 256 || packet.SettledAttacks.Any(x => x <= 0)) return false;
+        if (packet.DebitItems == null || packet.DebitTotals == null || packet.DebitItems.Length != packet.DebitTotals.Length ||
+            packet.DebitItems.Length > 512 || double.IsNaN(packet.CoreEnergyDebitTotal) || double.IsInfinity(packet.CoreEnergyDebitTotal) ||
+            packet.CoreEnergyDebitTotal < 0) return false;
         var epoch = new AuthorityEpoch(packet.EpochHigh, packet.EpochLow);
+        var session = Multiplayer.Session;
+        var ownPacket = packet.PlayerId == session.LocalPlayer.Id;
+        if (session.Authority?.IsActive == true && (epoch != session.Authority.Epoch ||
+            ownPacket && session.Authority.Connection.IsValid && packet.ActorConnection != session.Authority.Connection.Value)) return true;
         if (!receivingEpoch.Equals(epoch))
         {
             var replacingWorld = receivingEpoch.IsValid;
-            receivingEpoch = epoch; received.Clear(); receivedConnections.Clear(); acknowledgedDebits.Clear(); CoreDebitAcknowledged = 0; LastAppliedRevision = 0;
+            receivingEpoch = epoch; received.Clear(); receivedConnections.Clear(); acknowledgedDebits.Clear(); CoreDebitAcknowledged = 0; LastAppliedRevision = LastAppliedCommand = 0;
             if (replacingWorld)
             {
                 observedStocks = null; publishedStockHistory.Clear(); publishedPersonalRevision = 0; observedPersonalRevision = 0; personalStocksDirty = false;
@@ -985,13 +1201,30 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
             lastSettings = NoSettingsSent;
         }
         if (receivedConnections.TryGetValue(packet.PlayerId, out var connection) && packet.ActorConnection < connection) return true;
-        if (connection != packet.ActorConnection) { receivedConnections[packet.PlayerId] = packet.ActorConnection; received.Remove(packet.PlayerId); }
+        if (connection != packet.ActorConnection)
+        {
+            receivedConnections[packet.PlayerId] = packet.ActorConnection; received.Remove(packet.PlayerId);
+            if (ownPacket)
+            {
+                acknowledgedDebits.Clear(); CoreDebitAcknowledged = 0; LastAppliedRevision = LastAppliedCommand = 0;
+                lastSettings = NoSettingsSent;
+            }
+        }
         if (received.TryGetValue(packet.PlayerId, out var previous) && packet.CombatRevision <= previous) return true;
         using (Multiplayer.Session.World.GetRemotePlayersModels(out var models))
         {
             var own = packet.PlayerId == Multiplayer.Session.LocalPlayer.Id;
             var player = own ? GameMain.mainPlayer : models.TryGetValue(packet.PlayerId, out var model) ? model.PlayerInstance : null;
             if (player == null) return false;
+            if (own)
+            {
+                if (packet.CoreEnergyDebitTotal < CoreDebitAcknowledged || packet.LastCommandSequence < LastAppliedCommand) return false;
+                for (var i = 0; i < packet.DebitItems.Length; i++)
+                {
+                    acknowledgedDebits.TryGetValue(packet.DebitItems[i], out var acknowledged);
+                    if (packet.DebitItems[i] <= 0 || !CombatConsumptionLedger.TryDelta(acknowledged, packet.DebitTotals[i], out _)) return false;
+                }
+            }
             // A completed local respawn can precede its host checkpoint; remote life messages
             // can also precede queued combat facts from the dead life.
             // Keep its life/energy state, but still acknowledge combat revisions and stocks:
@@ -1023,6 +1256,7 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
             if (own)
             {
                 fight.AmmoSelectSlot = mecha.ammoSelectSlot; fight.LaserActive = mecha.laserActive;
+                fight.AmmoSelectSlotState = mecha.ammoSelectSlotState; fight.LaserActiveState = mecha.laserActiveState; fight.BombActive = mecha.bombActive;
                 fight.AutoReplenishFuel = mecha.autoReplenishFuel; fight.AutoReplenishAmmo = mecha.autoReplenishAmmo;
                 fight.AutoReplenishHangar = mecha.autoReplenishHangar;
                 fight.GroundCombatModule.moduleEnabled = mecha.groundCombatModule.moduleEnabled;
@@ -1140,6 +1374,9 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
             var source = personalFight;
             actor.Player.mecha.ammoSelectSlot = source.AmmoSelectSlot;
             actor.Player.mecha.laserActive = source.LaserActive;
+            actor.Player.mecha.ammoSelectSlotState = source.AmmoSelectSlotState;
+            actor.Player.mecha.laserActiveState = source.LaserActiveState;
+            actor.Player.mecha.bombActive = source.BombActive;
             actor.Player.mecha.autoReplenishAmmo = source.AutoReplenishAmmo;
             actor.Player.mecha.autoReplenishHangar = source.AutoReplenishHangar;
             CopyFleetSettings(actor.Player.mecha.groundCombatModule, source.GroundCombatModule);
@@ -1196,6 +1433,10 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         Multiplayer.Session.CombatAuthority.actors.TryGetValue((ushort)CombatManager.PlayerId, out var actor)
         ? GameMain.galaxy.StarById(actor.Data.LocalStarId) : GameMain.localStar;
 
+    public static PlanetData CasterPlanet() => Multiplayer.IsActive && Multiplayer.Session.IsServer &&
+        Multiplayer.Session.CombatAuthority.actors.TryGetValue((ushort)CombatManager.PlayerId, out var actor)
+        ? actor.Player.planetData : GameMain.localPlanet;
+
     private void ReclaimFleets(Actor actor)
     {
         var previous = ReclaimingFleets; ReclaimingFleets = true;
@@ -1232,8 +1473,52 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
     {
         target.attackRelay = source.attackRelay;
         target.attackBuilding = source.attackBuilding;
+        target.autoReplenishFleet = source.autoReplenishFleet;
         for (var i = 0; i < Math.Min(target.fleetCount, source.fleetCount); i++)
             target.moduleFleets[i].fleetEnabled = source.moduleFleets[i].fleetEnabled;
+    }
+
+    internal static void ApplyFleetEnabled(CombatModuleComponent module, bool enabled, int fleets)
+    {
+        module.moduleEnabled = enabled;
+        ApplyFleetMask(module, fleets);
+    }
+
+    /// <summary>
+    /// Applies a ground fleet mask if it only names slots this actor has actually unlocked.
+    /// </summary>
+    internal static bool TryApplyGroundFleetMask(CombatModuleComponent module, int mask)
+    {
+        var count = Math.Min(Math.Max(module.fleetCount, 0), 8);
+        if (mask < 0 || mask >= 1 << count) return false;
+        ApplyFleetMask(module, mask);
+        return true;
+    }
+
+    /// <summary>Applies one fleet enable mask without touching the module's own enable bit.</summary>
+    internal static void ApplyFleetMask(CombatModuleComponent module, int fleets)
+    {
+        for (var i = 0; i < module.fleetCount; i++)
+        {
+            module.moduleFleets[i].fleetEnabled = (fleets & (1 << i)) != 0;
+            RemoveDisabledFleet(module, i);
+        }
+    }
+
+    /// <summary>Applies the module enable bit and drops every deployed fleet when it turns off.</summary>
+    internal static void ApplyModuleEnabled(CombatModuleComponent module, bool enabled)
+    {
+        module.moduleEnabled = enabled;
+        for (var i = 0; i < module.fleetCount; i++) RemoveDisabledFleet(module, i);
+    }
+
+    private static void RemoveDisabledFleet(CombatModuleComponent module, int index)
+    {
+        // Match the native disable buttons: put deployed fighters back immediately.
+        // Running this on the host keeps removals, ports and stock in one transaction.
+        var fleet = module.moduleFleets[index];
+        if ((!module.moduleEnabled || !fleet.fleetEnabled) && fleet.fleetId > 0)
+            module.RemoveFleetDirectly(index);
     }
 
     private static StorageComponent CloneStock(StorageComponent source)
@@ -1261,6 +1546,9 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         destination.energyShieldUnlocked = source.energyShieldUnlocked;
         destination.energyShieldRadius = source.energyShieldRadius;
         destination.energyShieldCapacity = source.energyShieldCapacity;
+        destination.energyShieldEnergyRate = source.energyShieldEnergyRate;
+        destination.energyShieldBurstUnlocked = source.energyShieldBurstUnlocked;
+        destination.energyShieldBurstDamageRate = source.energyShieldBurstDamageRate;
         destination.laserEnergyCapacity = source.laserEnergyCapacity;
         destination.laserLocalAttackRange = source.laserLocalAttackRange;
         destination.laserSpaceAttackRange = source.laserSpaceAttackRange;

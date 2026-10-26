@@ -5,16 +5,19 @@ internal class DysonSphereLoadRequest
 {
     public DysonSphereLoadRequest() { }
 
-    public DysonSphereLoadRequest(int starIndex, DysonSphereRequestEvent requestEvent)
+    public DysonSphereLoadRequest(int starIndex, DysonSphereRequestEvent requestEvent, int requestId = 0)
     {
         StarIndex = starIndex;
         Event = requestEvent;
+        RequestId = requestId;
     }
 
     [NebulaeModel.Networking.WireOrder(0)]
     public int StarIndex { get; set; }
     [NebulaeModel.Networking.WireOrder(1)]
     public DysonSphereRequestEvent Event { get; set; }
+    [NebulaeModel.Networking.WireOrder(2)]
+    public int RequestId { get; set; }
 }
 
 internal enum DysonSphereRequestEvent

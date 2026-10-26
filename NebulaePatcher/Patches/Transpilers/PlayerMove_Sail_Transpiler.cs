@@ -7,7 +7,6 @@ using System.Reflection;
 using System.Reflection.Emit;
 using HarmonyLib;
 using NebulaeModel.Logger;
-using NebulaeModel.Packets.Universe;
 using NebulaeWorld;
 
 #endregion

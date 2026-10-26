@@ -81,8 +81,6 @@ internal readonly struct ScopeRecoveryPlan
     }
 
     public ScopeRecoveryAction[] Actions { get; }
-
-    public bool IsEmpty => Actions == null || Actions.Length == 0;
 }
 
 /// <summary>

@@ -37,7 +37,6 @@ internal sealed class SpaceEnemyReplicaBinding : IReplicaMirrorObserver, IReplic
     private SpaceSector sector;
     private EnemyData[] enemyPool;
 
-    public ClientWorldReplica Replica { get; set; }
     public long RefusalsOutsideApplyWindow { get; private set; }
     public long DeferredBaselines { get; private set; }
 
@@ -46,7 +45,7 @@ internal sealed class SpaceEnemyReplicaBinding : IReplicaMirrorObserver, IReplic
 
     public SpaceEnemyReplicaBinding(Func<bool> applyWindowOpen = null)
     {
-        this.applyWindowOpen = applyWindowOpen ?? DefaultApplyWindowOpen;
+        this.applyWindowOpen = applyWindowOpen ?? ReplicaApplyContext.IsSessionApplyActive;
     }
 
     public void OnStateApplied(ScopeKey scope, in ObjectKey key, long revision, byte[] state)
@@ -55,6 +54,7 @@ internal sealed class SpaceEnemyReplicaBinding : IReplicaMirrorObserver, IReplic
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;
+            BindingDiagnostics.OutsideWindow(nameof(SpaceEnemyReplicaBinding), scope);
             return;
         }
         var binding = CoreFor();
@@ -68,6 +68,7 @@ internal sealed class SpaceEnemyReplicaBinding : IReplicaMirrorObserver, IReplic
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;
+            BindingDiagnostics.OutsideWindow(nameof(SpaceEnemyReplicaBinding), scope);
             return;
         }
         if (GameMain.spaceSector == null)
@@ -95,6 +96,7 @@ internal sealed class SpaceEnemyReplicaBinding : IReplicaMirrorObserver, IReplic
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;
+            BindingDiagnostics.OutsideWindow(nameof(SpaceEnemyReplicaBinding), scope);
             return;
         }
         core?.RemoveMember(key);
@@ -111,6 +113,7 @@ internal sealed class SpaceEnemyReplicaBinding : IReplicaMirrorObserver, IReplic
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;
+            BindingDiagnostics.OutsideWindow(nameof(SpaceEnemyReplicaBinding), scope);
             return;
         }
         core?.PlayDeath(key);
@@ -126,11 +129,5 @@ internal sealed class SpaceEnemyReplicaBinding : IReplicaMirrorObserver, IReplic
             core = new SpaceEnemyBinding(new SpaceEnemyReplicaPools());
         }
         return core;
-    }
-
-    private static bool DefaultApplyWindowOpen()
-    {
-        var session = Multiplayer.Session;
-        return session?.AuthorityRuntime?.ApplyContext?.IsActiveOnCurrentThread ?? false;
     }
 }

@@ -34,9 +34,9 @@ internal static class UIControlPanelPlanetEntry_Transpiler
 
             return codeMacher.InstructionEnumeration();
         }
-        catch
+        catch (System.Exception error)
         {
-            Log.Error("Transpiler UIControlPanelPlanetEntry.UpdateBanner error.");
+            Log.Error("Transpiler UIControlPanelPlanetEntry.UpdateBanner error.", error);
             return instructions;
         }
     }

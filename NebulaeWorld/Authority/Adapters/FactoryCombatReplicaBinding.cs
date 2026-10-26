@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using NebulaeModel.Authority;
 
 #endregion
@@ -64,7 +65,7 @@ internal sealed class FactoryCombatReplicaBinding : IReplicaMirrorObserver, IRep
     /// </param>
     public FactoryCombatReplicaBinding(Func<bool> applyWindowOpen = null)
     {
-        this.applyWindowOpen = applyWindowOpen ?? DefaultApplyWindowOpen;
+        this.applyWindowOpen = applyWindowOpen ?? ReplicaApplyContext.IsSessionApplyActive;
     }
 
     public void OnStateApplied(ScopeKey scope, in ObjectKey key, long revision, byte[] state)
@@ -73,10 +74,12 @@ internal sealed class FactoryCombatReplicaBinding : IReplicaMirrorObserver, IRep
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;
+            BindingDiagnostics.OutsideWindow(nameof(FactoryCombatReplicaBinding), scope);
             return;
         }
         var binding = BindingFor(scope);
         if (binding == null) return;
+        if (NebulaeWorld.Factory.BuildingDeathReplication.IsRetired(binding.Factory, key)) return;
         binding.Core.ApplyState(key, state);
     }
 
@@ -86,6 +89,7 @@ internal sealed class FactoryCombatReplicaBinding : IReplicaMirrorObserver, IRep
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;
+            BindingDiagnostics.OutsideWindow(nameof(FactoryCombatReplicaBinding), scope);
             return;
         }
         var factory = FactoryFor(scope.Scope);
@@ -114,7 +118,8 @@ internal sealed class FactoryCombatReplicaBinding : IReplicaMirrorObserver, IRep
             binding.ReferencesRepaired = true;
         }
         NebulaeWorld.Factory.ConstructionRepairTargets.Invalidate(factory, clear: true);
-        binding.Core.ReconcileBaseline(members);
+        binding.Core.ReconcileBaseline(members.Where(member =>
+            !NebulaeWorld.Factory.BuildingDeathReplication.IsRetired(factory, member.Key)).ToList());
     }
 
     public void OnMemberRemoved(ScopeKey scope, in ObjectKey key)
@@ -123,6 +128,7 @@ internal sealed class FactoryCombatReplicaBinding : IReplicaMirrorObserver, IRep
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;
+            BindingDiagnostics.OutsideWindow(nameof(FactoryCombatReplicaBinding), scope);
             return;
         }
         scopes.TryGetValue(scope.Scope, out var binding);
@@ -188,10 +194,4 @@ internal sealed class FactoryCombatReplicaBinding : IReplicaMirrorObserver, IRep
     }
 
     private static PlanetFactory FactoryFor(int planetId) => GameMain.galaxy?.PlanetById(planetId)?.factory;
-
-    private static bool DefaultApplyWindowOpen()
-    {
-        var session = Multiplayer.Session;
-        return session?.AuthorityRuntime?.ApplyContext?.IsActiveOnCurrentThread ?? false;
-    }
 }

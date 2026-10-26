@@ -3,7 +3,7 @@ using NebulaeModel.DataStructures;
 namespace NebulaeModel.Packets.Combat.Mecha;
 
 internal enum CheckpointReceiptStatus : byte { Accepted = 1, Duplicate, Retry, Rejected }
-internal enum CheckpointRejectReason : byte { None, Busy, CombatBaseline, InvalidSnapshot, InvalidLedger }
+internal enum CheckpointRejectReason : byte { None, Busy, CombatBaseline, InvalidSnapshot, InvalidLedger, CombatLedger, InventoryLedger }
 
 [NebulaeModel.Networking.PacketId(7385105842791126233UL)]
 internal class PlayerLifePacket

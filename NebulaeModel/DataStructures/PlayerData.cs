@@ -2,7 +2,6 @@
 
 using System;
 using System.IO;
-using NebulaeModel.DataStructures;
 using NebulaeModel.Contracts;
 using NebulaeModel.Networking;
 using NebulaeModel.Networking.Serialization;
@@ -85,6 +84,15 @@ internal class PlayerData : IPlayerData
         var life = CombatAuthoritative ? Life : null;
         Mecha = snapshot.Mecha;
         if (fight != null) Mecha.FightData = fight;
+        // A material transfer debits the package and credits the DIY store in the same cut.
+        // Older personal snapshots omitted customization, so only replace it when present.
+        if (snapshot.DIYAppearance != null)
+        {
+            Appearance = snapshot.Appearance ?? Appearance;
+            DIYAppearance = snapshot.DIYAppearance;
+            DIYItemId = (int[])snapshot.DIYItemId.Clone();
+            DIYItemValue = (int[])snapshot.DIYItemValue.Clone();
+        }
         Life = snapshot.Life;
         if (life != null)
         {
@@ -268,6 +276,29 @@ internal class PlayerData : IPlayerData
         // name tags, battle visuals and broadcast filtering on those clients.
         copy.LocalStarId = LocalStarId;
         return copy;
+    }
+
+    public PlayerData CreatePersonalSnapshot(Mecha mecha)
+    {
+        Appearance = mecha.appearance;
+        DIYAppearance = mecha.diyAppearance;
+        var materials = mecha.diyItems?.items;
+        DIYItemId = new int[materials?.Count ?? 0];
+        DIYItemValue = new int[DIYItemId.Length];
+        var index = 0;
+        if (materials != null)
+            foreach (var material in materials)
+            {
+                DIYItemId[index] = material.Key;
+                DIYItemValue[index++] = material.Value;
+            }
+        var snapshot = (PlayerData)CreateCopyWithoutMechaData();
+        snapshot.Mecha = Mecha;
+        snapshot.Appearance = Appearance;
+        snapshot.DIYAppearance = DIYAppearance;
+        snapshot.DIYItemId = DIYItemId;
+        snapshot.DIYItemValue = DIYItemValue;
+        return snapshot;
     }
 
     // Disk import is the only reader that accepts historical player layouts.

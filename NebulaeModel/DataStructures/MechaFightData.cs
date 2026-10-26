@@ -1,16 +1,17 @@
 ﻿#region
 using System;
 using System.IO;
-using NebulaeModel.DataStructures;
 using NebulaeModel.Contracts;
 using NebulaeModel.Networking;
 using NebulaeModel.Networking.Serialization;
+using NebulaeModel.Packets.Authority;
 #endregion
 
 namespace NebulaeModel.DataStructures
 {
     internal class MechaFightData : IMechaFightData
     {
+        private const int WeaponSettingsMarker = 0x57504E31;
         public MechaFightData()
         {
             // This is needed for the serialization and deserialization
@@ -38,6 +39,9 @@ namespace NebulaeModel.DataStructures
             AmmoInc = player.mecha.ammoInc;
             AmmoBulletCount = player.mecha.ammoBulletCount;
             AmmoSelectSlot = player.mecha.ammoSelectSlot;
+            AmmoSelectSlotState = player.mecha.ammoSelectSlotState;
+            LaserActiveState = player.mecha.laserActiveState;
+            BombActive = player.mecha.bombActive;
             AmmoMuzzleFire = player.mecha.ammoMuzzleFire;
             AmmoRoundFire = player.mecha.ammoRoundFire;
             AmmoMuzzleIndex = player.mecha.ammoMuzzleIndex;
@@ -63,6 +67,9 @@ namespace NebulaeModel.DataStructures
         public int AmmoInc { get; set; }
         public int AmmoBulletCount { get; set; }
         public int AmmoSelectSlot { get; set; }
+        public int AmmoSelectSlotState { get; set; }
+        public int LaserActiveState { get; set; }
+        public bool BombActive { get; set; }
         public int AmmoMuzzleFire { get; set; }
         public int AmmoRoundFire { get; set; }
         public int AmmoMuzzleIndex { get; set; }
@@ -133,6 +140,8 @@ namespace NebulaeModel.DataStructures
             FighterStorage.Export(wr);
             GroundCombatModule.Export(wr);
             SpaceCombatModule.Export(wr);
+            wr.Write(WeaponSettingsMarker);
+            wr.Write(CombatWeaponSettings.Encode(0, AmmoSelectSlotState, LaserActiveState, BombActive));
             // The stream's own buffer is the image; copying it into a second array just to hand the
             // writer a byte[] would allocate exactly what the reuse above avoids.
             var buffer = ms.GetBuffer();
@@ -186,6 +195,19 @@ namespace NebulaeModel.DataStructures
             GroundCombatModule.Import(br);
             BinaryUtils.RequireHeader(br, 3);
             SpaceCombatModule.Import(br);
+            AmmoSelectSlotState = LaserActiveState = 0;
+            BombActive = false;
+            // Older checkpoints end at the space module. Keep their original layout readable.
+            if (ms.Position < ms.Length)
+            {
+                if (ms.Length - ms.Position != 8 || br.ReadInt32() != WeaponSettingsMarker)
+                    throw new ParseException("Invalid mecha weapon settings");
+                var flags = br.ReadInt32();
+                if ((flags & ~CombatWeaponSettings.Mask) != 0 ||
+                    !CombatWeaponSettings.TryDecode(flags, out var ammoMode, out var laserMode, out var bomb))
+                    throw new ParseException("Invalid mecha weapon modes");
+                AmmoSelectSlotState = ammoMode; LaserActiveState = laserMode; BombActive = bomb;
+            }
             if (ms.Position != ms.Length) throw new ParseException("Trailing mecha combat data");
         }
         public void UpdateMech(Player destination)
@@ -199,6 +221,9 @@ namespace NebulaeModel.DataStructures
             destination.mecha.ammoInc = AmmoInc;
             destination.mecha.ammoBulletCount = AmmoBulletCount;
             destination.mecha.ammoSelectSlot = AmmoSelectSlot;
+            destination.mecha.ammoSelectSlotState = AmmoSelectSlotState;
+            destination.mecha.laserActiveState = LaserActiveState;
+            destination.mecha.bombActive = BombActive;
             destination.mecha.ammoMuzzleFire = AmmoMuzzleFire;
             destination.mecha.ammoRoundFire = AmmoRoundFire;
             destination.mecha.ammoMuzzleIndex = AmmoMuzzleIndex;

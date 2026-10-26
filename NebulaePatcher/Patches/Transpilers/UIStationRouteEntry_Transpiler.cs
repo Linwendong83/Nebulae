@@ -30,9 +30,9 @@ internal static class UIStationRouteEntry_Transpiler
 
             return codeMatcher.InstructionEnumeration();
         }
-        catch
+        catch (System.Exception error)
         {
-            Log.Error("Transpiler UIStationRouteEntry.Refresh error.");
+            Log.Error("Transpiler UIStationRouteEntry.Refresh error.", error);
             return instructions;
         }
     }

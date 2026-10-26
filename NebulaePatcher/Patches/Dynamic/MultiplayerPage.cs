@@ -74,7 +74,6 @@ internal static class MultiplayerPage
 
     private class RowWidgets
     {
-        public Text Name;
         public Text Description;
         public Text Players;
         public Text Ping;
@@ -605,7 +604,6 @@ internal static class MultiplayerPage
             name.color = NameColor;
             AnchorColumn(name, new Vector2(0f, 0.45f), new Vector2(0.78f, 1f), new Vector2(20, 0), new Vector2(-8, -5));
             name.raycastTarget = false;
-            widgets.Name = name;
 
             var description = CloneText(row, string.Empty, TextAnchor.MiddleLeft, 14);
             description.color = DescriptionColor;

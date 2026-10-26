@@ -50,6 +50,15 @@ internal sealed class MainThreadActionQueue
     }
     public void Drain()
     {
-        while (actions.TryDequeue(out var action)) action();
+        while (actions.TryDequeue(out var action))
+        {
+            try { action(); }
+            catch (Exception error)
+            {
+                Logger.Diagnostics.Error("main-thread:" + action.Method.DeclaringType?.FullName + ":" + action.Method.Name,
+                    () => $"[dispatch] main-thread action failed action={action.Method.DeclaringType?.FullName}.{action.Method.Name} remaining={actions.Count}", error);
+                throw;
+            }
+        }
     }
 }

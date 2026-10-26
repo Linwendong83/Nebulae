@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using NebulaeModel.Authority;
 using NebulaeModel.DataStructures;
@@ -19,6 +18,9 @@ internal sealed class ManualBuildManager
     private int reservedItem, reservedCount, reservedInc;
     private AuthorityCommandResultPacket result;
     public bool InventoryPending => pending != 0;
+    internal long DiagnosticSequence => pending;
+    internal bool DiagnosticWaiting => pending != 0 || requests.Count > 0;
+    internal string DiagnosticState => $"command={pending} checkpoint={checkpointTicket} requests={requests.Count} reservedItem={reservedItem} reservedCount={reservedCount} result={result?.ResultCode}";
 
     private void EnsureWorld()
     {

@@ -5,6 +5,7 @@ using NebulaeModel.DataStructures;
 using NebulaeModel.Packets.Authority;
 using NebulaeModel.Packets.Factory.Assembler;
 using NebulaeWorld.Authority;
+using NebulaeModel.Logger;
 
 namespace NebulaeWorld.Factory;
 
@@ -31,6 +32,9 @@ internal sealed partial class FactoryProductManager : IDisposable
     private long pending, checkpointTicket;
     private (ObjectKey Key, FactoryProductIntent Intent) activeRequest;
     public bool InventoryPending => pending != 0;
+    internal long DiagnosticSequence => pending;
+    internal bool DiagnosticWaiting => pending != 0 || requests.Count > 0 || repairs.Count > 0;
+    internal string DiagnosticState => $"command={pending} checkpoint={checkpointTicket} requests={requests.Count} results={results.Count} incoming={incoming.Count} repairs={repairs.Count} target={activeRequest.Key}";
     public Func<FactorySystem, int, IReadOnlyList<PlayerInventoryTransferLedger.Transfer>> CollectRefunds { get; set; }
     public Func<FactorySystem, int, IReadOnlyList<PlayerInventoryTransferLedger.Transfer>> CollectLabRefunds { get; set; }
 
@@ -107,6 +111,7 @@ internal sealed partial class FactoryProductManager : IDisposable
         if (!FactoryProductIntent.TryDecode(command.Packet.Payload, out var intent))
             return new CommandOutcome(CommandResultCode.RejectedInvalid);
         if (intent.Kind == FactoryInteractionKind.FighterPort) return ExecuteFighterPort(command, intent, player);
+        if (intent.Kind == FactoryInteractionKind.FleetConfigure) return ExecuteFleetConfiguration(command, intent, player);
         if (!command.Packet.TryGetTargetKey(out var key) || key.Kind != PoolKind.Entity)
             return new CommandOutcome(CommandResultCode.RejectedTarget);
         var machineFound = TryMachine(key, out var factory, out var id);
@@ -449,13 +454,18 @@ internal sealed partial class FactoryProductManager : IDisposable
         if (!packet.TryKey(epoch, out _) || packet.Sequence < 0 || packet.Message < (byte)FactoryProductMessage.Commit || packet.Message > (byte)FactoryProductMessage.FighterPortsSnapshot ||
             packet.Counts == null || packet.Products == null || packet.OutputInc == null || packet.OutputInc.Length > max || packet.Counts.Length > max || packet.Products.Length > max ||
             packet.Inputs == null || packet.Served == null || packet.IncServed == null || packet.Filters == null || packet.Filters.Length > max ||
-            packet.Inputs.Length > max || packet.Served.Length > max || packet.IncServed.Length > max) return;
+            packet.Inputs.Length > max || packet.Served.Length > max || packet.IncServed.Length > max)
+        {
+            Diagnostics.Warn("products:invalid", () => $"[factory-products] invalid incoming state message={packet.Message} sequence={packet.Sequence} counts={packet.Counts?.Length} products={packet.Products?.Length}");
+            return;
+        }
         lock (gate)
         {
             // Join replay is already byte-bounded. Keep those events until the entity baseline
             // supplies their generation identities; a live-session burst keeps its usual cap.
             if (incoming.Count < 256 || Multiplayer.Session.JoinSync?.LocalPending == true)
                 incoming.Enqueue(packet.Copy());
+            else Diagnostics.Warn("products:queue-full", () => $"[factory-products] incoming state dropped count={incoming.Count} limit=256 message={packet.Message} sequence={packet.Sequence}");
         }
     }
 
@@ -475,8 +485,12 @@ internal sealed partial class FactoryProductManager : IDisposable
             var result = new ClientResult { Sequence = packet.Sequence, InventorySequence = packet.ResourceRevision };
             if ((CommandResultCode)packet.ResultCode != CommandResultCode.Applied)
             {
-                if (activeRequest.Intent.Kind != FactoryInteractionKind.FighterPort && (CommandResultCode)packet.ResultCode is CommandResultCode.RejectedResource or CommandResultCode.RejectedStale)
-                    if (repairs.Add(activeRequest.Key)) RequestRepair(activeRequest.Key);
+                if (activeRequest.Intent.Kind is not (FactoryInteractionKind.FighterPort or FactoryInteractionKind.FleetConfigure) && (CommandResultCode)packet.ResultCode is CommandResultCode.RejectedResource or CommandResultCode.RejectedStale)
+                    if (repairs.Add(activeRequest.Key))
+                    {
+                        Diagnostics.Warn("products:result-repair:" + activeRequest.Key, () => $"[factory-products] repairing after command refusal key={activeRequest.Key} command={packet.Sequence} result={(CommandResultCode)packet.ResultCode}");
+                        RequestRepair(activeRequest.Key);
+                    }
                 if (activeRequest.Intent.Kind == FactoryInteractionKind.Deposit)
                     result.Credits.Enqueue(new PlayerInventoryTransferLedger.Transfer(activeRequest.Intent.Item, activeRequest.Intent.Count, activeRequest.Intent.Inc, activeRequest.Intent.Hand));
                 if (activeRequest.Intent.Kind == FactoryInteractionKind.FighterPort && activeRequest.Intent.Count > 0)
@@ -511,7 +525,7 @@ internal sealed partial class FactoryProductManager : IDisposable
             if (packet.Message == (byte)FactoryProductMessage.FighterPortsSnapshot)
             {
                 if (TryBattleBase(key, out _, out var battleBase) && (!sequences.TryGetValue(key, out var before) || packet.Sequence >= before) && ApplyFighterPortSnapshot(battleBase, packet))
-                { sequences[key] = packet.Sequence; repairs.Remove(key); repairTicks.Remove(key); }
+                { sequences[key] = packet.Sequence; if (repairs.Remove(key)) Log.Debug($"[factory-products] fighter port repaired key={key} sequence={packet.Sequence}"); repairTicks.Remove(key); }
                 continue;
             }
             if (TryFractionator(key, out var fractionatorFactory, out var fractionatorId)) { ApplyFractionatorPacket(key, fractionatorFactory, fractionatorId, packet); continue; }
@@ -528,12 +542,18 @@ internal sealed partial class FactoryProductManager : IDisposable
                 }
                 if (!repairs.Contains(key) || packet.Sequence < last || !ApplySnapshot(ref machine, packet)) continue;
                 binding.SetAcceleration(packet.ForceAcceleration); sequences[key] = packet.Sequence; repairs.Remove(key); repairTicks.Remove(key);
+                Log.Debug($"[factory-products] repaired key={key} sequence={packet.Sequence} recipe={packet.Recipe}");
             }
             else if (packet.Sequence > last)
             {
                 if (!initialized || repairs.Contains(key) || packet.Sequence != last + 1 || !ApplyEvent(binding, ref machine, packet))
                 {
-                    if (repairs.Add(key)) RequestRepair(key);
+                    if (repairs.Add(key))
+                    {
+                        if (initialized) Diagnostics.Warn("products:repair:" + key, () => $"[factory-products] repair requested key={key} sequence={packet.Sequence} expected={last + 1} recipe={packet.Recipe}/{machine.recipeId}");
+                        else Log.Debug($"[factory-products] initial product baseline requested key={key} sequence={packet.Sequence}");
+                        RequestRepair(key);
+                    }
                 }
                 else sequences[key] = packet.Sequence;
             }
@@ -568,8 +588,12 @@ internal sealed partial class FactoryProductManager : IDisposable
                             GameMain.mainPlayer.SendItemToPlayer(ref item, ref count, ref inc, false, null);
                             added = credit.Count - count; remainingInc = inc;
                         }
-                        else added = GameMain.mainPlayer.package.AddItemStacked(credit.Item, credit.Count, credit.Inc, out remainingInc);
-                        if (added > 0) { GameMain.mainPlayer.NotifyPackageAddItem(credit.Item, added, credit.Inc - remainingInc); UIItemup.Up(credit.Item, added); }
+                        else
+                        {
+                            added = GameMain.mainPlayer.package.AddItemStacked(credit.Item, credit.Count, credit.Inc, out remainingInc);
+                            // A returned hand is still held; only actual package gains produce pickup events and tips.
+                            if (added > 0) { GameMain.mainPlayer.NotifyPackageAddItem(credit.Item, added, credit.Inc - remainingInc); UIItemup.Up(credit.Item, added); }
+                        }
                         if (added < credit.Count)
                         {
                             var rest = new Queue<PlayerInventoryTransferLedger.Transfer>();

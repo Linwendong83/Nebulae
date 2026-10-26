@@ -34,9 +34,9 @@ internal static class UIReferenceSpeedTip_Transpiler
                 )
                 .InstructionEnumeration();
         }
-        catch
+        catch (System.Exception error)
         {
-            Log.Error("Transpiler UIReferenceSpeedTip.RefreshSubEntries failed. Reference speed tip may not work properly.");
+            Log.Error("Transpiler UIReferenceSpeedTip.RefreshSubEntries failed. Reference speed tip may not work properly.", error);
             return codeInstructions;
         }
     }

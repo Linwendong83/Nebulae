@@ -27,18 +27,6 @@ internal class StorageSyncRealtimeChangePacket
         PlanetId = planetId;
     }
 
-    public StorageSyncRealtimeChangePacket(int storageIndex, StorageSyncRealtimeChangeEvent storageEvent, int itemId, int count,
-        int[] needs, bool useBan)
-    {
-        StorageEvent = storageEvent;
-        ItemId = itemId;
-        Count = count;
-        Needs = needs;
-        UseBan = useBan;
-        StorageIndex = storageIndex;
-        PlanetId = GameMain.localPlanet?.id ?? -1;
-    }
-
     public StorageSyncRealtimeChangePacket(int storageIndex, StorageSyncRealtimeChangeEvent storageEvent, int gridIndex,
         int itemId, int count, int inc)
     {

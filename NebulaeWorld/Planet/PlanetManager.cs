@@ -55,7 +55,7 @@ internal class PlanetManager : IDisposable
         if (factoryPresenceCount == GameMain.data.factoryCount) return;
         factoryPresenceCount = GameMain.data.factoryCount;
         var bytes = ExportFactoryPresence();
-        if (NebulaeWorld.GameStates.LocalPlayerPreferences.Equal(bytes, factoryPresence)) return;
+        if (FieldDeltaCodec.Equal(bytes, factoryPresence)) return;
         factoryPresence = bytes;
         Multiplayer.Session.Network.SendPacket(new GlobalGameDataResponse(GlobalGameDataResponse.EDataType.PlanetBaseline, bytes));
     }
@@ -178,6 +178,7 @@ internal class PlanetManager : IDisposable
 
     public void PausePackets(int planet)
     {
+        Log.Debug($"[factory-load] pause packets planet={planet}");
         var processor = Multiplayer.Session.Network.PacketProcessor;
         if (!Loads.Paused) ownsPacketPause = processor.EnablePacketProcessing;
         Loads.Pause(planet);
@@ -190,6 +191,7 @@ internal class PlanetManager : IDisposable
         ownsPacketPause = false;
         var processor = Multiplayer.Session?.Network?.PacketProcessor;
         if (processor != null) processor.EnablePacketProcessing = true;
+        Log.Debug("[factory-load] resumed packets");
     }
 
     public void EnqueueFactory(PlanetData planet)
@@ -204,6 +206,7 @@ internal class PlanetManager : IDisposable
 
     public void CompleteFactory(PlanetData planet)
     {
+        Log.Debug($"[factory-load] factory completed planet={planet.id} stage={planet.factingCompletedStage}");
         ClearPending(planet.id);
         Loads.Complete(planet.id);
         ReleasePackets();
@@ -265,21 +268,13 @@ internal class PlanetManager : IDisposable
         if (PendingTerrainData.TryGetValue(planet.id, out var terrain))
         {
             PendingTerrainData.Remove(planet.id);
-            var changed = !TerrainEquals(planet.data.modData, terrain);
+            var changed = !FieldDeltaCodec.Equal(planet.data.modData, terrain);
             planet.modData = terrain;
             planet.data.modData = terrain;
             if (!changed || planet.type == EPlanetType.Gas) return;
             for (var i = 0; i < planet.dirtyFlags.Length; i++) planet.dirtyFlags[i] = true;
             planet.landPercentDirtyFlag = true;
         }
-    }
-
-    internal static bool TerrainEquals(byte[] left, byte[] right)
-    {
-        if (ReferenceEquals(left, right)) return true;
-        if (left == null || right == null || left.Length != right.Length) return false;
-        for (var i = 0; i < left.Length; i++) if (left[i] != right[i]) return false;
-        return true;
     }
 
     public static void RefreshMeshes(PlanetData planet)
@@ -345,6 +340,7 @@ internal class PlanetManager : IDisposable
             if (Multiplayer.Session.Planets.Loads.Contains(planet.id)) Multiplayer.Session.Planets.CancelFactory(planet);
         Multiplayer.Session.Drones.ClearAllRemoteDrones();
         Multiplayer.Session.BuildDispatch.OnFactoriesUnloaded();
+        Multiplayer.Session.Repairs?.AbortPlanet(null);
         using (Multiplayer.Session.Ships.PatchLockILS.On())
         {
             for (var i = gameData.factoryCount - 1; i >= 0; i--)

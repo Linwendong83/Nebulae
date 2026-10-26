@@ -1,10 +1,8 @@
-using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
 using HarmonyLib;
 using NebulaeWorld;
-using NebulaeWorld.Combat;
 
 namespace NebulaePatcher.Patches.Authority;
 

@@ -1,6 +1,5 @@
 ﻿#region
 
-using NebulaeModel.DataStructures.Chat;
 using NebulaeWorld.MonoBehaviours.Local.Chat;
 using UnityEngine;
 
@@ -20,8 +19,7 @@ internal class NavigateChatLinkHandler : IChatLinkHandler
             case 2: // PlayerId
                 if (!ushort.TryParse(substrings[0], out var playerId)) return;
                 Multiplayer.Session.Gizmos.SetIndicatorPlayerId(playerId);
-                ChatManager.Instance.SendChatMessage("Navigate to ".Translate() + substrings[1],
-                    ChatMessageType.CommandOutputMessage);
+                ChatManager.Instance.SendChatMessage("Navigate to ".Translate() + substrings[1]);
                 break;
 
             case 3: // AstroId
@@ -54,8 +52,7 @@ internal class NavigateChatLinkHandler : IChatLinkHandler
                     return;
                 }
                 gizmoManager.ObservingPlayerId = playerId;
-                ChatManager.Instance.SendChatMessage("Tracking mode (ESC or click again to exit)".Translate(),
-                    ChatMessageType.CommandOutputMessage);
+                ChatManager.Instance.SendChatMessage("Tracking mode (ESC or click again to exit)".Translate());
                 break;
 
             case 3: // AstroId
@@ -103,8 +100,7 @@ internal class NavigateChatLinkHandler : IChatLinkHandler
                     toRotate = Quaternion.LookRotation(Vector3.Cross(normalized, vector), vector);
                     GameCamera.instance.planetPoser.rotationWanted = toRotate;
                 }
-                ChatManager.Instance.SendChatMessage("Tracking mode (ESC or click again to exit)".Translate(),
-                    ChatMessageType.CommandOutputMessage);
+                ChatManager.Instance.SendChatMessage("Tracking mode (ESC or click again to exit)".Translate());
                 break;
         }
     }
@@ -121,16 +117,6 @@ internal class NavigateChatLinkHandler : IChatLinkHandler
         }
     }
 
-
-    public string GetIconName(string data)
-    {
-        return string.Empty;
-    }
-
-    public string GetDisplayRichText(string data)
-    {
-        return FormatNavigateString(data);
-    }
 
     private static void UpdateTip(ChatLinkTrigger trigger, ref MonoBehaviour tipObject)
     {

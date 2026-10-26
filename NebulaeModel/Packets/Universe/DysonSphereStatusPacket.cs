@@ -1,4 +1,4 @@
-#region
+﻿#region
 
 using NebulaeModel.Networking;
 
@@ -16,6 +16,10 @@ internal class DysonSphereStatusPacket
         StarIndex = dysonSphere.starData.index;
         EnergyReqCurrentTick = dysonSphere.energyReqCurrentTick;
         DebuffCoef = dysonSphere.energyDFHivesDebuffCoef;
+        EnergyGenCurrentTick = dysonSphere.energyGenCurrentTick;
+        EnergyGenOriginalCurrentTick = dysonSphere.energyGenOriginalCurrentTick;
+        SwarmEnergyGenCurrentTick = dysonSphere.swarm.energyGenCurrentTick;
+        GrossRadius = dysonSphere.grossRadius;
     }
 
     [NebulaeModel.Networking.WireOrder(0)]
@@ -31,9 +35,30 @@ internal class DysonSphereStatusPacket
     /// <summary>
     ///     Hive gamma debuff coefficient. It is a function of the host's gamma counts, which the
     ///     replica does not carry, so it travels as well; it only moves when a hive gains or loses a
-    ///     gamma. Everything else about dyson energy (swarm, layers, gross radius) is derived from
-    ///     the sphere structure the peer already replicates, and is computed locally.
+    ///     gamma. Generation totals below are authoritative too: launch replay can lag the host.
     /// </summary>
     [NebulaeModel.Networking.WireOrder(2)]
     public double DebuffCoef { get; set; }
+    [WireOrder(3)]
+    public long EnergyGenCurrentTick { get; set; }
+    [WireOrder(4)]
+    public long EnergyGenOriginalCurrentTick { get; set; }
+    [WireOrder(5)]
+    public long SwarmEnergyGenCurrentTick { get; set; }
+    [WireOrder(6)]
+    public float GrossRadius { get; set; }
+
+    public bool SameValues(DysonSphereStatusPacket other) => EnergyReqCurrentTick == other.EnergyReqCurrentTick &&
+        DebuffCoef == other.DebuffCoef && EnergyGenCurrentTick == other.EnergyGenCurrentTick &&
+        EnergyGenOriginalCurrentTick == other.EnergyGenOriginalCurrentTick &&
+        SwarmEnergyGenCurrentTick == other.SwarmEnergyGenCurrentTick && GrossRadius == other.GrossRadius;
+
+    public void Apply(DysonSphere sphere)
+    {
+        sphere.energyReqCurrentTick = EnergyReqCurrentTick;
+        sphere.energyGenCurrentTick = EnergyGenCurrentTick;
+        sphere.energyGenOriginalCurrentTick = EnergyGenOriginalCurrentTick;
+        sphere.swarm.energyGenCurrentTick = SwarmEnergyGenCurrentTick;
+        sphere.grossRadius = GrossRadius;
+    }
 }

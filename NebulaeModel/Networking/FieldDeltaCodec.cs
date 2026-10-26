@@ -30,6 +30,10 @@ internal static class FieldDeltaCodec
         public bool InUse;
     }
 
+    public static bool Equal(byte[] left, byte[] right) =>
+        ReferenceEquals(left, right) || left != null && right != null &&
+        left.Length == right.Length && Equal(left, 0, right, 0, left.Length);
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool Equal(byte[] a, int ao, byte[] b, int bo, int count)
     {

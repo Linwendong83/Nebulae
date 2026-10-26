@@ -19,7 +19,10 @@ internal class DysonSphereColorChangeBatchProcessor : PacketProcessor<DysonSpher
         {
             return;
         }
-        var sphere = GameMain.data.dysonSpheres[packet.StarIndex];
+        var spheres = GameMain.data?.dysonSpheres;
+        if (spheres == null || packet.StarIndex < 0 || packet.StarIndex >= spheres.Length ||
+            Array.Exists(packet.Index, i => i <= 0) || Array.Exists(packet.Type, t => t > (byte)DysonSphereComponentType.Shell)) return;
+        var sphere = spheres[packet.StarIndex];
         if (sphere == null)
         {
             return;
@@ -34,6 +37,7 @@ internal class DysonSphereColorChangeBatchProcessor : PacketProcessor<DysonSpher
             }
             for (var i = 0; i < packet.Index.Length; i++)
             {
+                Multiplayer.Session.DysonSpheres.InvalidateColor(packet.StarIndex, packet.LayerId, packet.Type[i], packet.Index[i]);
                 var color = new Color32(packet.Rgba[i * 4], packet.Rgba[i * 4 + 1], packet.Rgba[i * 4 + 2],
                     packet.Rgba[i * 4 + 3]);
                 switch ((DysonSphereComponentType)packet.Type[i])

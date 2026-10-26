@@ -120,11 +120,12 @@ internal class UIDispenserWindow_Patch
             __instance.player.inhandItemCount, __instance.player.inhandItemInc, out var handItemInc_Unsafe, false);
 
         // Player put itemCount into storage, broadcast the change to all users
-        Multiplayer.Session.Network.SendPacketToLocalStar(
-            new DispenserAddTakePacket(__instance.factory.planetId,
-                entityId,
-                EDispenserAddTakeEvent.ManualAdd,
-                __instance.player.inhandItemId, itemCount, __instance.player.inhandItemInc));
+        if (itemCount > 0)
+            Multiplayer.Session.Network.SendPacketToLocalStar(
+                new DispenserAddTakePacket(__instance.factory.planetId,
+                    entityId,
+                    EDispenserAddTakeEvent.ManualAdd,
+                    __instance.player.inhandItemId, itemCount, __instance.player.inhandItemInc - handItemInc_Unsafe));
 
         __instance.player.AddHandItemCount_Unsafe(-itemCount);
         __instance.player.SetHandItemInc_Unsafe(handItemInc_Unsafe);

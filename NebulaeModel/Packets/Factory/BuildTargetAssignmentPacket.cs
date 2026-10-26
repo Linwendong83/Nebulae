@@ -70,14 +70,6 @@ internal class BuildTargetReadyPacket
     public int PlanetId { get; set; }
     [NebulaeModel.Networking.WireOrder(1)]
     public int PrebuildId { get; set; }
-
-    public BuildTargetReadyPacket() { }
-
-    public BuildTargetReadyPacket(int planetId, int prebuildId)
-    {
-        PlanetId = planetId;
-        PrebuildId = prebuildId;
-    }
 }
 
 [NebulaeModel.Networking.PacketId(5300928144242603124UL)]
@@ -125,23 +117,4 @@ internal class BuildDroneLaunchPacket
     public long Next3Generation { get; set; }
     [NebulaeModel.Networking.WireOrder(10)]
     public int DronePriority { get; set; }
-
-    public BuildDroneLaunchPacket() { }
-
-    public BuildDroneLaunchPacket(ushort playerId, int planetId, int targetObjectId, int next1ObjectId,
-        int next2ObjectId, int next3ObjectId, long targetGeneration, long next1Generation,
-        long next2Generation, long next3Generation, int dronePriority)
-    {
-        PlayerId = playerId;
-        PlanetId = planetId;
-        TargetObjectId = targetObjectId;
-        Next1ObjectId = next1ObjectId;
-        Next2ObjectId = next2ObjectId;
-        Next3ObjectId = next3ObjectId;
-        TargetGeneration = targetGeneration;
-        Next1Generation = next1Generation;
-        Next2Generation = next2Generation;
-        Next3Generation = next3Generation;
-        DronePriority = dronePriority;
-    }
 }

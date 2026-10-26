@@ -1,6 +1,5 @@
 ﻿#region
 
-using System.IO;
 using BepInEx;
 using BepInEx.Configuration;
 using NebulaeModel.Utils;

@@ -294,6 +294,7 @@ internal class GameData_Patch
         {
             Multiplayer.Session.Planets.CancelFactory(GameMain.localPlanet);
             Multiplayer.Session.BuildDispatch.AbortLocalConstructionDrones(GameMain.localPlanet?.factory);
+            Multiplayer.Session.Repairs?.AbortPlanet(GameMain.localPlanet?.factory);
             Multiplayer.Session.BuildDispatch.ReleaseLocalPlayerTargets(GameMain.localPlanet?.id ?? -1);
             Multiplayer.Session.Trashes.Refresh();
             Multiplayer.Session.PowerTowers.ClearLocalState();
@@ -311,6 +312,7 @@ internal class GameData_Patch
     public static bool CreateDysonSphere_Prefix(GameData __instance, int starIndex, ref DysonSphere __result)
     {
         if (!Multiplayer.IsActive || Multiplayer.Session.IsServer) return true;
+        if (!ReferenceEquals(__instance, GameMain.data)) return true;
 
 
         if ((ulong)starIndex >= (ulong)((long)__instance.galaxy.starCount))
@@ -320,22 +322,23 @@ internal class GameData_Patch
         }
         if (__instance.dysonSpheres[starIndex] != null)
         {
+            if (!Multiplayer.Session.DysonSpheres.IsReady(starIndex))
+                Multiplayer.Session.DysonSpheres.RequestDysonSphere(starIndex, false);
             __result = __instance.dysonSpheres[starIndex];
             return false;
         }
 
         // Create a dummy dyson sphere and prevent sending packets
+        var wasInBlueprint = Multiplayer.Session.DysonSpheres.InBlueprint;
         Multiplayer.Session.DysonSpheres.InBlueprint = true;
-        __instance.dysonSpheres[starIndex] = new DysonSphere();
-        __instance.dysonSpheres[starIndex].Init(__instance, __instance.galaxy.stars[starIndex]);
-        __instance.dysonSpheres[starIndex].ResetNew();
-        Multiplayer.Session.DysonSpheres.InBlueprint = false;
-
-        if (Multiplayer.Session.DysonSpheres.RequestingIndex == -1)
+        try
         {
-            // If client is not requesting yet, request the target sphere from server
-            Multiplayer.Session.DysonSpheres.RequestDysonSphere(starIndex, false);
+            __instance.dysonSpheres[starIndex] = new DysonSphere();
+            __instance.dysonSpheres[starIndex].Init(__instance, __instance.galaxy.stars[starIndex]);
+            __instance.dysonSpheres[starIndex].ResetNew();
         }
+        finally { Multiplayer.Session.DysonSpheres.InBlueprint = wasInBlueprint; }
+        Multiplayer.Session.DysonSpheres.RequestDysonSphere(starIndex, false);
         __result = __instance.dysonSpheres[starIndex];
         return false;
     }

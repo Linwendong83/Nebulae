@@ -17,6 +17,7 @@ internal static class NativeCraftSimulation
         public bool Pending = true;
         public VectorLF3 Position;
         public Quaternion Rotation;
+        public readonly CraftMotionHistory Motion = new();
     }
     private sealed class WorldState
     {
@@ -30,9 +31,15 @@ internal static class NativeCraftSimulation
     {
         var registry = worlds.GetValue(world, _ => new WorldState());
         if (!ReferenceEquals(registry.Pool, pool)) { registry.Crafts.Clear(); registry.Fighters.Clear(); registry.Pool = pool; }
-        Remove(world, localId);
         var component = CraftNativeStateCodec.TryFleet(state.NativeFleet, out var fleet) ? fleet.id :
             CraftNativeStateCodec.TryUnit(state.NativeUnit, out var unit) ? unit.id : 0;
+        if (registry.Crafts.TryGetValue(localId, out var existing) && existing.HostId == hostId &&
+            existing.Component == component && SameFrame(existing.State, state))
+        {
+            existing.State = state; existing.Pending = true;
+            return;
+        }
+        Remove(world, localId);
         var entry = new Entry
         {
             HostId = hostId,
@@ -48,6 +55,27 @@ internal static class NativeCraftSimulation
             if (!registry.Fighters.TryGetValue(state.Owner, out var children)) registry.Fighters[state.Owner] = children = new List<Entry>();
             children.Add(entry);
         }
+    }
+
+    private static bool SameFrame(in CraftState a, in CraftState b) => a.AstroId == b.AstroId &&
+        a.Owner == b.Owner && a.PlayerOwner == b.PlayerOwner && a.ProtoId == b.ProtoId && a.IsDynamic && b.IsDynamic;
+
+    public static void CaptureMotion(object world, long tick)
+    {
+        if (world == null || !worlds.TryGetValue(world, out var registry)) return;
+        foreach (var entry in registry.Crafts.Values)
+            if (!entry.Pending && registry.Pool[entry.LocalId].id == entry.LocalId)
+                entry.Motion.Record(tick, registry.Pool[entry.LocalId].pos);
+    }
+
+    public static VectorLF3 ReconcilePosition(object world, int id, in CraftState state, VectorLF3 current)
+    {
+        var position = new VectorLF3(state.PosX, state.PosY, state.PosZ);
+        if (!worlds.TryGetValue(world, out var registry) || !registry.Crafts.TryGetValue(id, out var entry)) return position;
+        if (SameFrame(entry.State, state) && entry.Motion.Reconcile(state.SampleTick, position, current, state.IsSpace ? 5000 : 50))
+            return current;
+        entry.Motion.Reset();
+        return position;
     }
     public static void Remove(object world, int localId)
     {
@@ -69,7 +97,18 @@ internal static class NativeCraftSimulation
             World(planet) is { } world && ScopeReady(planet) && worlds.TryGetValue(world, out var registry) &&
             registry.Crafts.TryGetValue(localId, out var entry) && registry.Pool[localId].id == localId && entry.Component > 0 &&
             (registry.Pool[localId].unitId == entry.Component || registry.Pool[localId].fleetId == entry.Component) &&
-            (entry.State.Owner != -1 && entry.State.PlayerOwner == 0 || PlayerMecha(entry.State.PlayerOwner) != null);
+            PredictsWeapons(entry.State);
+    }
+    private static bool PredictsWeapons(in CraftState state) => state.PlayerOwner == 0
+        ? state.Owner != -1 : state.PlayerOwner == Multiplayer.Session?.LocalPlayer?.Id;
+    public static bool PredictsWeapons(int planet, int localId) => World(planet) is { } world &&
+        worlds.TryGetValue(world, out var registry) && registry.Crafts.TryGetValue(localId, out var entry) && PredictsWeapons(entry.State);
+    public static bool IsBase(int astro, int hostId)
+    {
+        var planet = SpaceSector.IsPlanetAstro(astro) ? astro : 0;
+        return LocalCraftId(planet, hostId, out var id) && World(planet) is { } world &&
+            worlds.TryGetValue(world, out var registry) && registry.Crafts.TryGetValue(id, out var entry) &&
+            entry.State.PlayerOwner == 0 && entry.State.Owner != -1;
     }
     public static int HostId(int astro, int localId)
     {
@@ -85,11 +124,34 @@ internal static class NativeCraftSimulation
             entry.Pending || GameMain.gameTick <= entry.State.SampleTick || registry.Pool[localId].id != localId) return false;
         var planet = world is PlanetFactory factory ? factory.planetId : 0;
         if (!ScopeReady(planet)) return false;
+        if (!MatchesModule(registry, entry, planet)) return false;
+        // Native formation code averages unlocked ports. Craft facts can arrive before
+        // the matching research/module data; a zero count would produce NaN positions.
+        if (entry.State.NativeUnit?.Length > 0 &&
+            (planet > 0 ? GameMain.history.groundFleetPortCount : GameMain.history.spaceFleetPortCount) <= registry.Pool[localId].port)
+            return false;
         // Remote craft checkpoints may name enemies intentionally absent from this client's pool.
         // Keep their presentation, but only run native targeting in the subscribed star.
         if (planet == 0 && (GameMain.localStar == null ||
             entry.State.AstroId / 100 != GameMain.localStar.id)) return false;
         return entry.State.Owner != -1 && entry.State.PlayerOwner == 0 || PlayerMecha(entry.State.PlayerOwner) != null;
+    }
+    private static bool MatchesModule(WorldState registry, Entry entry, int planet)
+    {
+        if (entry.State.PlayerOwner == 0) return true;
+        var mecha = PlayerMecha(entry.State.PlayerOwner);
+        var module = planet > 0 ? mecha?.groundCombatModule : mecha?.spaceCombatModule;
+        var parent = entry;
+        if (entry.State.NativeUnit?.Length > 0)
+        {
+            if (!LocalCraftId(planet, entry.State.Owner, out var owner) || !registry.Crafts.TryGetValue(owner, out parent)) return false;
+        }
+        var index = parent.State.Port;
+        if (module?.moduleFleets == null || index < 0 || index >= module.fleetCount || index >= module.moduleFleets.Length) return false;
+        ref var fleet = ref module.moduleFleets[index];
+        if (fleet.protoId != parent.State.ProtoId || fleet.fighters == null) return false;
+        return ReferenceEquals(parent, entry) || entry.State.Port >= 0 && entry.State.Port < fleet.fighters.Length &&
+            fleet.fighters[entry.State.Port].itemId == entry.State.ProtoId;
     }
     public static int FleetId(ref FleetComponent fleet)
     {
@@ -161,8 +223,10 @@ internal static class NativeCraftSimulation
                 else { craft.fleetId = craft.unitId = 0; }
                 entry.Pending = false;
             }
+            craft.pos += entry.Motion.Advance(GameMain.gameTick);
             var mecha = PlayerMecha(entry.State.PlayerOwner);
-            if (craft.fleetId > 0 && mecha != null)
+            if (craft.fleetId > 0 && mecha != null && entry.State.PlayerOwner == Multiplayer.Session?.LocalPlayer?.Id &&
+                MatchesModule(registry, entry, planet))
             {
                 var module = planet > 0 ? mecha.groundCombatModule : mecha.spaceCombatModule;
                 if (craft.port >= 0 && craft.port < module.fleetCount)
@@ -177,6 +241,7 @@ internal static class NativeCraftSimulation
             }
             if (world is PlanetFactory ground)
                 CraftPresentation.RefreshGround(ground, entry.LocalId, craft.pos != entry.Position, craft.rot != entry.Rotation);
+            else CraftPresentation.RefreshSpace((SpaceSector)world, entry.LocalId);
             entry.Position = craft.pos; entry.Rotation = craft.rot;
         }
     }

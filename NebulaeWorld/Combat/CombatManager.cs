@@ -84,12 +84,8 @@ internal class CombatManager : IDisposable
         internal CombatPlayerScope(ushort actingPlayerId)
         {
             previousPlayerId = PlayerId;
-            ActingPlayerId = actingPlayerId;
             PlayerId = actingPlayerId;
         }
-
-        /// <summary>The player whose rules run inside this scope.</summary>
-        public ushort ActingPlayerId { get; }
 
         public void Dispose()
         {
@@ -150,11 +146,12 @@ internal class CombatManager : IDisposable
                 var player = pair.Value.PlayerInstance;
                 if (Multiplayer.Session.IsClient)
                 {
+                    NebulaeModel.Utils.NativeGameAccess.SetSimulationPlanet(player, planetData);
                     // Remote model bones still use their render pose for visual effects.
                     // The simulation table below is populated independently from the sample.
                     player.uPosition = planetData == null ? pair.Value.Movement.absolutePosition
                         : RemoteCombatPose.UniversalPoint(planetData.uPosition, planetData.runtimeRotation, player.position);
-                    if (planetData != null) player.uRotation = planetData.runtimeRotation * snapshot.BodyRotation;
+                    player.uRotation = planetData == null ? snapshot.BodyRotation : planetData.runtimeRotation * snapshot.BodyRotation;
                 }
                 ref var ptr = ref Players[index];
                 ptr.id = pair.Key;

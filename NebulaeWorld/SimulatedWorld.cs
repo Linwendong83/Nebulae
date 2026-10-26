@@ -3,7 +3,6 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Collections.Generic;
-using System.Linq;
 using NebulaeModel.DataStructures;
 using NebulaeModel.Contracts;
 using NebulaeModel;
@@ -130,6 +129,8 @@ internal class SimulatedWorld : IDisposable
         NebulaeWorld.GameStates.GameStatesManager.RestorePersonalHistory(GameMain.history);
         NebulaeWorld.GameStates.GameStatesManager.SavePersonalHistory();
         NebulaeWorld.GameStates.LocalPlayerPreferences.RestoreDashboard();
+        // The native startup Restore has finished and the session now has its final world ID.
+        NebulaeWorld.GameStates.LocalPlayerPreferences.RestorePickFilters();
         Multiplayer.Session.Factories.InitializePrebuildRequests();
 
         if (player is { IsClient: true })
@@ -300,11 +301,8 @@ internal class SimulatedWorld : IDisposable
         player.mecha.forge.gameHistory = GameMain.data.history;
         player.mecha.forge.bottleneckItems = new HashSet<int>();
 
-        // Unlock the mecha functions as Mecha.Init()
+        // Rebind runtime state without replacing the construction preferences just imported.
         player.mecha.energyShieldBurstUnlocked = true;
-        player.mecha.constructionModule.droneEnabled = true;
-        player.mecha.constructionModule.droneConstructEnabled = true;
-        player.mecha.constructionModule.droneRepairEnabled = true;
         // Personal saves retain local pool slots. Resolve targets again in this connection's
         // factory/claim generation instead of replaying queues from the previous connection.
         var construction = player.mecha.constructionModule;

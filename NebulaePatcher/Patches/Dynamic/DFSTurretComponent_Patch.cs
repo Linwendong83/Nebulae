@@ -19,13 +19,13 @@ internal class DFSTurretComponent_Patch
     {
         dist2 = 0;
         if (!Multiplayer.IsActive || target.type != ETargetType.Player) return true;
-        if (!Multiplayer.Session.Combat.ActivedStars.Contains(hive.starData.id)) return true;
+        __result = false;
 
         // Get the target alive player upos
         var playerId = target.id;
         var players = Multiplayer.Session.Combat.Players;
         if (!Multiplayer.Session.Combat.IndexByPlayerId.TryGetValue(playerId, out var index)) return false;
-        if (!players[index].isAlive) return false;
+        if (!players[index].isAlive || players[index].planetId > 0 || players[index].starId != hive.starData.id) return false;
 
         var vectorLF = players[index].uPosition - hive.starData.uPosition;
         var num2 = Math.Sqrt(vectorLF.x * vectorLF.x + vectorLF.y * vectorLF.y + vectorLF.z * vectorLF.z);
@@ -44,14 +44,6 @@ internal class DFSTurretComponent_Patch
         dist2 = Vector3.SqrMagnitude(vectorLF2 - ptr.pos);
         __result = dist2 <= (sensorRange * sensorRange);
 
-        if (__result)
-        {
-            // Assign playerSkillTargetU to later used by Shoot_Plasma
-            GameMain.spaceSector.skillSystem.playerSkillTargetU = players[index].skillTargetU;
-            // Assign player_local_pos to later used in GetAimTargetDir
-            hive.sector.InverseTransformToAstro_ref(hive.hiveAstroId, ref players[index].uPosition, out var player_local_pos);
-            hive.player_local_pos = player_local_pos;
-        }
         return false;
     }
 
@@ -74,16 +66,14 @@ internal class DFSTurretComponent_Patch
         if (Multiplayer.Session.Combat.ActivedStars.Contains(starId))
         {
             // Find the closest alive player to the turret
-            var sqrOrbitRadius = (float)(hive.orbitRadius * hive.orbitRadius);
             var cloestIndex = 0;
-            var cloestDiff = float.MaxValue;
+            var cloestDiff = double.MaxValue;
             var players = Multiplayer.Session.Combat.Players;
             for (var i = 0; i < players.Length; i++)
             {
                 ref var playerPosition = ref players[i];
-                if (playerPosition.starId != starId || !playerPosition.isAlive) continue;
-                var sqrPlayerOrbitRadius = Vector3.SqrMagnitude(playerPosition.skillTargetU - hive.starData.uPosition);
-                var diff = Math.Abs(sqrPlayerOrbitRadius - sqrOrbitRadius);
+                if (playerPosition.starId != starId || !playerPosition.isAlive || playerPosition.planetId > 0) continue;
+                var diff = Math.Abs((playerPosition.uPosition - hive.starData.uPosition).magnitude - hive.orbitRadius);
                 if (diff < cloestDiff)
                 {
                     cloestIndex = i;
@@ -91,7 +81,7 @@ internal class DFSTurretComponent_Patch
                 }
             }
 
-            if (cloestDiff < (4000.0f * 4000.0f))
+            if (cloestDiff < 4000.0)
             {
                 var vectorLF = players[cloestIndex].uPosition - hive.starData.uPosition;
                 var num4 = Math.Sqrt(vectorLF.x * vectorLF.x + vectorLF.y * vectorLF.y + vectorLF.z * vectorLF.z);

@@ -35,13 +35,42 @@ internal sealed class CraftSnapshotAdapter : IHostWorldView, IHostIncrementalWor
     private readonly AuthorityEpoch epoch;
     private readonly Dictionary<int, SlotGenerationTracker> groundTrackers = [];
     private readonly SlotGenerationTracker spaceTracker = new();
-    private readonly Dictionary<ObjectKey, (CraftState State, byte[] Bytes)> published = new();
+    private readonly Dictionary<ObjectKey, (CraftState State, byte[] Bytes, Control Inputs)> published = new();
     private readonly List<ObjectKey> retired = new();
     private readonly object gate = new();
     private readonly Dictionary<ScopeKey, Membership> membership = [];
     private readonly System.Func<int, PlanetFactory> resolveFactory;
     private readonly System.Func<SpaceSector> resolveSector;
     private readonly System.Func<long> clock;
+    private record struct Control(int Component, int Target, int Astro, ETargetType Type,
+        VectorLF3 Position, int Hatred, int Flags, int Assembly, int Charging);
+
+    private Control ReadControl(in CraftData craft, bool space)
+    {
+        var ground = space ? null : resolveFactory(craft.astroId)?.combatGroundSystem;
+        var system = space ? resolveSector()?.combatSpaceSystem : null;
+        var fleets = space ? system?.fleets : ground?.fleets;
+        var units = space ? system?.units : ground?.units;
+        if (craft.fleetId > 0 && fleets != null && craft.fleetId < fleets.cursor)
+        {
+            ref var fleet = ref fleets.buffer[craft.fleetId];
+            return new Control(fleet.id, fleet.target.id, fleet.target.astroId, fleet.target.type, fleet.targetPos,
+                fleet.hatred.max.target, fleet.dispatch ? 1 : 0, fleet.currentAssembleUnitsCount, fleet.currentChargingUnitsCount);
+        }
+        if (craft.unitId > 0 && units != null && craft.unitId < units.cursor)
+        {
+            ref var unit = ref units.buffer[craft.unitId];
+            return new Control(-unit.id, 0, 0, 0, default, unit.hatred.max.target,
+                (int)unit.behavior | (unit.isRetreating ? 256 : 0) | (unit.isCharging ? 512 : 0), 0, 0);
+        }
+        return default;
+    }
+
+    private static void TrackMoving(Membership index, CraftData[] pool)
+    {
+        foreach (var key in index.Live.Values)
+            index.Candidates.SetFast(key, pool[key.NativeId].fleetId > 0 || pool[key.NativeId].unitId > 0);
+    }
     private sealed class Membership
     {
         public object Owner;
@@ -151,6 +180,7 @@ internal sealed class CraftSnapshotAdapter : IHostWorldView, IHostIncrementalWor
         tracker.EndScan();
         Prune(PoolKind.GroundCraft, planetId, tracker);
         index.Initialized = true; index.Candidates.Rebuild(factory.craftPool, clock(), members);
+        TrackMoving(index, factory.craftPool);
         return true;
     }
 
@@ -175,6 +205,7 @@ internal sealed class CraftSnapshotAdapter : IHostWorldView, IHostIncrementalWor
         spaceTracker.EndScan();
         Prune(PoolKind.SpaceCraft, 0, spaceTracker);
         index.Initialized = true; index.Candidates.Rebuild(sector.craftPool, clock(), members);
+        TrackMoving(index, sector.craftPool);
         return true;
     }
 
@@ -214,16 +245,21 @@ internal sealed class CraftSnapshotAdapter : IHostWorldView, IHostIncrementalWor
 
     private bool Publish(ObjectKey key, in CraftState decoded, out byte[] state, CraftData[] pool, bool wantSpace)
     {
+        // AddCraftData runs before native fleet/unit creation. Refresh cadence at the
+        // first completed sample, when those component IDs actually exist.
+        if (membership.TryGetValue(new ScopeKey(key.Kind, key.Scope), out var index))
+            index.Candidates.SetFast(key, pool[key.NativeId].fleetId > 0 || pool[key.NativeId].unitId > 0);
         // A moving craft's pose is recomputed by the receiver from the captured native inputs, so it
         // keeps the checkpoint policy. Everything else is fully authoritative: publish it when, and
         // only when, a fact actually changed. Deciding that from the struct keeps the encoder out of
         // the common case, where the previous bytes are handed straight back and the replicator's
         // comparison short-circuits on reference equality.
+        var inputs = ReadControl(pool[key.NativeId], wantSpace);
         var changed = true;
         if (published.TryGetValue(key, out var prior))
         {
             changed = decoded.IsDynamic
-                ? CraftStatePolicy.ShouldPublish(prior.State, decoded)
+                ? inputs != prior.Inputs || CraftStatePolicy.ShouldPublish(prior.State, decoded)
                 : !CraftStatePolicy.SameState(prior.State, decoded);
             if (!changed) { state = prior.Bytes; return true; }
         }
@@ -243,7 +279,7 @@ internal sealed class CraftSnapshotAdapter : IHostWorldView, IHostIncrementalWor
             CorruptReferences++;
             return false;
         }
-        published[key] = (record, state);
+        published[key] = (record, state, inputs);
         return true;
     }
 
@@ -390,6 +426,7 @@ internal sealed class CraftSnapshotAdapter : IHostWorldView, IHostIncrementalWor
             var index = Index(new ScopeKey(PoolKind.GroundCraft, factory.planetId), factory);
             index.Live[id] = ObjectKey.Create(epoch, PoolKind.GroundCraft, factory.planetId, id, TrackerFor(factory.planetId).ObserveOccupied(id));
             index.Candidates.Add(index.Live[id]);
+            index.Candidates.SetFast(index.Live[id], factory.craftPool[id].fleetId > 0 || factory.craftPool[id].unitId > 0);
         }
     }
     public void Added(SpaceSector sector, int id)
@@ -400,6 +437,7 @@ internal sealed class CraftSnapshotAdapter : IHostWorldView, IHostIncrementalWor
             var index = Index(new ScopeKey(PoolKind.SpaceCraft, AuthorityScope.Sector), sector);
             index.Live[id] = ObjectKey.Create(epoch, PoolKind.SpaceCraft, AuthorityScope.Sector, id, spaceTracker.ObserveOccupied(id));
             index.Candidates.Add(index.Live[id]);
+            index.Candidates.SetFast(index.Live[id], sector.craftPool[id].fleetId > 0 || sector.craftPool[id].unitId > 0);
         }
     }
     public void Removed(PlanetFactory factory, int id)

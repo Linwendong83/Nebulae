@@ -68,7 +68,7 @@ internal sealed class GroundEnemyReplicaBinding : IReplicaMirrorObserver, IRepli
 
     public GroundEnemyReplicaBinding(Func<bool> applyWindowOpen = null)
     {
-        this.applyWindowOpen = applyWindowOpen ?? DefaultApplyWindowOpen;
+        this.applyWindowOpen = applyWindowOpen ?? ReplicaApplyContext.IsSessionApplyActive;
     }
 
     public void OnStateApplied(ScopeKey scope, in ObjectKey key, long revision, byte[] state)
@@ -77,6 +77,7 @@ internal sealed class GroundEnemyReplicaBinding : IReplicaMirrorObserver, IRepli
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;
+            BindingDiagnostics.OutsideWindow(nameof(GroundEnemyReplicaBinding), scope);
             return;
         }
         var binding = BindingFor(scope);
@@ -90,6 +91,7 @@ internal sealed class GroundEnemyReplicaBinding : IReplicaMirrorObserver, IRepli
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;
+            BindingDiagnostics.OutsideWindow(nameof(GroundEnemyReplicaBinding), scope);
             return;
         }
         var factory = FactoryFor(scope.Scope);
@@ -115,6 +117,7 @@ internal sealed class GroundEnemyReplicaBinding : IReplicaMirrorObserver, IRepli
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;
+            BindingDiagnostics.OutsideWindow(nameof(GroundEnemyReplicaBinding), scope);
             return;
         }
         if (scopes.TryGetValue(scope.Scope, out var binding) && binding.Core != null)
@@ -134,6 +137,7 @@ internal sealed class GroundEnemyReplicaBinding : IReplicaMirrorObserver, IRepli
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;
+            BindingDiagnostics.OutsideWindow(nameof(GroundEnemyReplicaBinding), scope);
             return;
         }
         if (scopes.TryGetValue(scope.Scope, out var binding) && binding.Core != null)
@@ -169,10 +173,4 @@ internal sealed class GroundEnemyReplicaBinding : IReplicaMirrorObserver, IRepli
     }
 
     private static PlanetFactory FactoryFor(int planetId) => GameMain.galaxy?.PlanetById(planetId)?.factory;
-
-    private static bool DefaultApplyWindowOpen()
-    {
-        var session = Multiplayer.Session;
-        return session?.AuthorityRuntime?.ApplyContext?.IsActiveOnCurrentThread ?? false;
-    }
 }

@@ -1,6 +1,5 @@
 ﻿#region
 
-using System.Linq;
 using HarmonyLib;
 using NebulaeModel.Networking;
 using NebulaeModel.Packets.Players;
@@ -25,6 +24,7 @@ internal class UIMechaEditor_Patch
         GameMain.mainPlayer.mecha.appearance.Export(writer.BinaryWriter);
         Multiplayer.Session.Network.SendPacket(new PlayerMechaArmor(Multiplayer.Session.LocalPlayer.Id,
             writer.CloseAndGetBytes()));
+        Multiplayer.Session.Life.Publish();
     }
 
     [HarmonyPostfix]
@@ -35,10 +35,20 @@ internal class UIMechaEditor_Patch
         {
             return;
         }
-        using var writer = new BinaryUtils.Writer();
-        GameMain.mainPlayer.mecha.diyAppearance.Export(writer.BinaryWriter);
-        Multiplayer.Session.Network.SendPacket(new PlayerMechaDIYArmor(writer.CloseAndGetBytes(),
-            GameMain.mainPlayer.mecha.diyItems.items.Keys.ToArray(),
-            GameMain.mainPlayer.mecha.diyItems.items.Values.ToArray()));
+        // Persist the draft and its materials together with the debited package.
+        Multiplayer.Session.Life.Publish();
+    }
+}
+
+[HarmonyPatch(typeof(UIMechaMatsGroup))]
+internal static class UIMechaMatsGroup_Patch
+{
+    [HarmonyPostfix]
+    [HarmonyPatch(nameof(UIMechaMatsGroup.OnTransferItemClick))]
+    [HarmonyPatch(nameof(UIMechaMatsGroup.OnTransferHalfClick))]
+    [HarmonyPatch(nameof(UIMechaMatsGroup.OnTransferAllClick))]
+    public static void Transfer_Postfix()
+    {
+        if (Multiplayer.IsActive) Multiplayer.Session.Life.Publish();
     }
 }

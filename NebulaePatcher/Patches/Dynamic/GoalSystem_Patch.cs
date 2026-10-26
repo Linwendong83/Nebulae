@@ -193,6 +193,20 @@ internal static class PersonalGoalPanel_Patch
     }
 }
 
+[HarmonyPatch(typeof(GoalSystem), nameof(GoalSystem.IsGoalQueueEmpty))]
+internal static class PersonalGoalQueue_Patch
+{
+    [HarmonyPostfix]
+    public static void Postfix(ref bool __result)
+    {
+        if (!Multiplayer.IsActive) return;
+        var goals = Multiplayer.Session.Goals;
+        // Vanilla waits for the entries to leave and the panel to collapse before
+        // closing an empty queue. Keep that animation without clearing shared goals.
+        if (goals.RenderingPersonal && goals.PersonalLevel == EGoalLevel.Off) __result = true;
+    }
+}
+
 [HarmonyPatch(typeof(UIGoalGroupEntry))]
 internal static class PersonalGoalGroupEntry_Patch
 {

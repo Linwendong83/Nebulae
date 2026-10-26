@@ -13,6 +13,53 @@ internal sealed partial class FactoryProductManager
     private readonly Dictionary<ObjectKey, FactoryProductPacket> fighterPorts = [];
     private readonly List<ObjectKey> fighterPortScan = [];
 
+    public bool RequestFleetConfiguration(PlanetFactory factory, int entity, int item)
+    {
+        EnsureWorld();
+        if (factory == null || Multiplayer.Session.AuthorityRuntime.WorldReplica?.TryFindKey(
+            PoolKind.Entity, factory.planetId, entity, out var key) != true) return false;
+        lock (gate)
+        {
+            if (requests.Count >= 32 || !requestedSlots.Add((key, -1))) return false;
+            requests.Enqueue((key, new FactoryProductIntent(FactoryInteractionKind.FleetConfigure, -5, item: item)));
+            return true;
+        }
+    }
+
+    public bool LocalFleetConfiguration(PlanetFactory factory, int entity, int item, global::Player player)
+    {
+        EnsureWorld();
+        if (factory == null || player == null || Multiplayer.Session.AuthorityRuntime.FactoryCombatHost?.TryGetEntityKey(
+            factory, entity, out var key) != true || !TryBattleBase(key, out _, out var battleBase)) return false;
+        using var incoming = Multiplayer.Session.Storage.IsIncomingRequest.On();
+        if (!FleetConfiguration.TryConfigureGround(battleBase.combatModule, 0, item, battleBase.storage, player.package, out _)) return false;
+        CommitFighterPorts(key);
+        if (Multiplayer.Session.WorldPaused) Multiplayer.Session.World.HostStepWorld();
+        return true;
+    }
+
+    private CommandOutcome ExecuteFleetConfiguration(in QueuedHostCommand command, FactoryProductIntent intent, global::Player player)
+    {
+        var session = Multiplayer.Session;
+        var actor = session.Server.Players.Get(command.ConnectionPlayerId)?.Data as PlayerData;
+        if (actor?.Life?.IsAlive != true || player == null || !session.InventoryTransfers.CanRecord(command.ConnectionPlayerId, command.Key.Sequence))
+            return new CommandOutcome(CommandResultCode.RejectedNotReady);
+        if (!command.Packet.TryGetTargetKey(out var key) || key.Kind != PoolKind.Entity || actor.LocalPlanetId != key.Scope ||
+            !TryBattleBase(key, out var factory, out var battleBase) || session.AuthorityRuntime.FactoryCombatHost?.TryGetEntityKey(
+                factory, key.NativeId, out var current) != true || current != key)
+            return new CommandOutcome(CommandResultCode.RejectedTarget);
+        using var incoming = session.Storage.IsIncomingRequest.On();
+        if (LDB.items.Select(intent.Item)?.isGroundFighter != true) return new CommandOutcome(CommandResultCode.RejectedInvalid);
+        if (!FleetConfiguration.IsCurrent(battleBase.combatModule, 0, intent.Item) && !FleetConfiguration.TryPrepare(battleBase.combatModule, 0))
+            return new CommandOutcome(CommandResultCode.RejectedNotReady);
+        if (!FleetConfiguration.TryConfigureGround(battleBase.combatModule, 0, intent.Item, battleBase.storage, player.package, out var credits))
+            return new CommandOutcome(CommandResultCode.RejectedResource);
+        if (credits.Count > 0) session.InventoryTransfers.Record(command.ConnectionPlayerId, command.Key.Sequence, credits);
+        CommitFighterPorts(key);
+        return new CommandOutcome(CommandResultCode.Applied, GameMain.gameTick,
+            resourceRevision: credits.Count > 0 ? command.Key.Sequence : 0, resultData: FactoryInventoryReceipt.Encode(credits));
+    }
+
     public void ObserveFighterPorts(PlanetFactory factory, int entity)
     {
         EnsureWorld();

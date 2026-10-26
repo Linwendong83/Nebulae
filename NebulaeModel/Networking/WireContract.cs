@@ -24,6 +24,11 @@ internal static class WireContract
     private static readonly Dictionary<ulong, Type> ids = new();
     private static readonly object gate = new();
 
+    internal static string PacketName(ulong id)
+    {
+        lock (gate) return ids.TryGetValue(id, out var type) ? type.Name : "unknown";
+    }
+
     internal static ulong PacketId(Type type)
     {
         var attribute = type.GetCustomAttribute<PacketIdAttribute>(false);

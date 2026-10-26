@@ -1,11 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using NebulaeModel.Authority;
 using NebulaeModel.Networking.Serialization;
 using NebulaeModel.Packets.Routers;
 using NebulaeModel.Packets.Authority;
 using NebulaeModel.Packets.Session;
+using NebulaeModel.Logger;
 
 namespace NebulaeModel.Networking;
 
@@ -23,6 +23,14 @@ internal sealed class StateDeltaChannel
     private readonly Action<Func<byte[]>> sendLatest;
     private readonly NebulaeNetPacketProcessor routerWriter = new(), routerReader = new();
     private bool stopped;
+    private readonly DiagnosticWatchdog diagnosticWaits = new();
+    private long repairsCompleted;
+    public void CheckDiagnostics(int connectionId)
+    {
+        lock (receiveGate)
+            diagnosticWaits.Observe("delta-repair:" + connectionId, pending.Count > 0,
+                () => $"[network] field state repair pending connection={connectionId} pending={pending.Count} incomingCacheBytes={incoming.Bytes}", progress: repairsCompleted);
+    }
 
     public StateDeltaChannel(Action<byte[]> sendControl = null, Action<Func<byte[]>> sendLatest = null,
         int maxCacheBytes = 16 * 1024 * 1024)
@@ -56,7 +64,7 @@ internal sealed class StateDeltaChannel
     public void Clear()
     {
         lock (sendGate) { stopped = true; outgoing.Clear(); }
-        lock (receiveGate) { incoming.Clear(); pending.Clear(); }
+        lock (receiveGate) { incoming.Clear(); pending.Clear(); diagnosticWaits.Clear(); }
     }
 
     private byte[] Encode(byte[] bytes, int depth, RouteScope[] routes = null)
@@ -92,7 +100,10 @@ internal sealed class StateDeltaChannel
         {
             var full = PacketStateRegistry.Describe(bytes);
             if (full != null)
-            { incoming.Put(full, AuthoritySnapshotCodec.Hash(bytes), 1); pending.Remove(full.CacheKey); }
+            {
+                incoming.Put(full, AuthoritySnapshotCodec.Hash(bytes), 1);
+                if (pending.Remove(full.CacheKey)) { repairsCompleted++; Log.Debug($"[network] field state repaired packet={WireContract.PacketName(id)} id={id} bytes={bytes.Length} pending={pending.Count}"); }
+            }
             return bytes;
         }
         using var stream = new MemoryStream(bytes, false);
@@ -114,7 +125,11 @@ internal sealed class StateDeltaChannel
                 lock (sendGate)
                 {
                     var latest = outgoing.Get(cacheKey);
-                    if (latest == null) return null;
+                    if (latest == null)
+                    {
+                        Diagnostics.Warn("delta:repair-unavailable:" + original, () => $"[network] field repair unavailable packet={WireContract.PacketName(original)} id={original} keyBytes={keyLength} outgoingCacheBytes={outgoing.Bytes}");
+                        return null;
+                    }
                     outgoing.Remove(cacheKey);
                     var full = latest.State.Bytes;
                     if (latest.Routes != null)
@@ -139,7 +154,11 @@ internal sealed class StateDeltaChannel
         if (previous == null || previous.Baseline != baseline || previous.Revision != from || pending.Contains(cacheKey))
         {
             if (pending.Count >= 4096 && !pending.Contains(cacheKey)) throw new InvalidDataException("Too many pending state repairs.");
-            if (pending.Add(cacheKey)) sendControl?.Invoke(WriteRequest(original, key));
+            if (pending.Add(cacheKey))
+            {
+                Log.Debug($"[network] field repair requested packet={WireContract.PacketName(original)} id={original} keyBytes={keyLength} baseline={baseline} localBaseline={previous?.Baseline} expectedRevision={from} localRevision={previous?.Revision} pending={pending.Count}");
+                sendControl?.Invoke(WriteRequest(original, key));
+            }
             return null;
         }
         var restored = FieldDeltaCodec.Apply(previous.State.Bytes, previous.State.Fields, data);

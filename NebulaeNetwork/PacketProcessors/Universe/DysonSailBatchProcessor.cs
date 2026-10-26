@@ -17,10 +17,30 @@ internal class DysonSailBatchProcessor : PacketProcessor<DysonSailBatchPacket>
         {
             return;
         }
-        var dysonSphere = GameMain.data.dysonSpheres[packet.StarIndex];
+        var spheres = GameMain.data?.dysonSpheres;
+        if (spheres == null || packet.StarIndex < 0 || packet.StarIndex >= spheres.Length) return;
+        if (IsHost)
+        {
+            var player = conn == null ? null : Players.Get(conn);
+            if (!GameMain.data.gameDesc.isSandboxMode || player?.Data.LocalStarId != packet.StarIndex + 1) return;
+        }
+        var dysonSphere = spheres[packet.StarIndex];
         if (dysonSphere == null)
         {
             return;
+        }
+        // Validate the entire batch before mutating the swarm.
+        for (var i = 0; i < packet.OrbitId.Length; i++)
+        {
+            if (!dysonSphere.swarm.OrbitExist(packet.OrbitId[i]) ||
+                !Finite(packet.px[i]) || !Finite(packet.py[i]) || !Finite(packet.pz[i]) ||
+                !Finite(packet.vx[i]) || !Finite(packet.vy[i]) || !Finite(packet.vz[i]) ||
+                !Finite(packet.gs[i]) || packet.gs[i] <= 0) return;
+        }
+        if (IsHost)
+        {
+            var expiry = GameMain.gameTick + (long)(GameMain.history.solarSailLife * 60f + .1f);
+            for (var i = 0; i < packet.ExpiryTime.Length; i++) packet.ExpiryTime[i] = expiry;
         }
         using (Multiplayer.Session.DysonSpheres.IncomingDysonSwarmPacket.On())
         {
@@ -42,4 +62,6 @@ internal class DysonSailBatchProcessor : PacketProcessor<DysonSailBatchPacket>
             Multiplayer.Session.DysonSpheres.SendPacketToDysonSphereExcept(packet, packet.StarIndex, conn);
         }
     }
+
+    private static bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 }

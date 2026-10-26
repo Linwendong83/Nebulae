@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using HarmonyLib;
 using NebulaeModel.Networking;
 using NebulaeModel.Packets.Factory;
-using NebulaeModel.Packets.Factory.Assembler;
 using NebulaeModel.Packets.Factory.Foundation;
 using NebulaeModel.Packets.Factory.Inserter;
 using NebulaeModel.Packets.Factory.Miner;
@@ -677,7 +676,8 @@ internal class PlanetFactory_patch
             return Multiplayer.Session.Factories.IsIncomingRequest.Value;
         }
 
-        // Host death transactions publish removals through the replica lifecycle.
+        // BuildingDeath_Patch publishes the committed factory operation in construction order;
+        // the authority lifecycle separately retires combat membership.
         return true;
     }
 

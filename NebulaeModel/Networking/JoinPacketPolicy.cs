@@ -54,7 +54,16 @@ internal sealed class JoinPacketPolicy
         Register<NebulaeModel.Packets.Factory.Belt.ConnectToMonitorPacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.Belt.ConnectToSpraycoaterPacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.BuildDroneLaunchPacket>(null);
+        Register<NebulaeModel.Packets.Factory.ConstructionLaunchOfferPacket>(null);
+        Register<NebulaeModel.Packets.Factory.ConstructionLaunchGrantPacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.BaseDroneStatePacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.DroneFlightSnapshotRequestPacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.ConstructionStoragePacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.RepairOfferPacket>(null);
+        Register<NebulaeModel.Packets.Factory.RepairControlPacket>(null);
+        Register<NebulaeModel.Packets.Factory.RepairDroneStatePacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.BuildEntityRequest>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.BuildingDeathPacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.PrebuildInstancePacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.BuildTargetAssignmentPacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.BuildTargetAssignmentReplyPacket>(null);
@@ -236,6 +245,8 @@ internal sealed class JoinPacketPolicy
         Register<NebulaeModel.Packets.Warning.WarningBroadcastDataPacket>(null);
         Register<NebulaeModel.Packets.Warning.WarningDataPacket>(null);
         Register<NebulaeModel.Packets.Warning.WarningDataRequest>(null);
+        Register<NebulaeModel.Packets.Warning.GreenPrebuildWarningRequest>(null);
+        Register<NebulaeModel.Packets.Warning.GreenPrebuildWarningState>(null);
         Register<NebulaeModel.Packets.Warning.WarningSignalPacket>(null);
     }
 

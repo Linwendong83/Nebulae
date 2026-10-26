@@ -65,11 +65,7 @@ internal sealed class CraftBinding
     private readonly int expectedScope;
     private readonly Dictionary<ObjectKey, CraftState> bindings = [];
     private readonly Dictionary<int, ObjectKey> slotOwner = [];
-
-    private long statesApplied;
     private long statesRefused;
-    private long shellsCreated;
-    private long shellsRemoved;
     private long membersRemoved;
 
     public CraftBinding(PoolKind kind, int scope, ICraftPools pools)
@@ -88,10 +84,7 @@ internal sealed class CraftBinding
     }
 
     public int BoundCount => bindings.Count;
-    public long StatesApplied => statesApplied;
     public long StatesRefused => statesRefused;
-    public long ShellsCreated => shellsCreated;
-    public long ShellsRemoved => shellsRemoved;
     public long MembersRemoved => membersRemoved;
 
     public bool ApplyState(in ObjectKey key, byte[] state)
@@ -99,17 +92,20 @@ internal sealed class CraftBinding
         if (key.Kind != expectedKind || key.Scope != expectedScope)
         {
             statesRefused++;
+            BindingDiagnostics.Refused("invalid-state-or-identity", key, state?.Length ?? 0);
             return false;
         }
         if (state == null || !CraftStateCodec.TryDecode(state, 0, state.Length, out var decoded, out _))
         {
             statesRefused++;
+            BindingDiagnostics.Refused("invalid-state-or-identity", key, state?.Length ?? 0);
             return false;
         }
         var wantSpace = expectedKind == PoolKind.SpaceCraft;
         if (decoded.IsSpace != wantSpace)
         {
             statesRefused++;
+            BindingDiagnostics.Refused("invalid-state-or-identity", key, state?.Length ?? 0);
             return false;
         }
         return ApplyDecoded(key, in decoded);
@@ -124,7 +120,6 @@ internal sealed class CraftBinding
             // must not delete the new generation's shell.
             slotOwner[key.NativeId] = key;
             pools.CreateCraftShell(key.NativeId, in decoded);
-            shellsCreated++;
         }
         else
         {
@@ -132,7 +127,6 @@ internal sealed class CraftBinding
             slotOwner[key.NativeId] = key;
             pools.WriteCraftState(key.NativeId, in decoded);
         }
-        statesApplied++;
         return true;
     }
 
@@ -148,7 +142,6 @@ internal sealed class CraftBinding
             if (pools.CraftExists(key.NativeId))
             {
                 pools.RemoveCraftShell(key.NativeId);
-                shellsRemoved++;
             }
         }
         membersRemoved++;

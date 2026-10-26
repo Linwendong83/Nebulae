@@ -1,4 +1,3 @@
-using System;
 using System.Threading;
 using NebulaeModel.Networking;
 using NebulaeModel.Logger;
@@ -15,6 +14,7 @@ internal class WebSocketService : WebSocketBehavior
     public static Server Server;
     public static NebulaeNetPacketProcessor PacketProcessor;
     private NebulaeConnection connection;
+    private Server owner;
 
     public WebSocketService() { }
 
@@ -31,9 +31,11 @@ internal class WebSocketService : WebSocketBehavior
         Log.Info($"Client connected ID: {ID}");
         TcpSocketOptions.TryEnableNoDelay(Context, out _);
         var conn = new NebulaeConnection(Context.WebSocket, Context.UserEndPoint, PacketProcessor, hostSide: true);
-        Server.OnSocketConnection(conn);
+        owner = Server;
+        owner.OnSocketConnection(conn);
 
         connection = conn;
+        Log.Debug($"[network] accepted socket={ID} connection={conn.Id} status={conn.ConnectionStatus}");
     }
 
     protected override void OnMessage(MessageEventArgs e)
@@ -57,7 +59,7 @@ internal class WebSocketService : WebSocketBehavior
             conn.StopSending();
             // The stream cannot be trusted past a message its framing cannot read, so the peer is
             // dropped instead of being answered with packets decoded from a corrupt stream.
-            Log.Warn($"Dropping socket {ID} after an unreadable message: {exception.Message}");
+            Diagnostics.Warn("socket:unreadable:" + conn.Id, () => $"[network] unreadable socket message socket={ID} connection={conn.Id} status={conn.ConnectionStatus} bytes={e.RawData?.Length} binary={e.IsBinary}", exception);
             UnityDispatchQueue.RunOnMainThread(() =>
                 Server?.Disconnect(conn, DisconnectionReason.InvalidData, "Corrupt packet stream"));
             return;
@@ -73,6 +75,9 @@ internal class WebSocketService : WebSocketBehavior
         {
             return;
         }
+        // Retire transport work on this thread; Unity/player cleanup may wait for a frame.
+        departing.StopSending();
+        var server = owner;
 
         // If the reason of a client disconnect is because we are still loading the game,
         // we don't need to inform the other clients since the disconnected client never
@@ -82,14 +87,16 @@ internal class WebSocketService : WebSocketBehavior
             return;
         }
 
-        Log.Info($"Client disconnected: {ID}, reason: {e.Reason}");
+        if (e.Code == (ushort)DisconnectionReason.ClientRequestedDisconnect || e.Code == 1000)
+            Log.Debug($"[network] socket closed socket={ID} connection={departing.Id} code={e.Code} clean={e.WasClean} reason={e.Reason}");
+        else Diagnostics.Warn("socket:close:" + departing.Id, () => $"[network] unexpected socket close socket={ID} connection={departing.Id} status={departing.ConnectionStatus} code={e.Code} clean={e.WasClean} reason={e.Reason}");
         UnityDispatchQueue.RunOnMainThread(() =>
         {
             // This is to make sure that we don't try to deal with player disconnection
             // if it is because we have stopped the server and are not in a multiplayer game anymore.
-            if (Multiplayer.IsActive)
+            if (server != null && ReferenceEquals(Multiplayer.Session?.Server, server))
             {
-                Server.OnSocketDisconnection(departing);
+                server.OnSocketDisconnection(departing);
             }
         });
     }
@@ -97,19 +104,22 @@ internal class WebSocketService : WebSocketBehavior
     protected override void OnError(ErrorEventArgs e)
     {
         var departing = Interlocked.Exchange(ref connection, null);
+        departing?.StopSending();
+        var server = owner;
+        Diagnostics.Warn("socket:error:" + (departing?.Id.ToString() ?? ID),
+            () => $"[network] socket error socket={ID} connection={departing?.Id} status={departing?.ConnectionStatus} message={e.Message}", e.Exception);
         if (departing == null)
         {
             return;
         }
 
-        Log.Info($"Client disconnected because of an error: {ID}, reason: {e.Exception}");
         UnityDispatchQueue.RunOnMainThread(() =>
         {
             // This is to make sure that we don't try to deal with player disconnection
             // if it is because we have stopped the server and are not in a multiplayer game anymore.
-            if (Multiplayer.IsActive)
+            if (server != null && ReferenceEquals(Multiplayer.Session?.Server, server))
             {
-                Server.OnSocketDisconnection(departing);
+                server.OnSocketDisconnection(departing);
             }
         });
     }

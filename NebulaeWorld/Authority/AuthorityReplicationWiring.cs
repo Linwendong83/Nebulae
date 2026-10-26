@@ -57,9 +57,6 @@ internal sealed class AuthorityReplicaApplier : IReplicaMessageApplier
         this.replica = replica ?? throw new System.ArgumentNullException(nameof(replica));
     }
 
-    /// <summary>The replica this applier writes.</summary>
-    public ClientWorldReplica Replica => replica;
-
     public bool Apply(in PendingReplicaMessage message)
     {
         if (message.Packet == null) return false;

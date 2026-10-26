@@ -51,79 +51,6 @@ internal readonly struct AuthorityEnvelopeHeader
     /// <summary>Declared payload size in bytes. Negative is a rejection, not a zero-length payload.</summary>
     public int PayloadLength { get; }
 
-    /// <summary>
-    /// Writes the header in wire order. The length is written last so a decoder can use the bytes
-    /// before it without a second pass.
-    /// </summary>
-    public void WriteTo(byte[] destination, int offset = 0)
-    {
-        if (destination == null || offset < 0 || offset + AuthorityLimits.HeaderBytes > destination.Length)
-        {
-            throw new ArgumentException("Authority header needs " + AuthorityLimits.HeaderBytes + " bytes.",
-                nameof(destination));
-        }
-        destination[offset] = (byte)Family;
-        Epoch.WriteTo(destination, offset + 1);
-        WriteLong(destination, offset + 1 + AuthorityEpoch.SizeBytes, (long)Connection.Value);
-        WriteLong(destination, offset + 1 + AuthorityEpoch.SizeBytes + 8, Sequence);
-        WriteLong(destination, offset + 1 + AuthorityEpoch.SizeBytes + 16, HostTick);
-        WriteShort(destination, offset + 1 + AuthorityEpoch.SizeBytes + 24, (short)ClaimedPlayerId);
-        WriteInt(destination, offset + 1 + AuthorityEpoch.SizeBytes + 26, PayloadLength);
-    }
-
-    /// <summary>Serializes the header to a new array.</summary>
-    public byte[] ToBytes()
-    {
-        var bytes = new byte[AuthorityLimits.HeaderBytes];
-        WriteTo(bytes);
-        return bytes;
-    }
-
-    /// <summary>
-    /// Reads a header from a buffer, or reports why the buffer cannot hold one.
-    /// </summary>
-    /// <remarks>
-    /// Reading cannot allocate beyond the fixed header, so this is safe to call on untrusted input.
-    /// </remarks>
-    public static bool TryRead(byte[] source, out AuthorityEnvelopeHeader header, out AuthorityReject reject)
-    {
-        header = default;
-        reject = AuthorityReject.Accepted;
-        if (source == null || source.Length < AuthorityLimits.HeaderBytes)
-        {
-            reject = new AuthorityReject(AuthorityRejectCode.MalformedEnvelope,
-                "header needs " + AuthorityLimits.HeaderBytes + " bytes");
-            return false;
-        }
-
-        var family = (AuthorityFamily)source[0];
-        var epoch = AuthorityEpoch.FromBytes(source, 1);
-        var connection = new ConnectionEpoch((ulong)ReadLong(source, 1 + AuthorityEpoch.SizeBytes));
-        var sequence = ReadLong(source, 1 + AuthorityEpoch.SizeBytes + 8);
-        var hostTick = ReadLong(source, 1 + AuthorityEpoch.SizeBytes + 16);
-        var claimedPlayerId = (ushort)ReadShort(source, 1 + AuthorityEpoch.SizeBytes + 24);
-        var payloadLength = ReadInt(source, 1 + AuthorityEpoch.SizeBytes + 26);
-
-        header = new AuthorityEnvelopeHeader(family, epoch, connection, sequence, hostTick,
-            claimedPlayerId, payloadLength);
-        return true;
-    }
-
-    private static void WriteLong(byte[] destination, int offset, long value) =>
-        Buffer.BlockCopy(BitConverter.GetBytes(value), 0, destination, offset, 8);
-
-    private static void WriteInt(byte[] destination, int offset, int value) =>
-        Buffer.BlockCopy(BitConverter.GetBytes(value), 0, destination, offset, 4);
-
-    private static void WriteShort(byte[] destination, int offset, short value) =>
-        Buffer.BlockCopy(BitConverter.GetBytes(value), 0, destination, offset, 2);
-
-    private static long ReadLong(byte[] source, int offset) => BitConverter.ToInt64(source, offset);
-
-    private static int ReadInt(byte[] source, int offset) => BitConverter.ToInt32(source, offset);
-
-    private static short ReadShort(byte[] source, int offset) => BitConverter.ToInt16(source, offset);
-
     public override string ToString() =>
         "family=" + Family + "|epoch=" + Epoch + "|conn=" + Connection +
         "|seq=" + Sequence + "|tick=" + HostTick + "|player=" + ClaimedPlayerId + "|len=" + PayloadLength;
@@ -329,33 +256,6 @@ internal static class ObjectKeyCodec
     }
 
     /// <summary>
-    /// Reads a key and checks it against the session, returning a rejection instead of a bad key.
-    /// </summary>
-    public static bool TryRead(byte[] source, int offset, in AuthoritySessionContext context,
-        out ObjectKey key, out AuthorityReject reject)
-    {
-        key = default;
-        reject = AuthorityReject.Accepted;
-        if (source == null || offset < 0 || offset + AuthorityLimits.ObjectKeyBytes > source.Length)
-        {
-            reject = new AuthorityReject(AuthorityRejectCode.InvalidObjectKey, "truncated key");
-            return false;
-        }
-        var epoch = AuthorityEpoch.FromBytes(source, offset);
-        var position = offset + AuthorityEpoch.SizeBytes;
-        var kind = (PoolKind)source[position];
-        var scope = BitConverter.ToInt32(source, position + 1);
-        var nativeId = BitConverter.ToInt32(source, position + 5);
-        var generation = BitConverter.ToInt64(source, position + 9);
-
-        var candidate = new ObjectKey(epoch, kind, scope, nativeId, generation);
-        reject = AuthorityEnvelopeGate.ValidateObjectKey(context, candidate);
-        if (reject.IsRejected) return false;
-        key = candidate;
-        return true;
-    }
-
-    /// <summary>
     /// Decodes a key without a session context. The caller owns validating it.
     /// </summary>
     /// <remarks>
@@ -411,9 +311,6 @@ internal struct AuthorityPayloadReader
 
     /// <summary>Bytes not yet consumed.</summary>
     public int Remaining => length - position;
-
-    /// <summary>Bytes consumed so far.</summary>
-    public int Position => position;
 
     /// <summary>True when the whole declared payload was consumed.</summary>
     public bool EndOfPayload => position == length;
@@ -636,17 +533,6 @@ internal sealed class AuthorityPayloadWriter
             buffer[length++] = (byte)(bits >> shift);
     }
 
-    /// <summary>
-    /// Appends raw bytes with no length prefix, for fixed-size fields such as an epoch.
-    /// </summary>
-    public void WriteRaw(byte[] value)
-    {
-        if (value == null) throw new ArgumentNullException(nameof(value));
-        Ensure(value.Length);
-        Buffer.BlockCopy(value, 0, buffer, length, value.Length);
-        length += value.Length;
-    }
-
     /// <summary>Writes a length-prefixed byte array after checking the caller's ceiling.</summary>
     public bool TryWriteBytes(byte[] value, int maxBytes)
     {
@@ -655,18 +541,6 @@ internal sealed class AuthorityPayloadWriter
         Ensure(value.Length);
         Buffer.BlockCopy(value, 0, buffer, length, value.Length);
         length += value.Length;
-        return true;
-    }
-
-    /// <summary>Writes a bounded UTF-8 string.</summary>
-    public bool TryWriteString(string value, int maxBytes)
-    {
-        var bytes = System.Text.Encoding.UTF8.GetBytes(value ?? string.Empty);
-        if (bytes.Length > maxBytes || bytes.Length > ushort.MaxValue) return false;
-        WriteUShort((ushort)bytes.Length);
-        Ensure(bytes.Length);
-        Buffer.BlockCopy(bytes, 0, buffer, length, bytes.Length);
-        length += bytes.Length;
         return true;
     }
 

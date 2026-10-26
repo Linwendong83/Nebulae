@@ -5,12 +5,14 @@ namespace NebulaeModel.Authority;
 internal static class CraftStatePolicy
 {
     public const int CheckpointIntervalTicks = 120;
+    public const int PlayerCheckpointIntervalTicks = 12;
     public static bool ShouldPublish(in CraftState a, in CraftState b) =>
         a.HasCombatStat != b.HasCombatStat || a.Hp != b.Hp || a.HpMax != b.HpMax || a.HpRecover != b.HpRecover ||
         a.HpIncoming != b.HpIncoming || a.ProtoId != b.ProtoId || a.ModelIndex != b.ModelIndex || a.Port != b.Port ||
         a.Owner != b.Owner || a.PlayerOwner != b.PlayerOwner || a.Prototype != b.Prototype ||
         a.IsDynamic != b.IsDynamic || a.StateFlags != b.StateFlags || a.AstroId != b.AstroId ||
-        b.SampleTick < a.SampleTick || b.SampleTick - a.SampleTick >= CheckpointIntervalTicks;
+        b.SampleTick < a.SampleTick || b.SampleTick - a.SampleTick >=
+            (b.PlayerOwner != 0 ? PlayerCheckpointIntervalTicks : CheckpointIntervalTicks);
 
     /// <summary>
     /// Whether two readings of one craft carry exactly the same facts.

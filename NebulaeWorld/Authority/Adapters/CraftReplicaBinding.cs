@@ -35,7 +35,6 @@ internal sealed class CraftReplicaBinding : IReplicaMirrorObserver, IReplicaBase
 {
     private sealed class ScopeBinding
     {
-        public PoolKind Kind;
         public PlanetFactory Factory;
         public CraftData[] CraftPool;
         public SpaceSector Sector;
@@ -56,7 +55,7 @@ internal sealed class CraftReplicaBinding : IReplicaMirrorObserver, IReplicaBase
 
     public CraftReplicaBinding(Func<bool> applyWindowOpen = null)
     {
-        this.applyWindowOpen = applyWindowOpen ?? DefaultApplyWindowOpen;
+        this.applyWindowOpen = applyWindowOpen ?? ReplicaApplyContext.IsSessionApplyActive;
     }
 
     public void OnStateApplied(ScopeKey scope, in ObjectKey key, long revision, byte[] state)
@@ -65,6 +64,7 @@ internal sealed class CraftReplicaBinding : IReplicaMirrorObserver, IReplicaBase
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;
+            BindingDiagnostics.OutsideWindow(nameof(CraftReplicaBinding), scope);
             return;
         }
         var binding = BindingFor(scope);
@@ -81,6 +81,7 @@ internal sealed class CraftReplicaBinding : IReplicaMirrorObserver, IReplicaBase
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;
+            BindingDiagnostics.OutsideWindow(nameof(CraftReplicaBinding), scope);
             return;
         }
         if (scope.Kind == PoolKind.GroundCraft)
@@ -119,6 +120,7 @@ internal sealed class CraftReplicaBinding : IReplicaMirrorObserver, IReplicaBase
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;
+            BindingDiagnostics.OutsideWindow(nameof(CraftReplicaBinding), scope);
             return;
         }
         if (scopes.TryGetValue((scope.Kind, scope.Scope), out var binding) && binding.Core != null)
@@ -134,7 +136,7 @@ internal sealed class CraftReplicaBinding : IReplicaMirrorObserver, IReplicaBase
         var pool = factory?.craftPool ?? sector?.craftPool;
         if (!scopes.TryGetValue((scope.Kind, scope.Scope), out var binding))
         {
-            binding = new ScopeBinding { Kind = scope.Kind };
+            binding = new ScopeBinding();
             scopes.Add((scope.Kind, scope.Scope), binding);
         }
         if (binding.Factory != factory || binding.Sector != sector || binding.CraftPool != pool || binding.Core == null && pool != null)
@@ -155,10 +157,4 @@ internal sealed class CraftReplicaBinding : IReplicaMirrorObserver, IReplicaBase
     }
 
     private static PlanetFactory FactoryFor(int planetId) => GameMain.galaxy?.PlanetById(planetId)?.factory;
-
-    private static bool DefaultApplyWindowOpen()
-    {
-        var session = Multiplayer.Session;
-        return session?.AuthorityRuntime?.ApplyContext?.IsActiveOnCurrentThread ?? false;
-    }
 }

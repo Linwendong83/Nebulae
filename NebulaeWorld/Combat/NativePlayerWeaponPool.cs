@@ -1,6 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.IO;
+using NebulaeModel.Authority;
 using NebulaeModel.DataStructures;
 
 namespace NebulaeWorld.Combat;
@@ -15,7 +15,7 @@ internal abstract class NativePlayerWeaponPool
     public abstract bool Exists(int id);
     public abstract IPoolElement Read(int id);
     protected abstract void Write(IPoolElement value);
-    public abstract int Install(byte[] payload, int id = 0);
+    public abstract int Install(byte[] payload, int id = 0, ObjectKey? expectedTarget = null);
     public abstract void Remove(int id);
     public void Advance(int id, SkillSystem s, long from, int ticks)
     {
@@ -84,7 +84,7 @@ internal abstract class NativePlayerWeaponPool
         public override IPoolElement Read(int id) => Buffer[id];
         protected override void Write(IPoolElement value) => Buffer[value.ID] = (T)value;
         public override void Remove(int id) { if (Exists(id)) { if (pool != null) pool.Remove(id); else renderer.Remove(id); } }
-        public override int Install(byte[] payload, int id = 0)
+        public override int Install(byte[] payload, int id = 0, ObjectKey? expectedTarget = null)
         {
             using var stream = new MemoryStream(payload, false); using var r = new BinaryReader(stream);
             var value = default(T); value.Import(r);
@@ -96,10 +96,18 @@ internal abstract class NativePlayerWeaponPool
             {
                 case LocalGeneralProjectile p: p.targetCombatStatId = 0; p.damageIncoming = 0; box = p; break;
                 case GeneralProjectile p: p.targetCombatStatId = 0; p.damageIncoming = 0; box = p; break;
-                case GeneralMissile p: p.targetCombatStatId = 0; p.damageIncoming = 0; box = p; break;
+                case GeneralMissile p:
+                    p.targetCombatStatId = 0; p.damageIncoming = 0;
+                    // Apply the host's trajectory even when its target has died or its slot
+                    // now holds a different enemy. Native flight can then continue/reacquire.
+                    if (expectedTarget.HasValue && p.target.type == ETargetType.Enemy && p.target.id > 0 &&
+                        (!EnemyTargetIdentity.TryResolve(p.target, out var key) || key != expectedTarget.Value)) p.target.id = 0;
+                    box = p; break;
             }
             value = (T)box;
             if (!Exists(id)) id = pool != null ? pool.Add().ID : renderer.Add().ID;
+            // A correction may deliberately retarget the same missile to a new generation.
+            if (expectedTarget.HasValue && pool is DataPool<GeneralMissile> missiles) EnemyTargetIdentity.ForgetMissile(missiles, id);
             value.ID = id; Buffer[id] = value;
             return id;
         }

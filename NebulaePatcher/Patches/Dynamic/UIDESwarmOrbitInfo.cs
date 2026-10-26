@@ -1,8 +1,8 @@
 ﻿#region
 
-using System.Linq;
 using HarmonyLib;
 using NebulaeWorld;
+using NebulaeWorld.Universe;
 
 #endregion
 
@@ -21,30 +21,8 @@ internal class UIDESwarmOrbitInfo_Patch
             return true;
         }
 
-        if (division <= 1 || __instance.swarm == null)
-        {
-            __result = null;
-            return false;
-        }
-        var expiryOrder = __instance.swarm.expiryOrder;
-        var gameTick = GameMain.gameTick;
-        var array = new float[division];
-        var gap = GameMain.history.solarSailLife * 60f / division;
-        for (var i = 0; i < expiryOrder.Length; i++)
-        {
-            if (expiryOrder[i].index == 0 ||
-                !__instance.orbits.Contains((int)__instance.swarm.sailInfos[expiryOrder[i].index].orbit))
-            {
-                continue;
-            }
-            // Make sure index is not out of array
-            var index = (int)((expiryOrder[i].time - gameTick) / gap);
-            index = index >= 0 ? index : 0;
-            index = index < division ? index : division - 1;
-            array[index] += 1f;
-        }
-        maxCount = array.Aggregate(0f, (current, t) => current > t ? current : t);
-        __result = array;
+        __result = DysonSphereManager.SailLifeDistribution(__instance.swarm, division,
+            GameMain.gameTick, GameMain.history.solarSailLife, __instance.orbits, out maxCount);
         return false;
     }
 }

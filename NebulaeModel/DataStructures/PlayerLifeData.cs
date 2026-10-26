@@ -1,5 +1,4 @@
 ﻿using NebulaeModel.Contracts;
-using NebulaeModel.Networking;
 
 namespace NebulaeModel.DataStructures;
 internal class PlayerLifeData : INetSerializable

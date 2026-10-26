@@ -2,6 +2,7 @@
 
 using HarmonyLib;
 using NebulaeModel.Packets.Universe.Editor;
+using NebulaeModel.Utils;
 using NebulaeWorld;
 using UnityEngine;
 
@@ -12,6 +13,9 @@ namespace NebulaePatcher.Patches.Dynamic;
 [HarmonyPatch(typeof(DysonSphere))]
 internal class DysonSphere_Patch
 {
+    [HarmonyPostfix, HarmonyPatch(nameof(DysonSphere.Import))]
+    public static void Import_Postfix(DysonSphere __instance) => SolarSailState.FinishImport(__instance);
+
     [HarmonyPrefix]
     [HarmonyPatch(nameof(DysonSphere.BeforeGameTick))]
     public static bool BeforeGameTick_Prefix(DysonSphere __instance, long times)
@@ -20,59 +24,22 @@ internal class DysonSphere_Patch
         {
             return true;
         }
-        //Update swarm and layer energy generation stats every 120 frames
-        if (times % 120 != 0)
-        {
-            return false;
-        }
-        // Ownership split: every number the sphere's own structure determines is computed here, on
-        // the peer that owns a replica of that structure. Only the demand aggregated across all
-        // planets and the hive gamma debuff arrive by packet (DysonSphereStatusPacket), because
-        // those two depend on state this peer does not simulate.
-        __instance.swarm.energyGenCurrentTick = __instance.swarm.sailCount * __instance.energyGenPerSail;
-        var grossRadius = __instance.swarm.grossRadius;
-        var energyGenOriginalCurrentTick = __instance.swarm.energyGenCurrentTick;
-        for (var i = 0; i < 10; i++)
-        {
-            var dysonSphereLayer = __instance.layersSorted[i];
-            if (dysonSphereLayer == null)
+        // The client replays launch effects with network delay. Keep the host's energy totals
+        // and demand; a locally simulated sail count is not an authoritative power input.
+        // Per-layer inspector figures may still follow the replicated construction.
+        if (times % 120 == 0 && __instance.layersSorted != null)
+            foreach (var layer in __instance.layersSorted)
             {
-                continue;
+                if (layer == null) continue;
+                var energy = 0L;
+                for (var i = 1; i < layer.nodeCursor; i++)
+                    if (layer.nodePool[i] != null && layer.nodePool[i].id == i)
+                        energy += layer.nodePool[i].EnergyGenCurrentTick((int)__instance.energyGenPerNode, (int)__instance.energyGenPerFrame);
+                for (var i = 1; i < layer.shellCursor; i++)
+                    if (layer.shellPool[i] != null && layer.shellPool[i].id == i)
+                        energy += layer.shellPool[i].cellPoint * __instance.energyGenPerShell;
+                layer.energyGenCurrentTick = energy;
             }
-            dysonSphereLayer.energyGenCurrentTick = 0L;
-            var layerEnergyGenCurrentTick = 0L;
-            var nodePool = dysonSphereLayer.nodePool;
-            var shellPool = dysonSphereLayer.shellPool;
-            for (var j = 1; j < dysonSphereLayer.nodeCursor; j++)
-            {
-                if (nodePool[j] != null && nodePool[j].id == j)
-                {
-                    layerEnergyGenCurrentTick += nodePool[j]
-                        .EnergyGenCurrentTick((int)__instance.energyGenPerNode, (int)__instance.energyGenPerFrame);
-                }
-            }
-            for (var k = 1; k < dysonSphereLayer.shellCursor; k++)
-            {
-                if (shellPool[k] != null && shellPool[k].id == k)
-                {
-                    layerEnergyGenCurrentTick += shellPool[k].cellPoint * __instance.energyGenPerShell;
-                }
-            }
-            dysonSphereLayer.energyGenCurrentTick = layerEnergyGenCurrentTick;
-            energyGenOriginalCurrentTick += layerEnergyGenCurrentTick;
-            if (dysonSphereLayer.grossRadius > grossRadius)
-            {
-                grossRadius = dysonSphereLayer.grossRadius;
-            }
-        }
-        __instance.grossRadius = grossRadius;
-        __instance.energyGenOriginalCurrentTick = energyGenOriginalCurrentTick;
-        // The coefficient is the host's, not the local property: this peer's hive shells carry no
-        // gamma counts, so the vanilla getter would report no debuff at all.
-        __instance.energyGenCurrentTick =
-            (long)(energyGenOriginalCurrentTick * Multiplayer.Session.DysonSpheres.DebuffCoef(__instance.starData.index));
-        // energyReqCurrentTick is deliberately left alone: vanilla would reset it to zero here and
-        // let every planet's power network add its demand back, which only the host can total.
         return false;
     }
 

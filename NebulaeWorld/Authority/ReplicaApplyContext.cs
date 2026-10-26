@@ -1,7 +1,6 @@
 ﻿#region
 
 using System;
-using System.Threading;
 using NebulaeModel.Authority;
 
 #endregion
@@ -87,11 +86,13 @@ internal readonly struct ReplicaApplyLease : IDisposable
 /// </remarks>
 internal sealed class ReplicaApplyContext
 {
+    public static bool IsSessionApplyActive() =>
+        Multiplayer.Session?.AuthorityRuntime?.ApplyContext?.IsActiveOnCurrentThread ?? false;
+
     private readonly object gate = new();
     private ApplyScope[] scopeStack = new ApplyScope[4];
     private int depth;
     private int ownerThreadId;
-    private long appliedTotal;
 
     /// <summary>True while a replica apply is in progress on this session.</summary>
     public bool IsActive
@@ -114,9 +115,6 @@ internal sealed class ReplicaApplyContext
                 return depth > 0 && ownerThreadId == Environment.CurrentManagedThreadId;
         }
     }
-
-    /// <summary>Number of applies entered. Diagnostics only; a growing count is expected.</summary>
-    public long AppliedTotal => Interlocked.Read(ref appliedTotal);
 
     /// <summary>The scope of the innermost active apply, or a default scope when idle.</summary>
     public ApplyScope Current
@@ -176,7 +174,6 @@ internal sealed class ReplicaApplyContext
             scopeStack[depth] = scope;
             depth++;
         }
-        Interlocked.Increment(ref appliedTotal);
         return new ReplicaApplyLease(this);
     }
 
@@ -219,6 +216,5 @@ internal sealed class ReplicaApplyContext
             depth = 0;
             ownerThreadId = 0;
         }
-        Interlocked.Exchange(ref appliedTotal, 0);
     }
 }

@@ -5,6 +5,7 @@ using NebulaeModel.Networking;
 using NebulaeModel.Packets;
 using NebulaeModel.Packets.Players;
 using NebulaeWorld;
+using NebulaeWorld.Combat;
 
 #endregion
 
@@ -32,6 +33,8 @@ internal class PlayerMechaArmorProcessor : PacketProcessor<PlayerMechaArmor>
                 appearance.CopyTo(GameMain.mainPlayer.mecha.appearance);
                 GameMain.mainPlayer.mechaArmorModel.RefreshAllPartObjects();
                 GameMain.mainPlayer.mechaArmorModel.RefreshAllBoneObjects();
+                // The restored HP already belongs to this saved armor; do not scale it again.
+                MechaCustomizationProperties.Refresh(GameMain.mainPlayer, preserveRatio: false);
                 GameMain.mainPlayer.mecha.appearance.NotifyAllEvents();
                 GameMain.mainPlayer.mechaArmorModel._Init(GameMain.mainPlayer);
                 GameMain.mainPlayer.mechaArmorModel._OnOpen();
@@ -68,6 +71,8 @@ internal class PlayerMechaArmorProcessor : PacketProcessor<PlayerMechaArmor>
                     appearance.CopyTo(playerModel.MechaInstance.appearance);
                     playerModel.PlayerInstance.mechaArmorModel.RefreshAllPartObjects();
                     playerModel.PlayerInstance.mechaArmorModel.RefreshAllBoneObjects();
+                    // The host actor must use the new durability, not the prefab's default cap.
+                    MechaCustomizationProperties.Refresh(playerModel.PlayerInstance, preserveRatio: IsHost);
                     playerModel.MechaInstance.appearance.NotifyAllEvents();
                     playerModel.PlayerInstance.mechaArmorModel._Init(playerModel.PlayerInstance);
                     playerModel.PlayerInstance.mechaArmorModel._OnOpen();

@@ -8,6 +8,7 @@ using System.Reflection.Emit;
 using HarmonyLib;
 using NebulaeModel.Logger;
 using NebulaeWorld;
+using NebulaeWorld.Statistics;
 
 #endregion
 
@@ -36,13 +37,13 @@ internal static class UIStatisticsWindow_Transpiler
                 )
                 .Repeat(matcher => matcher
                     .Advance(1)
-                    .SetAndAdvance(OpCodes.Call, AccessTools.Method(typeof(UIStatisticsWindow_Transpiler), nameof(HasFactory)))
+                    .SetAndAdvance(OpCodes.Call, AccessTools.Method(typeof(LocalReferenceStatistics), nameof(LocalReferenceStatistics.HasFactory)))
                 )
                 .InstructionEnumeration();
         }
-        catch
+        catch (System.Exception error)
         {
-            Log.Error("RefreshAstroBox_Transpiler failed. Mod version not compatible with game version.");
+            Log.Error("RefreshAstroBox_Transpiler failed. Mod version not compatible with game version.", error);
             return codeInstructions;
         }
     }
@@ -67,7 +68,7 @@ internal static class UIStatisticsWindow_Transpiler
                 )
                 .Repeat(matcher => matcher
                     .SetAndAdvance(OpCodes.Call,
-                        AccessTools.Method(typeof(UIStatisticsWindow_Transpiler), nameof(GetFactoryIndex)))
+                        AccessTools.Method(typeof(LocalReferenceStatistics), nameof(LocalReferenceStatistics.GetFactoryIndex)))
                 )
                 .InstructionEnumeration();
 
@@ -76,14 +77,14 @@ internal static class UIStatisticsWindow_Transpiler
                     new CodeMatch(OpCodes.Ldfld, AccessTools.Field(typeof(PlanetData), nameof(PlanetData.factory))),
                     new CodeMatch(OpCodes.Brfalse)
                 )
-                .SetAndAdvance(OpCodes.Call, AccessTools.Method(typeof(UIStatisticsWindow_Transpiler), nameof(GetFactoryIndex)))
+                .SetAndAdvance(OpCodes.Call, AccessTools.Method(typeof(LocalReferenceStatistics), nameof(LocalReferenceStatistics.GetFactoryIndex)))
                 .InsertAndAdvance(new CodeInstruction(OpCodes.Ldc_I4_M1))
                 .SetOpcodeAndAdvance(OpCodes.Beq_S)
                 .InstructionEnumeration();
         }
-        catch
+        catch (System.Exception error)
         {
-            Log.Error("ComputeDisplayEntries_Transpiler failed. Mod version not compatible with game version.");
+            Log.Error("ComputeDisplayEntries_Transpiler failed. Mod version not compatible with game version.", error);
             return codeInstructions;
         }
     }
@@ -175,36 +176,9 @@ internal static class UIStatisticsWindow_Transpiler
                 new CodeMatch(OpCodes.Ldfld, AccessTools.Field(typeof(GameData), nameof(GameData.factoryCount)))
             )
             .Repeat(matcher => matcher
-                .SetAndAdvance(OpCodes.Call, AccessTools.Method(typeof(UIStatisticsWindow_Transpiler), nameof(GetFactoryCount)))
+                .SetAndAdvance(OpCodes.Call, AccessTools.Method(typeof(LocalReferenceStatistics), nameof(LocalReferenceStatistics.GetFactoryCount)))
                 .RemoveInstructions(2)
             )
             .InstructionEnumeration();
-    }
-
-    private static int GetFactoryCount()
-    {
-        if (!Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost)
-        {
-            return GameMain.data.factoryCount;
-        }
-        return Multiplayer.Session.Statistics.FactoryCount;
-    }
-
-    private static int GetFactoryIndex(PlanetData planet)
-    {
-        if (!Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost)
-        {
-            return planet.factoryIndex;
-        }
-        return Multiplayer.Session.Statistics.GetFactoryIndex(planet);
-    }
-
-    private static bool HasFactory(PlanetData planet)
-    {
-        if (!Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost)
-        {
-            return planet.factory != null;
-        }
-        return Multiplayer.Session.Statistics.HasFactory(planet);
     }
 }

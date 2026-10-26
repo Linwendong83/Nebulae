@@ -157,9 +157,12 @@ internal sealed class CompositeMirrorObserver : IReplicaMirrorObserver, IReplica
             {
                 observer.OnStateApplied(scope, key, revision, state);
             }
-            catch (Exception)
+            catch (Exception error)
             {
                 ObserverFailures++;
+                var failedKey = key;
+                NebulaeModel.Logger.Diagnostics.Error($"observer:state:{observer.GetType().Name}:{scope}",
+                    () => $"[authority] observer state failed observer={observer.GetType().Name} scope={scope} key={failedKey} revision={revision} bytes={state?.Length ?? 0} failures={ObserverFailures}", error);
             }
         }
     }
@@ -168,14 +171,14 @@ internal sealed class CompositeMirrorObserver : IReplicaMirrorObserver, IReplica
     {
         foreach (var observer in observers)
             if (observer is IReplicaFrameObserver frame)
-                try { frame.BeginReplicaFrame(); } catch (Exception) { ObserverFailures++; }
+                try { frame.BeginReplicaFrame(); } catch (Exception error) { ObserverFailures++; NebulaeModel.Logger.Diagnostics.Error("observer:begin:" + observer.GetType().Name, () => $"[authority] observer frame begin failed observer={observer.GetType().Name} failures={ObserverFailures}", error); }
     }
 
     public void EndReplicaFrame(Action<ScopeKey, Action> apply)
     {
         foreach (var observer in observers)
             if (observer is IReplicaFrameObserver frame)
-                try { frame.EndReplicaFrame(apply); } catch (Exception) { ObserverFailures++; }
+                try { frame.EndReplicaFrame(apply); } catch (Exception error) { ObserverFailures++; NebulaeModel.Logger.Diagnostics.Error("observer:end:" + observer.GetType().Name, () => $"[authority] observer frame end failed observer={observer.GetType().Name} failures={ObserverFailures}", error); }
     }
 
     public void OnBaselineInstalled(ScopeKey scope, IReadOnlyList<SnapshotMemberRecord> members)
@@ -189,8 +192,8 @@ internal sealed class CompositeMirrorObserver : IReplicaMirrorObserver, IReplica
             catch (Exception error)
             {
                 ObserverFailures++;
-                if (ObserverFailures <= 4 || ObserverFailures % 120 == 0)
-                    NebulaeModel.Logger.Log.Warn($"[authority] {observer.GetType().Name} failed to install {scope}: {error}");
+                NebulaeModel.Logger.Diagnostics.Error($"observer:baseline:{observer.GetType().Name}:{scope}",
+                    () => $"[authority] baseline installation failed observer={observer.GetType().Name} scope={scope} members={members.Count} failures={ObserverFailures}", error);
                 throw; // A failed game-pool installation must never produce a successful snapshot ack.
             }
         }
@@ -204,9 +207,12 @@ internal sealed class CompositeMirrorObserver : IReplicaMirrorObserver, IReplica
             {
                 observer.OnMemberRemoved(scope, key);
             }
-            catch (Exception)
+            catch (Exception error)
             {
                 ObserverFailures++;
+                var failedKey = key;
+                NebulaeModel.Logger.Diagnostics.Error($"observer:remove:{observer.GetType().Name}:{scope}",
+                    () => $"[authority] observer removal failed observer={observer.GetType().Name} scope={scope} key={failedKey} failures={ObserverFailures}", error);
             }
         }
     }
@@ -225,9 +231,12 @@ internal sealed class CompositeMirrorObserver : IReplicaMirrorObserver, IReplica
             {
                 death.OnMemberDied(scope, key);
             }
-            catch (Exception)
+            catch (Exception error)
             {
                 ObserverFailures++;
+                var failedKey = key;
+                NebulaeModel.Logger.Diagnostics.Warn($"observer:death:{observer.GetType().Name}:{scope}",
+                    () => $"[authority] observer death presentation failed observer={observer.GetType().Name} scope={scope} key={failedKey} failures={ObserverFailures}", error);
             }
         }
     }

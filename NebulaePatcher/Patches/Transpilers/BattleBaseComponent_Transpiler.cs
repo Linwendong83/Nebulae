@@ -135,11 +135,14 @@ internal class BattleBaseComponent_Transpiler
             //Host broadcast the event to clients
             var planetId = factory.planetId;
             var starId = factory.planet.star.id;
-            Multiplayer.Session.Network.SendPacketToStar(
-                new StorageSyncRealtimeChangePacket(
+            var packet = new StorageSyncRealtimeChangePacket(
                 storage.id,
                 StorageSyncRealtimeChangeEvent.AddItemFiltered,
-                itemId, addedCount, useBan, planetId), starId);
+                itemId, addedCount, useBan, planetId)
+            {
+                Inc = inc - remainInc
+            };
+            Multiplayer.Session.Network.SendPacketToStar(packet, starId);
         }
         return addedCount;
     }

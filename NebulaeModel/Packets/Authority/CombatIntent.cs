@@ -2,7 +2,7 @@ using System.IO;
 
 namespace NebulaeModel.Packets.Authority;
 
-internal enum CombatIntentKind : byte { Shoot = 1, Bomb, ShieldBurst, Wake, FleetLaunch, FleetRecall, Settings, FleetConfigure, ActivateGroundFormation, ManualShoot }
+internal enum CombatIntentKind : byte { Shoot = 1, Bomb, ShieldBurst, Wake, FleetLaunch, FleetRecall, Settings, FleetConfigure, ActivateGroundFormation, ManualShoot, FleetCommand, FleetAttackTarget, FleetAttackPosition, FleetOrbit, FleetCancel, GroundFleetMask }
 
 internal readonly struct CombatIntent
 {
@@ -29,7 +29,7 @@ internal readonly struct CombatIntent
         using var reader = new BinaryReader(new MemoryStream(payload, false));
         var kind = (CombatIntentKind)reader.ReadByte(); var argument = reader.ReadInt32();
         var x = reader.ReadDouble(); var y = reader.ReadDouble(); var z = reader.ReadDouble();
-        if (kind < CombatIntentKind.Shoot || kind > CombatIntentKind.ManualShoot ||
+        if (kind < CombatIntentKind.Shoot || kind > CombatIntentKind.GroundFleetMask ||
             double.IsNaN(x) || double.IsInfinity(x) || double.IsNaN(y) || double.IsInfinity(y) || double.IsNaN(z) || double.IsInfinity(z)) return false;
         intent = new CombatIntent(kind, argument, x, y, z);
         return true;

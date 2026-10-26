@@ -43,15 +43,13 @@ internal class ChatService
     /// <param name="messageText">The message text</param>
     /// <param name="messageType">The type of message</param>
     /// <param name="userName">The username of the sender (optional)</param>
-    /// <param name="timestamp">Optional timestamp (defaults to now)</param>
     /// <returns>The added RawChatMessage reference</returns>
-    public RawChatMessage AddMessage(string messageText, ChatMessageType messageType, string userName = null, DateTime? timestamp = null)
+    public RawChatMessage AddMessage(string messageText, ChatMessageType messageType, string userName = null)
     {
         var msg = new RawChatMessage
         {
             MessageText = messageText,
             UserName = userName ?? string.Empty,
-            Timestamp = timestamp ?? DateTime.Now,
             MessageType = messageType
         };
 

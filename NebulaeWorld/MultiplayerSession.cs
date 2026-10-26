@@ -60,6 +60,7 @@ internal class MultiplayerSession : IDisposable
         Belts = new BeltManager();
         BuildTools = new BuildToolManager();
         BuildDispatch = new BuildDispatchManager();
+        Repairs = new RepairDispatchManager();
         Drones = new DroneManager();
         Gizmos = new GizmoManager();
         History = new GameDataHistoryManager();
@@ -88,7 +89,8 @@ internal class MultiplayerSession : IDisposable
             Turrets.TickClient(); FactoryProducts.TickClient(); Research.TickClient(); ManualBuilds.TickClient();
             Life.ServiceCheckpoint();
             Turrets.DispatchPending(); FactoryProducts.DispatchPending(); Research.DispatchPending(); ManualBuilds.DispatchPending();
-            PlayerWeapons.TickClient(); DarkFogTurrets.Tick(); FleetCommands.Tick(); Enemies.TickClientHivePreview();
+            PlayerWeapons.TickClient(); DarkFogTurrets.Tick(); Enemies.TickClientHivePreview();
+            BattleVisuals.TickClient();
         };
         // The authority rule guard needs to see this session's mode and apply window; installing here keeps
         // every caller (game patches, packet processors, world managers) on one decision point.
@@ -117,6 +119,7 @@ internal class MultiplayerSession : IDisposable
     public BeltManager Belts { get; set; }
     public BuildToolManager BuildTools { get; set; }
     public BuildDispatchManager BuildDispatch { get; set; }
+    public RepairDispatchManager Repairs { get; set; }
     public DroneManager Drones { get; set; }
     public GizmoManager Gizmos { get; set; }
     public GameDataHistoryManager History { get; set; }
@@ -237,6 +240,8 @@ internal class MultiplayerSession : IDisposable
 
         BuildDispatch?.Dispose();
         BuildDispatch = null;
+        Repairs?.Dispose();
+        Repairs = null;
 
         Drones?.Dispose();
         Drones = null;

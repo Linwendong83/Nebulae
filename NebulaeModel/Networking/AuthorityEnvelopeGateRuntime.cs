@@ -120,8 +120,8 @@ internal static class AuthorityEnvelopeGateRuntime
             return reject;
         }
 
-        var total = ++rejectedTotal;
-        Log.Warn($"[authority] rejected message #{total} at tick {hostTick}: {reject}");
+        var total = System.Threading.Interlocked.Increment(ref rejectedTotal);
+        Diagnostics.Warn("authority:gate:" + reject.Code, () => $"[authority] rejected message #{total} tick={hostTick}: {reject}");
         return reject;
     }
 }

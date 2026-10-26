@@ -13,6 +13,20 @@ namespace NebulaePatcher.Patches.Dynamic;
 [HarmonyPatch(typeof(GameLogic))]
 internal class GameLogic_Patch
 {
+    [HarmonyPrefix, HarmonyPatch(nameof(GameLogic.PlayerGameTick))]
+    public static void BeginConstructionFrame()
+    {
+        if (!Multiplayer.IsActive || GameMain.data == null) return;
+        var dispatch = Multiplayer.Session.BuildDispatch;
+        dispatch.InitializeLoadedFactories();
+        for (var i = 0; i < GameMain.data.factoryCount; i++)
+            if (GameMain.data.factories[i] != null)
+            {
+                dispatch.BeginLaunchFrame(GameMain.data.factories[i]);
+                Multiplayer.Session.Repairs?.BeginFrame(GameMain.data.factories[i]);
+            }
+    }
+
     private static long LocalDysonSphereEnergyReq; //Client
 
     [HarmonyPostfix]
@@ -44,6 +58,7 @@ internal class GameLogic_Patch
         Multiplayer.Session.PropertyTransactions.GameTick();
         Multiplayer.Session.Drops.GameTick();
         Multiplayer.Session.BuildDispatch.Tick();
+        Multiplayer.Session.Repairs?.Tick();
         Multiplayer.Session.Life.GameTick();
         Multiplayer.Session.Goals.GameTick();
         Multiplayer.Session.Kills.GameTick();

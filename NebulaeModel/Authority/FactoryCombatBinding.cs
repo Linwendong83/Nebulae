@@ -98,12 +98,9 @@ internal sealed class FactoryCombatBinding
     private readonly Action<ObjectKey, int> componentBindingRecorded;
     private readonly Dictionary<ObjectKey, LocalBinding> bindings = [];
     private readonly HashSet<ObjectKey> memberScratch = [];
-
-    private long statesApplied;
     private long statesRefused;
     private long statesDeferred;
     private long statsAllocated;
-    private long statsReleased;
     private long referencesCleared;
     private long membersRemoved;
 
@@ -128,9 +125,6 @@ internal sealed class FactoryCombatBinding
     /// <summary>Entity keys this binding currently holds local stats for.</summary>
     public int BoundCount => bindings.Count;
 
-    /// <summary>State records applied into local pools.</summary>
-    public long StatesApplied => statesApplied;
-
     /// <summary>Records refused: undecodable bytes or a key outside this binding's scope.</summary>
     public long StatesRefused => statesRefused;
 
@@ -142,7 +136,6 @@ internal sealed class FactoryCombatBinding
     public long StatesDeferred => statesDeferred;
 
     public long StatsAllocated => statsAllocated;
-    public long StatsReleased => statsReleased;
 
     /// <summary>Entity references zeroed because the host says no stat exists (or the member left).</summary>
     public long ReferencesCleared => referencesCleared;
@@ -158,11 +151,13 @@ internal sealed class FactoryCombatBinding
         if (key.Kind != PoolKind.Entity || key.Scope != planetId)
         {
             statesRefused++;
+            BindingDiagnostics.Refused("invalid-state-or-identity", key, state?.Length ?? 0);
             return false;
         }
         if (state == null || !FactoryCombatStateCodec.TryDecode(state, 0, state.Length, out var combat, out _))
         {
             statesRefused++;
+            BindingDiagnostics.Refused("invalid-state-or-identity", key, state?.Length ?? 0);
             return false;
         }
         if (!pools.EntityExists(key.NativeId))
@@ -186,7 +181,6 @@ internal sealed class FactoryCombatBinding
         {
             bindings.Remove(key);
         }
-        statesApplied++;
         return true;
     }
 
@@ -205,7 +199,6 @@ internal sealed class FactoryCombatBinding
                 referencesCleared++;
             }
             pools.ReleaseCombatStat(binding.CombatStatId);
-            statsReleased++;
             binding.CombatStatId = 0;
         }
         if (binding.ConstructStatId != 0)
@@ -217,7 +210,6 @@ internal sealed class FactoryCombatBinding
                 referencesCleared++;
             }
             pools.ReleaseConstructStat(binding.ConstructStatId);
-            statsReleased++;
             binding.ConstructStatId = 0;
         }
         bindings.Remove(key);
@@ -300,7 +292,6 @@ internal sealed class FactoryCombatBinding
                 referencesCleared++;
             }
             pools.ReleaseCombatStat(binding.CombatStatId);
-            statsReleased++;
             binding.CombatStatId = 0;
         }
         else if (current != 0)
@@ -338,7 +329,6 @@ internal sealed class FactoryCombatBinding
                 referencesCleared++;
             }
             pools.ReleaseConstructStat(binding.ConstructStatId);
-            statsReleased++;
             binding.ConstructStatId = 0;
         }
         else if (current != 0)

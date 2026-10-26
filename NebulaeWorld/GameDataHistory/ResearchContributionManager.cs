@@ -14,6 +14,8 @@ internal sealed class ResearchContributionManager : IDisposable
     private const int BatchTicks = 30;
     private readonly object gate = new();
     private readonly ResearchContributionBuffer buffer = new();
+    private readonly int[] statisticalHashes = new int[BatchTicks];
+    private int statisticalCursor;
     private AuthorityEpoch epoch;
     private ConnectionEpoch connection;
     private long pending, lastDispatch;
@@ -23,6 +25,8 @@ internal sealed class ResearchContributionManager : IDisposable
     private long checkpointTicket;
     public bool HasUnsettled { get { lock (gate) return buffer.Hashes > 0; } }
     public bool InventoryPending => pending != 0;
+    internal long DiagnosticSequence => pending;
+    internal string DiagnosticState => $"command={pending} checkpoint={checkpointTicket} hashes={buffer.Hashes} needsCheckpoint={needsCheckpoint} takeback={takebackPending} result={result?.ResultCode}";
 
     private void EnsureWorld()
     {
@@ -54,6 +58,24 @@ internal sealed class ResearchContributionManager : IDisposable
         EnsureWorld();
         var tech = LDB.techs.Select(history.currentTech);
         lock (gate) buffer.Record(tech.ID, history.TechState(tech.ID).curLevel, hashes, tech.Items, tech.ItemPoints);
+        // AddTechHash is host-owned, but vanilla UI still needs this tick's local research rate.
+        history.gameData.statistics.techHashedThisFrame += (int)hashes;
+    }
+
+    internal void DeferCommittedStatistics(GameStatData statistics, int hashes)
+    {
+        // Commands commit before PrepareTick clears the counter. Spread their statistics over the
+        // batching interval so the native ten-frame activity window sees continuous research.
+        statistics.techHashedThisFrame -= hashes;
+        for (var i = 0; i < BatchTicks; i++)
+            statisticalHashes[(statisticalCursor + i) % BatchTicks] += hashes / BatchTicks + (i < hashes % BatchTicks ? 1 : 0);
+    }
+
+    internal void RecordStatistics(GameStatData statistics)
+    {
+        statistics.techHashedThisFrame += statisticalHashes[statisticalCursor];
+        statisticalHashes[statisticalCursor] = 0;
+        statisticalCursor = (statisticalCursor + 1) % BatchTicks;
     }
     public void OverlayCheckpoint(MechaData personal)
     {
@@ -166,8 +188,11 @@ internal sealed class ResearchContributionManager : IDisposable
         if (tech == null || !session.InventoryTransfers.CanRecord(command.ConnectionPlayerId, command.Key.Sequence)) return new CommandOutcome(CommandResultCode.RejectedNotReady);
         if (!TryDebit(personal, tech.Items, tech.ItemPoints, accepted, out var transfers)) return new CommandOutcome(CommandResultCode.RejectedResource);
         if (transfers.Length > 0) session.InventoryTransfers.Record(command.ConnectionPlayerId, command.Key.Sequence, transfers);
+        var statistics = history.gameData.statistics;
+        var previousHashes = statistics.techHashedThisFrame;
         history.AddTechHash(accepted);
+        DeferCommittedStatistics(statistics, statistics.techHashedThisFrame - previousHashes);
         return new CommandOutcome(CommandResultCode.Applied, GameMain.gameTick, accepted, transfers.Length > 0 ? command.Key.Sequence : 0);
     }
-    public void Dispose() { lock (gate) { buffer.Clear(); result = null; pending = 0; } }
+    public void Dispose() { lock (gate) { buffer.Clear(); result = null; pending = 0; Array.Clear(statisticalHashes, 0, statisticalHashes.Length); } }
 }

@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using NebulaeModel.Authority;
 using NebulaeModel.Packets.Authority;
+using NebulaeModel.Logger;
 
 #endregion
 
@@ -127,9 +128,7 @@ internal sealed class HostCommandQueue
     private bool draining;
 
     private long refusedTotal;
-    private long executedTotal;
     private long replayedTotal;
-    private long purgedTotal;
 
     /// <param name="epoch">World epoch every command must name.</param>
     /// <param name="capacity">Maximum queued commands per connection.</param>
@@ -148,14 +147,8 @@ internal sealed class HostCommandQueue
         ResultCapacity = resultCapacity;
     }
 
-    /// <summary>World epoch every queued command must name.</summary>
-    public AuthorityEpoch Epoch => epoch;
-
     /// <summary>Maximum queued commands per connection.</summary>
     public int Capacity => capacity;
-
-    /// <summary>Maximum queued payload bytes per connection.</summary>
-    public long ByteCapacity => byteCapacity;
 
     /// <summary>Cached outcomes retained per connection before the oldest are evicted.</summary>
     public int ResultCapacity { get; }
@@ -175,14 +168,8 @@ internal sealed class HostCommandQueue
     /// <summary>Commands refused because a connection's queue was full.</summary>
     public long RefusedTotal => System.Threading.Interlocked.Read(ref refusedTotal);
 
-    /// <summary>Commands executed by the drain since the queue was created.</summary>
-    public long ExecutedTotal => System.Threading.Interlocked.Read(ref executedTotal);
-
     /// <summary>Duplicate commands answered from the cache instead of being executed again.</summary>
     public long ReplayedTotal => System.Threading.Interlocked.Read(ref replayedTotal);
-
-    /// <summary>Queued commands dropped because their connection went away before the drain.</summary>
-    public long PurgedTotal => System.Threading.Interlocked.Read(ref purgedTotal);
 
     /// <summary>Number of connections that currently have a dedup window.</summary>
     public int ConnectionCount
@@ -347,6 +334,7 @@ internal sealed class HostCommandQueue
         CommandDrainDisposition disposition;
         if (executor == null)
         {
+            Diagnostics.Error("command:no-executor", () => $"[authority] no command executor player={command.ConnectionPlayerId} connection={command.ConnectionId} key={command.Key} category={command.Packet.Category} tick={command.EnqueuedTick}");
             outcome = new CommandOutcome(CommandResultCode.RejectedNotReady);
             disposition = CommandDrainDisposition.Failed;
         }
@@ -356,10 +344,11 @@ internal sealed class HostCommandQueue
             {
                 outcome = executor.Execute(command);
                 disposition = CommandDrainDisposition.Executed;
-                System.Threading.Interlocked.Increment(ref executedTotal);
             }
-            catch (Exception)
+            catch (Exception error)
             {
+                Diagnostics.Error($"command:execute:{command.ConnectionId}:{command.Packet.Category}:{error.GetType().Name}",
+                    () => $"[authority] command execution failed player={command.ConnectionPlayerId} connection={command.ConnectionId} key={command.Key} category={command.Packet.Category} target={command.Packet.TargetNativeId} scope={command.Packet.TargetScope} enqueuedTick={command.EnqueuedTick}", error);
                 // The command may already have produced effects, so it is closed as rejected and
                 // never retried: retrying is how a "at most once" command becomes "twice".
                 outcome = new CommandOutcome(CommandResultCode.RejectedInvalid);
@@ -368,6 +357,8 @@ internal sealed class HostCommandQueue
         }
 
         window.Complete(command.Key, outcome);
+        if (outcome.Code != CommandResultCode.Applied)
+            Log.Debug($"[authority] command result player={command.ConnectionPlayerId} connection={command.ConnectionId} key={command.Key} category={command.Packet.Category} disposition={disposition} result={outcome.Code}");
         onResult?.Invoke(command, disposition, outcome);
     }
 
@@ -415,16 +406,13 @@ internal sealed class HostCommandQueue
     {
         lock (gate)
         {
-            var removed = 0;
             var survivors = new Queue<QueuedHostCommand>(pending.Count);
             while (pending.Count > 0)
             {
                 var command = pending.Dequeue();
-                if (command.Key.Connection.Equals(connection)) removed++;
-                else survivors.Enqueue(command);
+                if (!command.Key.Connection.Equals(connection)) survivors.Enqueue(command);
             }
             while (survivors.Count > 0) pending.Enqueue(survivors.Dequeue());
-            if (removed > 0) System.Threading.Interlocked.Add(ref purgedTotal, removed);
 
             queuedCountByConnection.Remove(connection.Value);
             queuedBytesByConnection.Remove(connection.Value);

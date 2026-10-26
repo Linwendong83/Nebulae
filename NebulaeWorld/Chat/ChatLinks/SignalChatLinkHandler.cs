@@ -1,7 +1,5 @@
 ﻿#region
 
-using System;
-using NebulaeModel.Utils;
 using NebulaeWorld.MonoBehaviours.Local.Chat;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -42,18 +40,6 @@ internal class SignalChatLinkHandler : IChatLinkHandler
                 UpdateTip(trigger, ref tipObject, signalId);
                 break;
         }
-    }
-
-    public string GetIconName(string data)
-    {
-        var signalId = GetSignalId(data);
-        return signalId <= 0 ? "Unknown" : signalId.ToString();
-    }
-
-    public string GetDisplayRichText(string data)
-    {
-        var signalId = GetSignalId(data);
-        return signalId <= 0 ? string.Empty : $"<link=\"signal {signalId}\">[<sprite name=\"{signalId}\"> <color=\"green\">{ProtoUtils.GetSignalDisplayName(signalId)}</color>]</link>";
     }
 
     private static void UpdateTip(ChatLinkTrigger trigger, ref MonoBehaviour tipObject, int signalId)

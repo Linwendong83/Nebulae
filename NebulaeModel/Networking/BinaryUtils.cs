@@ -1,7 +1,6 @@
 ﻿using K4os.Compression.LZ4.Streams;
 using System;
 using System.IO;
-using NebulaeModel.Contracts;
 using NebulaeModel.Networking.Serialization;
 
 namespace NebulaeModel.Networking

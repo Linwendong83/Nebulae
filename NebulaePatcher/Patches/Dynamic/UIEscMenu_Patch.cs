@@ -1,7 +1,5 @@
-
 #region
 using System.Diagnostics.CodeAnalysis;
-using System.Threading;
 using HarmonyLib;
 using NebulaePatcher.Patches.Transpilers;
 using NebulaeWorld;
@@ -60,7 +58,7 @@ internal class UIEscMenu_Patch
         if (!Multiplayer.IsActive || !Multiplayer.Session.IsClient || GameMain.mainPlayer?.mecha == null) return false;
         if (!Multiplayer.Session.Life.IsExiting)
         {
-            UIRealtimeTip.Popup("Saving personal progress...".Translate());
+            UIRealtimeTip.Popup("Saving personal progress...".Translate(), sound: false);
             NebulaeWorld.GameStates.LocalPlayerPreferences.SaveDashboard();
             Multiplayer.Session.Life.BeginExit(() => { QuitGame(); complete(); });
         }

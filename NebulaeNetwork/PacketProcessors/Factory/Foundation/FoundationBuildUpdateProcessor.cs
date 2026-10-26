@@ -1,12 +1,10 @@
 ﻿#region
 
 using System;
-using System.Linq;
 using NebulaeModel.DataStructures;
 using NebulaeModel.Networking;
 using NebulaeModel.Packets;
 using NebulaeModel.Packets.Factory.Foundation;
-using NebulaeModel.Packets.Players;
 using NebulaeWorld;
 using UnityEngine;
 

@@ -23,7 +23,7 @@ internal class AuthorityCommandProcessor : PacketProcessor<AuthorityCommandPacke
         if (!AuthorityPacketAdmission.Admit(packet, AuthorityDirection.ClientToServer, conn, HostTick(),
                 out var context, out var reject))
         {
-            Log.Warn($"[authority] command refused from connection {conn?.Id}: {reject}");
+            Diagnostics.Warn("authority:processor:AuthorityCommandProcessor:1:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] command refused from connection {conn?.Id}: {reject}"));
             return;
         }
 
@@ -35,7 +35,7 @@ internal class AuthorityCommandProcessor : PacketProcessor<AuthorityCommandPacke
         var keyReject = AuthorityEnvelopeGate.ValidateCommandKey(context, key);
         if (keyReject.IsRejected)
         {
-            Log.Warn($"[authority] command key refused: {keyReject}");
+            Diagnostics.Warn("authority:processor:AuthorityCommandProcessor:2:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] command key refused: {keyReject}"));
             return;
         }
 
@@ -45,13 +45,13 @@ internal class AuthorityCommandProcessor : PacketProcessor<AuthorityCommandPacke
         {
             if (!packet.TryGetTargetKey(out var target))
             {
-                Log.Warn("[authority] command target could not be reassembled");
+                Diagnostics.Warn("authority:processor:AuthorityCommandProcessor:3:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ("[authority] command target could not be reassembled"));
                 return;
             }
             var targetReject = AuthorityEnvelopeGate.ValidateObjectKey(context, target);
             if (targetReject.IsRejected)
             {
-                Log.Warn($"[authority] command target refused: {targetReject}");
+                Diagnostics.Warn("authority:processor:AuthorityCommandProcessor:4:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] command target refused: {targetReject}"));
                 return;
             }
         }
@@ -62,8 +62,8 @@ internal class AuthorityCommandProcessor : PacketProcessor<AuthorityCommandPacke
         if (runtime is null || !runtime.TryEnqueueHostCommand(key, packet, playerId, conn?.Id ?? 0,
                 HostTick()))
         {
-            Log.Warn($"[authority] command {key} refused: host queue is unavailable or full " +
-                     $"(queued={runtime?.Commands?.Count ?? 0}/{runtime?.Commands?.Capacity ?? 0})");
+            Diagnostics.Warn("authority:processor:AuthorityCommandProcessor:5:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] command {key} refused: host queue is unavailable or full " +
+                     $"(queued={runtime?.Commands?.Count ?? 0}/{runtime?.Commands?.Capacity ?? 0})"));
             return;
         }
     }
@@ -81,7 +81,7 @@ internal class AuthorityCommandResultProcessor : PacketProcessor<AuthorityComman
         if (IsHost) return;
         if (!AuthorityPacketAdmission.Admit(packet, AuthorityDirection.ServerToClient, conn, 0, out var reject))
         {
-            Log.Warn($"[authority] command result refused: {reject}");
+            Diagnostics.Warn("authority:processor:AuthorityCommandResultProcessor:1:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] command result refused: {reject}"));
             return;
         }
         Multiplayer.Session.PlayerWeapons.ReceiveResult(packet);
@@ -110,7 +110,7 @@ internal class AuthorityWelcomeProcessor : PacketProcessor<AuthorityWelcomePacke
             AuthorityDirection.ServerToClient);
         if (reject.IsRejected)
         {
-            Log.Warn($"[authority] welcome refused: {reject}");
+            Diagnostics.Warn("authority:processor:AuthorityWelcomeProcessor:1:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] welcome refused: {reject}"));
             return;
         }
 
@@ -130,7 +130,7 @@ internal class AuthorityWelcomeProcessor : PacketProcessor<AuthorityWelcomePacke
         var worldEpoch = new AuthorityEpoch(packet.EpochHigh, packet.EpochLow);
         if (!identity.TryAdoptWorldEpoch(worldEpoch))
         {
-            Log.Warn($"[authority] welcome epoch {worldEpoch} refused; this session already has a world");
+            Diagnostics.Warn("authority:processor:AuthorityWelcomeProcessor:2:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] welcome epoch {worldEpoch} refused; this session already has a world"));
             return;
         }
         runtime?.BeginAuthorityWorld(worldEpoch, isHost: false);
@@ -169,19 +169,19 @@ internal class AuthoritySnapshotBeginProcessor : PacketProcessor<AuthoritySnapsh
         if (IsHost) return;
         if (!AuthorityPacketAdmission.Admit(packet, AuthorityDirection.ServerToClient, conn, 0, out var reject))
         {
-            Log.Warn($"[authority] snapshot begin refused: {reject}");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotBeginProcessor:1:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot begin refused: {reject}"));
             return;
         }
         if (!packet.TryGetScopeKey(out var scope))
         {
-            Log.Warn($"[authority] snapshot begin has an illegal scope {packet.ScopeKind}:{packet.Scope}");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotBeginProcessor:2:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot begin has an illegal scope {packet.ScopeKind}:{packet.Scope}"));
             return;
         }
         if (packet.BaselineId <= 0 || packet.ChunkCount < 0 || packet.TotalBytes < 0 ||
             packet.SubscriptionEpoch <= 0)
         {
-            Log.Warn($"[authority] snapshot begin has invalid bookkeeping baseline={packet.BaselineId} " +
-                     $"chunks={packet.ChunkCount} bytes={packet.TotalBytes} epoch={packet.SubscriptionEpoch}");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotBeginProcessor:3:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot begin has invalid bookkeeping baseline={packet.BaselineId} " +
+                     $"chunks={packet.ChunkCount} bytes={packet.TotalBytes} epoch={packet.SubscriptionEpoch}"));
             return;
         }
 
@@ -190,7 +190,7 @@ internal class AuthoritySnapshotBeginProcessor : PacketProcessor<AuthoritySnapsh
             hostTick: packet.HostTick);
         if (runtime is null || !runtime.TryEnqueueReplicaMessage(packet, applyScope))
         {
-            Log.Warn($"[authority] snapshot begin scope={scope} refused: replica inbox is unavailable or full");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotBeginProcessor:4:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot begin scope={scope} refused: replica inbox is unavailable or full"));
             return;
         }
     }
@@ -204,18 +204,18 @@ internal class AuthoritySnapshotChunkProcessor : PacketProcessor<AuthoritySnapsh
         if (IsHost) return;
         if (!AuthorityPacketAdmission.Admit(packet, AuthorityDirection.ServerToClient, conn, 0, out var reject))
         {
-            Log.Warn($"[authority] snapshot chunk refused: {reject}");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotChunkProcessor:1:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot chunk refused: {reject}"));
             return;
         }
         if (!packet.TryGetScopeKey(out var scope))
         {
-            Log.Warn($"[authority] snapshot chunk has an illegal scope {packet.ScopeKind}:{packet.Scope}");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotChunkProcessor:2:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot chunk has an illegal scope {packet.ScopeKind}:{packet.Scope}"));
             return;
         }
         if (packet.Data == null || packet.ChunkIndex < 0 || packet.BaselineId <= 0 ||
             packet.SubscriptionEpoch <= 0)
         {
-            Log.Warn($"[authority] snapshot chunk is empty, negative, or unkeyed");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotChunkProcessor:3:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot chunk is empty, negative, or unkeyed"));
             return;
         }
 
@@ -224,8 +224,8 @@ internal class AuthoritySnapshotChunkProcessor : PacketProcessor<AuthoritySnapsh
             hostTick: packet.HostTick);
         if (runtime is null || !runtime.TryEnqueueReplicaMessage(packet, applyScope))
         {
-            Log.Warn($"[authority] snapshot chunk baseline={packet.BaselineId} refused: " +
-                     "replica inbox is unavailable or full");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotChunkProcessor:4:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot chunk baseline={packet.BaselineId} refused: " +
+                     "replica inbox is unavailable or full"));
             return;
         }
     }
@@ -239,18 +239,18 @@ internal class AuthoritySnapshotCommitProcessor : PacketProcessor<AuthoritySnaps
         if (IsHost) return;
         if (!AuthorityPacketAdmission.Admit(packet, AuthorityDirection.ServerToClient, conn, 0, out var reject))
         {
-            Log.Warn($"[authority] snapshot commit refused: {reject}");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotCommitProcessor:1:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot commit refused: {reject}"));
             return;
         }
         if (!packet.TryGetScopeKey(out var scope))
         {
-            Log.Warn($"[authority] snapshot commit has an illegal scope {packet.ScopeKind}:{packet.Scope}");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotCommitProcessor:2:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot commit has an illegal scope {packet.ScopeKind}:{packet.Scope}"));
             return;
         }
         if (packet.BaselineId <= 0 || packet.ChunkCount < 0 || packet.SubscriptionEpoch <= 0)
         {
-            Log.Warn($"[authority] snapshot commit has invalid bookkeeping baseline={packet.BaselineId} " +
-                     $"chunks={packet.ChunkCount}");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotCommitProcessor:3:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot commit has invalid bookkeeping baseline={packet.BaselineId} " +
+                     $"chunks={packet.ChunkCount}"));
             return;
         }
 
@@ -259,8 +259,8 @@ internal class AuthoritySnapshotCommitProcessor : PacketProcessor<AuthoritySnaps
             hostTick: packet.HostTick);
         if (runtime is null || !runtime.TryEnqueueReplicaMessage(packet, applyScope))
         {
-            Log.Warn($"[authority] snapshot commit baseline={packet.BaselineId} refused: " +
-                     "replica inbox is unavailable or full");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotCommitProcessor:4:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot commit baseline={packet.BaselineId} refused: " +
+                     "replica inbox is unavailable or full"));
             return;
         }
     }
@@ -278,13 +278,13 @@ internal class AuthoritySnapshotAckProcessor : PacketProcessor<AuthoritySnapshot
         if (IsClient) return;
         if (!AuthorityPacketAdmission.Admit(packet, AuthorityDirection.ClientToServer, conn, HostTick(), out var reject))
         {
-            Log.Warn($"[authority] snapshot ack refused from connection {conn?.Id}: {reject}");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotAckProcessor:1:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot ack refused from connection {conn?.Id}: {reject}"));
             return;
         }
         if (packet.BaselineId <= 0 || packet.LastAppliedSequence < 0)
         {
-            Log.Warn($"[authority] snapshot ack has invalid bookkeeping baseline={packet.BaselineId} " +
-                     $"sequence={packet.LastAppliedSequence}");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotAckProcessor:2:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot ack has invalid bookkeeping baseline={packet.BaselineId} " +
+                     $"sequence={packet.LastAppliedSequence}"));
             return;
         }
 
@@ -292,8 +292,8 @@ internal class AuthoritySnapshotAckProcessor : PacketProcessor<AuthoritySnapshot
         if (runtime is null || !runtime.NotifySnapshotAck(packet.ClaimedPlayerId, packet.BaselineId,
                 packet.LastAppliedSequence, packet.Accepted))
         {
-            Log.Warn($"[authority] snapshot ack baseline={packet.BaselineId} refused: host is not " +
-                     "an authority world or the ack queue is full");
+            Diagnostics.Warn("authority:processor:AuthoritySnapshotAckProcessor:3:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] snapshot ack baseline={packet.BaselineId} refused: host is not " +
+                     "an authority world or the ack queue is full"));
             return;
         }
     }
@@ -309,17 +309,17 @@ internal class AuthorityWorldStateProcessor : PacketProcessor<AuthorityWorldStat
         if (IsHost) return;
         if (!AuthorityPacketAdmission.Admit(packet, AuthorityDirection.ServerToClient, conn, 0, out var reject))
         {
-            Log.Warn($"[authority] world state refused: {reject}");
+            Diagnostics.Warn("authority:processor:AuthorityWorldStateProcessor:1:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] world state refused: {reject}"));
             return;
         }
         if (!packet.TryGetScopeKey(out var scope))
         {
-            Log.Warn($"[authority] world state has an illegal scope {packet.ScopeKind}:{packet.Scope}");
+            Diagnostics.Warn("authority:processor:AuthorityWorldStateProcessor:2:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] world state has an illegal scope {packet.ScopeKind}:{packet.Scope}"));
             return;
         }
         if (!packet.AreRecordsConsistent())
         {
-            Log.Warn($"[authority] world state record bookkeeping is inconsistent");
+            Diagnostics.Warn("authority:processor:AuthorityWorldStateProcessor:3:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] world state record bookkeeping is inconsistent"));
             return;
         }
 
@@ -327,7 +327,7 @@ internal class AuthorityWorldStateProcessor : PacketProcessor<AuthorityWorldStat
         if (!AuthorityWorldStateCodec.TryDecode(packet.Data, 0, packet.Data.Length, packet.RecordCount,
                 context, out var records, out var decodeReject))
         {
-            Log.Warn($"[authority] world state refused: {decodeReject}");
+            Diagnostics.Warn("authority:processor:AuthorityWorldStateProcessor:4:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] world state refused: {decodeReject}"));
             return;
         }
 
@@ -338,7 +338,7 @@ internal class AuthorityWorldStateProcessor : PacketProcessor<AuthorityWorldStat
             hostTick: packet.HostTick);
         if (runtime is null || !runtime.TryEnqueueReplicaMessage(packet, applyScope))
         {
-            Log.Warn($"[authority] world state scope={scope} refused: replica inbox is unavailable or full");
+            Diagnostics.Warn("authority:processor:AuthorityWorldStateProcessor:5:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] world state scope={scope} refused: replica inbox is unavailable or full"));
             return;
         }
     }
@@ -357,17 +357,17 @@ internal class AuthorityLifecycleProcessor : PacketProcessor<AuthorityLifecycleP
         if (IsHost) return;
         if (!AuthorityPacketAdmission.Admit(packet, AuthorityDirection.ServerToClient, conn, 0, out var reject))
         {
-            Log.Warn($"[authority] lifecycle refused: {reject}");
+            Diagnostics.Warn("authority:processor:AuthorityLifecycleProcessor:1:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] lifecycle refused: {reject}"));
             return;
         }
         if (!packet.TryGetScopeKey(out var scope))
         {
-            Log.Warn($"[authority] lifecycle has an illegal scope {packet.ScopeKind}:{packet.Scope}");
+            Diagnostics.Warn("authority:processor:AuthorityLifecycleProcessor:2:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] lifecycle has an illegal scope {packet.ScopeKind}:{packet.Scope}"));
             return;
         }
         if (!packet.AreRecordsConsistent())
         {
-            Log.Warn($"[authority] lifecycle record bookkeeping is inconsistent");
+            Diagnostics.Warn("authority:processor:AuthorityLifecycleProcessor:3:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] lifecycle record bookkeeping is inconsistent"));
             return;
         }
 
@@ -375,7 +375,7 @@ internal class AuthorityLifecycleProcessor : PacketProcessor<AuthorityLifecycleP
         if (!AuthorityLifecycleCodec.TryDecode(packet.Data, 0, packet.Data.Length, packet.RecordCount,
                 context, out var records, out var decodeReject))
         {
-            Log.Warn($"[authority] lifecycle refused: {decodeReject}");
+            Diagnostics.Warn("authority:processor:AuthorityLifecycleProcessor:4:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] lifecycle refused: {decodeReject}"));
             return;
         }
 
@@ -384,7 +384,7 @@ internal class AuthorityLifecycleProcessor : PacketProcessor<AuthorityLifecycleP
             hostTick: packet.HostTick);
         if (runtime is null || !runtime.TryEnqueueReplicaMessage(packet, applyScope))
         {
-            Log.Warn($"[authority] lifecycle scope={scope} refused: replica inbox is unavailable or full");
+            Diagnostics.Warn("authority:processor:AuthorityLifecycleProcessor:5:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] lifecycle scope={scope} refused: replica inbox is unavailable or full"));
             return;
         }
     }
@@ -404,17 +404,17 @@ internal class AuthorityScopeControlProcessor : PacketProcessor<AuthorityScopeCo
         if (!AuthorityPacketAdmission.Admit(packet, AuthorityDirection.ClientToServer, conn, HostTick(),
                 out var context, out var reject))
         {
-            Log.Warn($"[authority] scope control refused from connection {conn?.Id}: {reject}");
+            Diagnostics.Warn("authority:processor:AuthorityScopeControlProcessor:1:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] scope control refused from connection {conn?.Id}: {reject}"));
             return;
         }
         if ((ScopeControlOp)packet.Op == ScopeControlOp.None)
         {
-            Log.Warn("[authority] scope control without an operation");
+            Diagnostics.Warn("authority:processor:AuthorityScopeControlProcessor:2:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ("[authority] scope control without an operation"));
             return;
         }
         if (!packet.TryGetScopeKey(out var scope))
         {
-            Log.Warn($"[authority] scope control has an illegal scope {packet.ScopeKind}:{packet.Scope}");
+            Diagnostics.Warn("authority:processor:AuthorityScopeControlProcessor:3:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] scope control has an illegal scope {packet.ScopeKind}:{packet.Scope}"));
             return;
         }
 
@@ -424,8 +424,8 @@ internal class AuthorityScopeControlProcessor : PacketProcessor<AuthorityScopeCo
                 (ScopeRecoveryReason)packet.Reason, packet.DigestOnly, packet.SubscriptionEpoch,
                 packet.LastAppliedSequence, packet.ObservedStarId, packet.RequestId))
         {
-            Log.Warn($"[authority] scope control {op} for {scope} refused: host is not an authority " +
-                     "world or the queue is full");
+            Diagnostics.Warn("authority:processor:AuthorityScopeControlProcessor:4:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] scope control {op} for {scope} refused: host is not an authority " +
+                     "world or the queue is full"));
             return;
         }
     }
@@ -446,18 +446,18 @@ internal class AuthorityScopeDigestProcessor : PacketProcessor<AuthorityScopeDig
         if (IsHost) return;
         if (!AuthorityPacketAdmission.Admit(packet, AuthorityDirection.ServerToClient, conn, 0, out var reject))
         {
-            Log.Warn($"[authority] scope digest refused: {reject}");
+            Diagnostics.Warn("authority:processor:AuthorityScopeDigestProcessor:1:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] scope digest refused: {reject}"));
             return;
         }
         if (!packet.TryGetScopeKey(out var scope))
         {
-            Log.Warn($"[authority] scope digest has an illegal scope {packet.ScopeKind}:{packet.Scope}");
+            Diagnostics.Warn("authority:processor:AuthorityScopeDigestProcessor:2:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] scope digest has an illegal scope {packet.ScopeKind}:{packet.Scope}"));
             return;
         }
         if (!packet.HasValidBookkeeping())
         {
-            Log.Warn($"[authority] scope digest has invalid bookkeeping sequence={packet.DeclaredStreamSequence} " +
-                     $"members={packet.MemberCount} epoch={packet.SubscriptionEpoch}");
+            Diagnostics.Warn("authority:processor:AuthorityScopeDigestProcessor:3:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] scope digest has invalid bookkeeping sequence={packet.DeclaredStreamSequence} " +
+                     $"members={packet.MemberCount} epoch={packet.SubscriptionEpoch}"));
             return;
         }
 
@@ -466,7 +466,7 @@ internal class AuthorityScopeDigestProcessor : PacketProcessor<AuthorityScopeDig
             hostTick: packet.HostTick);
         if (runtime is null || !runtime.TryEnqueueReplicaMessage(packet, applyScope))
         {
-            Log.Warn($"[authority] scope digest for {scope} refused: replica inbox is unavailable or full");
+            Diagnostics.Warn("authority:processor:AuthorityScopeDigestProcessor:4:" + conn?.Id, () => $"connection={conn?.Id} family={packet.Family} sequence={packet.Sequence} " + ($"[authority] scope digest for {scope} refused: replica inbox is unavailable or full"));
             return;
         }
     }

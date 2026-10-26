@@ -35,7 +35,6 @@ internal sealed class HostDeathCapture
     private long refusedTotal;
     private long committedTotal;
     private long repeatTotal;
-    private long saturatedTotal;
 
     /// <param name="ledger">The world's death ledger. One death transaction is opened per key.</param>
     /// <param name="resolveKey">Identity source for a dying vanilla object.</param>
@@ -65,9 +64,6 @@ internal sealed class HostDeathCapture
 
     /// <summary>Reports of an already-dead key — the dedup the ledger exists for.</summary>
     public long RepeatTotal => Interlocked.Read(ref repeatTotal);
-
-    /// <summary>Deaths the ledger refused for capacity. The world is fail-closed from here.</summary>
-    public long SaturatedTotal => Interlocked.Read(ref saturatedTotal);
 
     /// <summary>Deaths waiting for the frame boundary.</summary>
     public int PendingCount => Interlocked.CompareExchange(ref pendingCount, 0, 0);
@@ -109,7 +105,6 @@ internal sealed class HostDeathCapture
             var receipt = ledger.OpenDeath(key, hostTick);
             if (receipt.Saturated)
             {
-                Interlocked.Increment(ref saturatedTotal);
                 continue;
             }
             if (receipt.IsFirst)

@@ -17,7 +17,6 @@ internal sealed class ShieldNativeKernel : IDisposable
     private static readonly object ModuleLock = new();
     private static IntPtr module;
     private readonly ContextHandle context;
-    internal string Adapter { get; }
 
     internal ShieldNativeKernel()
     {
@@ -43,7 +42,6 @@ internal sealed class ShieldNativeKernel : IDisposable
         var result = Native.Create(shader, shader.Length, out var handle, adapter, adapter.Capacity, error, error.Capacity);
         if (result != 0) throw new InvalidOperationException(error.ToString());
         context = new ContextHandle(handle);
-        Adapter = adapter.ToString();
     }
 
     internal void Compute(Vector3[] source, Vector4[] generators, int count, float radius,

@@ -1,7 +1,6 @@
 #region
 
 using System;
-using NebulaeModel.Contracts;
 using NebulaeModel.Networking;
 using NebulaeModel.Packets;
 using NebulaeModel.Packets.Session;

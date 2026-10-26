@@ -66,7 +66,9 @@ internal static class FleetTickContext
     internal static IEnumerable<MethodBase> TargetMethods() => new[]
     {
         AccessTools.Method(typeof(CombatGroundSystem), nameof(CombatGroundSystem.GameTick)),
-        AccessTools.Method(typeof(CombatSpaceSystem), nameof(CombatSpaceSystem.GameTick))
+        AccessTools.Method(typeof(CombatSpaceSystem), nameof(CombatSpaceSystem.GameTick)),
+        AccessTools.Method(typeof(CombatGroundSystem), nameof(CombatGroundSystem.PostGameTick)),
+        AccessTools.Method(typeof(CombatSpaceSystem), nameof(CombatSpaceSystem.PostGameTick))
     };
     [HarmonyPrefix]
     internal static void Prefix(object __instance, out int __state)

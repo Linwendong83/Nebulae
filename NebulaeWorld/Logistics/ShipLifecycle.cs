@@ -1,4 +1,5 @@
 ﻿using System;
+using NebulaeModel.Logger;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using NebulaeModel.Packets.Logistics;
@@ -174,7 +175,7 @@ internal sealed class ShipLifecycle
     {
         if (gid <= 0 || value <= 0 || (received.TryGetValue(gid, out var last) && value < last)) return false;
         received[gid] = value;
-        repairs.Remove(gid);
+        if (repairs.Remove(gid)) Log.Debug($"[logistics] ships repair completed station={gid} revision={value}");
         return true;
     }
 
@@ -187,8 +188,14 @@ internal sealed class ShipLifecycle
     public bool Receive(ILSShipLifecyclePacket packet, StationComponent station)
     {
         if (received.TryGetValue(packet.GId, out var last) && packet.Revision <= last) return true;
-        if (repairs.Contains(packet.GId) || last == 0 || packet.PreviousRevision != last ||
-            packet.Revision <= packet.PreviousRevision || !TryApply(packet, station)) return false;
+        if (repairs.Contains(packet.GId)) return false;
+        if (last == 0) { Log.Debug($"[logistics] ships baseline requested station={packet.GId} planet={packet.PlanetId} revision={packet.Revision}"); return false; }
+        if (packet.PreviousRevision != last || packet.Revision <= packet.PreviousRevision || !TryApply(packet, station))
+        {
+            Diagnostics.Warn("logistics:ships:repair:" + packet.GId,
+                () => $"[logistics] ships commit refused station={packet.GId} planet={packet.PlanetId} localRevision={last} previousRevision={packet.PreviousRevision} revision={packet.Revision} reason={(packet.PreviousRevision != last ? "revision-gap" : "invalid-commit")} ships={station?.workShipCount} expectedShips={packet.WorkShipCount} changes={packet.Changes?.Length}");
+            return false;
+        }
         received[packet.GId] = packet.Revision;
         return true;
     }

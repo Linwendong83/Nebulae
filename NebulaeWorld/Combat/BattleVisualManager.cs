@@ -1,10 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.IO;
 using NebulaeModel.Networking;
 using NebulaeModel.DataStructures;
 using NebulaeModel.Packets.Combat;
 using NebulaeModel.Authority;
+using NebulaeModel.Logger;
 
 namespace NebulaeWorld.Combat;
 
@@ -24,6 +26,8 @@ internal sealed class BattleVisualManager : IDisposable
     public long PlayedAudioCount => renderer?.PlayedAudioCount ?? 0;
     public int ActiveAudioCount => renderer?.ActiveAudioCount ?? 0;
     private BattleVisualRenderer renderer;
+    public CraftWeaponPrediction CraftWeapons { get; } = new();
+    private readonly ConcurrentQueue<(AuthorityEpoch Epoch, BattleVisualPacket Packet, BattleVisualFrame Frame)> incoming = new();
 
     /// <summary>
     /// Reusable export buffer, one per thread.
@@ -51,10 +55,29 @@ internal sealed class BattleVisualManager : IDisposable
 
     public void GameTick()
     {
+        if (Multiplayer.Session.IsServer) AdvanceFrame();
+    }
+
+    // Reconciliation can retire native projectiles. Like player weapons, apply it only
+    // in AfterClientFrame, while all simulation workers are parked at the barrier.
+    public void TickClient()
+    {
+        while (incoming.TryDequeue(out var message))
+        {
+            if (!message.Epoch.Equals(Multiplayer.Session.Authority.Epoch)) continue;
+            try { ReceiveFrame(message.Packet, message.Frame); }
+            catch (Exception error) { Log.Warn("Invalid host battle visual frame: " + error.Message); }
+        }
+        AdvanceFrame();
+    }
+
+    private void AdvanceFrame()
+    {
         if (!Multiplayer.Session.IsGameLoaded || !GameMain.data.gameDesc.isCombatMode) return;
         var tick = GameMain.gameTick;
         if (lastTick == tick) return;
         lastTick = tick;
+        CraftWeapons.Tick();
         if (Multiplayer.Session.IsServer) { CaptureWorld(); return; }
         var star = GameMain.localStar?.id ?? 0;
         expiredSources.Clear();
@@ -245,7 +268,8 @@ internal sealed class BattleVisualManager : IDisposable
                 GeneralProjectile p => p.caster.id,
                 _ => 0
             };
-            stream.Capture(kind, i, generation, tick, effectLife, source, scratch.GetBuffer(), (int)scratch.Length, caster);
+            stream.Capture(kind, i, generation, tick, effectLife, source, scratch.GetBuffer(), (int)scratch.Length, caster,
+                BattleEffectData.IsCraft(kind) ? CraftWeapons.Launch(kind, i) : null);
         }
     }
 
@@ -330,7 +354,10 @@ internal sealed class BattleVisualManager : IDisposable
         replicationNeeds[key] = false; return false;
     }
 
-    public void Receive(BattleVisualPacket packet, BattleVisualFrame frame)
+    public void Receive(BattleVisualPacket packet, BattleVisualFrame frame) =>
+        incoming.Enqueue((Multiplayer.Session.Authority.Epoch, packet, frame));
+
+    private void ReceiveFrame(BattleVisualPacket packet, BattleVisualFrame frame)
     {
         if (!frames.TryGetValue(packet.StarId, out var cached)) frames[packet.StarId] = cached = new CachedFrame();
         if (packet.Sequence <= cached.Sequence) return;
@@ -393,6 +420,8 @@ internal sealed class BattleVisualManager : IDisposable
 
     public void Dispose()
     {
+        CraftWeapons.Clear();
+        while (incoming.TryDequeue(out _)) { }
         renderer?.Dispose();
         renderer = null;
         frames.Clear(); stream.Clear(); outgoing.Clear(); observedStars.Clear();

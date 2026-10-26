@@ -36,9 +36,11 @@ internal static class FleetOwnerEnergyLife_Patch
     // UnitCombatAuthority_Patch has already selected this unit's real owner. The caller's camera
     // player may be dead (always true for a dedicated host), which must not exempt other fleets.
     [HarmonyPrefix, HarmonyPriority(Priority.Last)]
-    private static bool Prefix(Mecha mecha, ref bool __result)
+    private static bool Prefix(Mecha mecha, bool isSpace, ref bool __result)
     {
-        if (!Multiplayer.IsActive || mecha?.player?.isAlive == true) return true;
+        // Vanilla only exempts space craft after death. Ground units must still fail
+        // their energy check and enter compulsory recycling when Kill clears energy.
+        if (!Multiplayer.IsActive || !isSpace || mecha?.player?.isAlive == true) return true;
         __result = true; return false;
     }
 }

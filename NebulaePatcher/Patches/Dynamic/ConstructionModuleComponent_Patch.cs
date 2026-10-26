@@ -1,6 +1,5 @@
 using HarmonyLib;
 using NebulaeModel.Logger;
-using NebulaeModel.Packets.Players;
 using NebulaeWorld;
 using NebulaeWorld.Factory;
 
@@ -12,6 +11,11 @@ internal class ConstructionModuleComponent_Patch
     [System.ThreadStatic]
     private static PlanetFactory currentFactory;
 
+    [HarmonyPrefix, HarmonyPatch(nameof(ConstructionModuleComponent.RecycleAllDrones))]
+    public static bool RecycleAllDrones_Prefix(ConstructionModuleComponent __instance) =>
+        !Multiplayer.IsActive || __instance.entityId != 0 ||
+        ReferenceEquals(__instance, GameMain.mainPlayer?.mecha.constructionModule);
+
     [HarmonyPrefix, HarmonyPatch(nameof(ConstructionModuleComponent.GameTick))]
     public static bool GameTick_Prefix(ConstructionModuleComponent __instance, PlanetFactory factory)
     {
@@ -19,6 +23,7 @@ internal class ConstructionModuleComponent_Patch
         ConstructionRepairTargets.Prune(__instance, factory);
         var entity = __instance.entityId;
         if (entity == 0) return true;
+        if (!Multiplayer.Session.IsServer) return false;
         if (entity < 0 || entity >= factory.entityCursor || factory.entityPool[entity].id != entity) return false;
         var baseId = factory.entityPool[entity].battleBaseId;
         return baseId > 0 && baseId < factory.defenseSystem.battleBases.cursor &&
@@ -31,6 +36,14 @@ internal class ConstructionModuleComponent_Patch
     public static void RepairTargets_Prefix(ConstructionModuleComponent __instance, PlanetFactory factory)
     {
         if (Multiplayer.IsActive) ConstructionRepairTargets.Prune(__instance, factory);
+    }
+
+    [HarmonyPostfix, HarmonyPatch("PreLaunchDrone")]
+    public static void PreLaunchDrone_Postfix(ConstructionModuleComponent __instance, PlanetFactory factory)
+    {
+        if (!Multiplayer.IsActive) return;
+        Multiplayer.Session.BuildDispatch.OfferLocalFlight(factory, __instance);
+        Multiplayer.Session.Repairs?.Offer(__instance, factory);
     }
 
     [HarmonyPostfix]
@@ -51,8 +64,13 @@ internal class ConstructionModuleComponent_Patch
                 Log.Warn($"Construction drone launched without a current claim: planet {planetId}, target {targetObjectId}");
             return;
         }
-        Multiplayer.Session.Network.SendPacketToLocalStar(new PlayerEjectMechaDronePacket(playerId, planetId,
-            targetObjectId, priority));
+        Multiplayer.Session.Repairs?.NativeLaunched(factory, targetObjectId);
+    }
+
+    [HarmonyPostfix, HarmonyPatch(nameof(ConstructionModuleComponent.RecycleDrone))]
+    public static void Recycled(PlanetFactory factory, ref DroneComponent drone)
+    {
+        if (Multiplayer.IsActive && drone.owner == 0) Multiplayer.Session.Repairs?.Recycled(factory, drone.id);
     }
 
     [HarmonyPostfix]

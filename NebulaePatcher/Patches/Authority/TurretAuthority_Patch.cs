@@ -1,7 +1,6 @@
 ﻿using System.Collections.Generic;
 using System.Linq;
 using HarmonyLib;
-using NebulaeModel.Authority;
 using NebulaeWorld;
 using NebulaeWorld.Authority;
 using NebulaeWorld.Combat;

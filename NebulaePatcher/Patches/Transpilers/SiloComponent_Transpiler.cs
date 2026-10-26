@@ -48,11 +48,11 @@ internal class SiloComponent_Transpiler
                             return;
                         }
 
-                        // Assume layerId < 16, nodeId < 4096
                         var data = new DysonLaunchData.Projectile
                         {
                             PlanetId = planetId,
-                            TargetId = (ushort)(autoDysonNode.layerId << 12 | autoDysonNode.id & 0x0FFF),
+                            LayerId = autoDysonNode.layerId,
+                            TargetId = autoDysonNode.id,
                             LocalPos = localPos
                         };
                         Multiplayer.Session.Launch.ProjectileBag.Add(data);
@@ -60,9 +60,9 @@ internal class SiloComponent_Transpiler
                 );
             return matcher.InstructionEnumeration();
         }
-        catch
+        catch (System.Exception error)
         {
-            Log.Error("SiloComponent.InternalUpdate_Transpiler failed. Mod version not compatible with game version.");
+            Log.Error("SiloComponent.InternalUpdate_Transpiler failed. Mod version not compatible with game version.", error);
             return codeInstructions;
         }
     }

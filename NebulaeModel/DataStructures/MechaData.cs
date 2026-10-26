@@ -2,7 +2,6 @@
 
 using System.IO;
 using System.Collections.Generic;
-using NebulaeModel.DataStructures;
 using NebulaeModel.Contracts;
 using NebulaeModel.Networking;
 using NebulaeModel.Utils;
@@ -15,8 +14,12 @@ internal class MechaData : IMechaData
     private const int HandMarker = 0x48414E44;
     private const int ResearchMarker = 0x4C414250;
     private const int FuelMarker = 0x4655454C;
+    private const int SettingsMarker = 0x4D534554;
     public int ReactorItemId { get; set; }
     public int ReactorItemInc { get; set; }
+    public bool AutoReplenishWarper { get; set; }
+    public bool ShieldRechargeEnabled { get; set; } = true;
+    public float ShieldRechargeSpeed { get; set; } = 2f;
     public Dictionary<int, int> ResearchPoints { get; } = new();
     public int HandItem { get; set; }
     public int HandCount { get; set; }
@@ -35,6 +38,9 @@ internal class MechaData : IMechaData
         ReactorEnergy = player.mecha.reactorEnergy;
         ReactorItemId = player.mecha.reactorItemId;
         ReactorItemInc = player.mecha.reactorItemInc;
+        AutoReplenishWarper = player.mecha.autoReplenishWarper;
+        ShieldRechargeEnabled = player.mecha.energyShieldRechargeEnabled;
+        ShieldRechargeSpeed = player.mecha.energyShieldRechargeSpeed;
         ReactorStorage = player.mecha.reactorStorage;
         WarpStorage = player.mecha.warpStorage;
         Forge = player.mecha.forge;
@@ -99,6 +105,8 @@ internal class MechaData : IMechaData
             wr.Write(ResearchMarker); wr.Write(ResearchPoints.Count);
             foreach (var item in ResearchPoints) { wr.Write(item.Key); wr.Write(item.Value); }
             wr.Write(FuelMarker); wr.Write(ReactorItemId); wr.Write(ReactorItemInc);
+            wr.Write(SettingsMarker); wr.Write(AutoReplenishWarper);
+            wr.Write(ShieldRechargeEnabled); wr.Write(ShieldRechargeSpeed);
         }
         var export = ms.ToArray();
         writer.Put(export.Length);
@@ -107,6 +115,7 @@ internal class MechaData : IMechaData
 
     public void Deserialize(INetDataReader reader)
     {
+        ResetPersonalSettings();
         ReactorItemId = ReactorItemInc = 0;
         TechBonuses = new PlayerTechBonuses();
         TechBonuses.Deserialize(reader);
@@ -178,11 +187,34 @@ internal class MechaData : IMechaData
 
     private void ReadFuel(BinaryReader reader)
     {
-        if (reader.BaseStream.Length - reader.BaseStream.Position != 12 || reader.ReadInt32() != FuelMarker)
+        if (reader.BaseStream.Length - reader.BaseStream.Position < 12 || reader.ReadInt32() != FuelMarker)
             throw new InvalidDataException("Invalid reactor checkpoint.");
         ReactorItemId = reader.ReadInt32(); ReactorItemInc = reader.ReadInt32();
         if (ReactorItemId < 0 || ReactorItemInc < 0 || ReactorItemInc > 10 || ReactorItemId == 0 && ReactorItemInc != 0)
             throw new InvalidDataException("Invalid reactor fuel.");
+        ReadPersonalSettings(reader);
+    }
+
+    private void ResetPersonalSettings()
+    {
+        // Old checkpoints have no settings tail. Use Mecha.Init defaults rather than
+        // inheriting the save writer's preferences or a previously decoded player's settings.
+        AutoReplenishWarper = false;
+        ShieldRechargeEnabled = true;
+        ShieldRechargeSpeed = 2f;
+    }
+
+    private void ReadPersonalSettings(BinaryReader reader)
+    {
+        if (reader.BaseStream.Position == reader.BaseStream.Length) return;
+        if (reader.BaseStream.Length - reader.BaseStream.Position != 10 || reader.ReadInt32() != SettingsMarker)
+            throw new InvalidDataException("Invalid personal mecha settings.");
+        AutoReplenishWarper = reader.ReadBoolean();
+        ShieldRechargeEnabled = reader.ReadBoolean();
+        ShieldRechargeSpeed = reader.ReadSingle();
+        if (float.IsNaN(ShieldRechargeSpeed) || float.IsInfinity(ShieldRechargeSpeed) ||
+            ShieldRechargeSpeed < 0f || ShieldRechargeSpeed > 3.5f)
+            throw new InvalidDataException("Invalid personal shield recharge speed.");
     }
 
     private StorageComponent HandStorage(int item)
@@ -223,7 +255,14 @@ internal class MechaData : IMechaData
         ReactorStorage = new StorageComponent(4);
         WarpStorage = new StorageComponent(1);
         Forge = new MechaForge { tasks = [], extraItems = new ItemBundle() };
-        ConstructionModule = new ConstructionModuleComponent();
+        ConstructionModule = new ConstructionModuleComponent
+        {
+            // Pre-combat saves have no construction module to import.
+            droneEnabled = true,
+            droneConstructEnabled = true,
+            droneRepairEnabled = true,
+            autoReconstruct = true
+        };
     }
 
     public void UpdateMech(Player destination)
@@ -255,6 +294,9 @@ internal class MechaData : IMechaData
         destination.mecha.warpStorage = WarpStorage;
         destination.mecha.constructionModule = ConstructionModule;
         FightData.UpdateMech(destination);
+        destination.mecha.autoReplenishWarper = AutoReplenishWarper;
+        destination.mecha.energyShieldRechargeEnabled = ShieldRechargeEnabled;
+        destination.mecha.energyShieldRechargeSpeed = ShieldRechargeSpeed;
         ApplyHand(destination);
         if (destination.mecha.lab?.itemPoints != null)
         {
@@ -267,6 +309,7 @@ internal class MechaData : IMechaData
 
     public void Import(INetDataReader reader, int revision)
     {
+        ResetPersonalSettings();
         ReactorItemId = ReactorItemInc = 0;
         TechBonuses = new PlayerTechBonuses();
         if (revision >= 8) TechBonuses.Deserialize(reader);

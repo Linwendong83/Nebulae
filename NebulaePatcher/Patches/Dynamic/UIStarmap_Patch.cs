@@ -2,7 +2,6 @@
 
 using System.Diagnostics.CodeAnalysis;
 using HarmonyLib;
-using NebulaeModel.Packets.Universe;
 using NebulaeWorld;
 
 #endregion
@@ -49,8 +48,6 @@ internal class UIStarmap_Patch
         }
     }
 
-    static int s_queryingIndex = -1;
-
     [HarmonyPrefix]
     [HarmonyPatch(typeof(UIStarmap), nameof(UIStarmap.OnCursorFunction2Click))]
     [SuppressMessage("Style", "IDE1006:Naming Styles", Justification = "Original Function Name")]
@@ -63,13 +60,9 @@ internal class UIStarmap_Patch
         }
 
         var starIndex = __instance.focusStar.star.index;
-        if (GameMain.data.dysonSpheres[starIndex] == null)
+        if (!Multiplayer.Session.DysonSpheres.IsReady(starIndex))
         {
-            if (s_queryingIndex != starIndex)
-            {
-                Multiplayer.Session.Network.SendPacket(new DysonSphereLoadRequest(starIndex, DysonSphereRequestEvent.Query));
-                s_queryingIndex = starIndex;
-            }
+            Multiplayer.Session.DysonSpheres.RequestDysonSphere(starIndex, false, query: true);
         }
     }
 }

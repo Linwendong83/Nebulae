@@ -14,7 +14,12 @@ internal class DysonSwarmEditOrbitProcessor : PacketProcessor<DysonSwarmEditOrbi
 {
     protected override void ProcessPacket(DysonSwarmEditOrbitPacket packet, NebulaeConnection conn)
     {
-        var sphere = GameMain.data.dysonSpheres[packet.StarIndex];
+        var spheres = GameMain.data?.dysonSpheres;
+        if (spheres == null || packet.StarIndex < 0 || packet.StarIndex >= spheres.Length ||
+            packet.OrbitId < 1 || packet.OrbitId > 30 || float.IsNaN(packet.Radius) || float.IsInfinity(packet.Radius)) return;
+        if (packet.Radius >= 0 && !DysonSwarmAddOrbitProcessor.ValidRotation(packet.Rotation)) return;
+        if (packet.Radius < 0 && (!Finite(packet.Color.x) || !Finite(packet.Color.y) || !Finite(packet.Color.z) || !Finite(packet.Color.w))) return;
+        var sphere = spheres[packet.StarIndex];
         if (sphere == null)
         {
             return;
@@ -41,4 +46,6 @@ internal class DysonSwarmEditOrbitProcessor : PacketProcessor<DysonSwarmEditOrbi
             Multiplayer.Session.DysonSpheres.SendPacketToDysonSphereExcept(packet, packet.StarIndex, conn);
         }
     }
+
+    private static bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 }

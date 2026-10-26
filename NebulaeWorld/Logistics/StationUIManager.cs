@@ -11,13 +11,6 @@ namespace NebulaeWorld.Logistics;
 
 internal class StationUIManager : IDisposable
 {
-    public bool
-        UIRequestedShipDroneWarpChange
-    {
-        get;
-        set;
-    } // when receiving a ship, drone or warp change only take/add items from the one issuing the request
-
     public StationUI SliderBarPacket { get; set; } // store the change of slider bar temporary, only send it when mouse button is released.
 
     public int StorageMaxChangeId

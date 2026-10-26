@@ -30,9 +30,6 @@ internal sealed class AuthoritySessionState
     /// <summary>Connection epoch clients must name on their commands.</summary>
     public ConnectionEpoch Connection => connection;
 
-    /// <summary>Player id the transport assigned to this connection.</summary>
-    public ushort LocalPlayerId => localPlayerId;
-
     /// <summary>True when this side is the host.</summary>
     public bool IsHost => isHost;
 

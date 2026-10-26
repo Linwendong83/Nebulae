@@ -4,6 +4,48 @@ using NebulaeModel.Packets.Factory;
 using NebulaeWorld;
 
 namespace NebulaeNetwork.PacketProcessors.Factory;
+internal sealed class ConstructionLaunchOfferProcessor : PacketProcessor<ConstructionLaunchOfferPacket>
+{
+    protected override void ProcessPacket(ConstructionLaunchOfferPacket packet, NebulaeConnection conn)
+    {
+        if (!IsHost) return;
+        var player = Players.Get(conn);
+        if (player?.Data.LocalPlanetId == packet.PlanetId) Multiplayer.Session.BuildDispatch.ReceiveOffer(player.Id, packet);
+    }
+}
+internal sealed class ConstructionLaunchGrantProcessor : PacketProcessor<ConstructionLaunchGrantPacket>
+{
+    protected override void ProcessPacket(ConstructionLaunchGrantPacket packet, NebulaeConnection conn)
+    {
+        if (!IsHost) Multiplayer.Session.BuildDispatch.ReceiveGrant(packet);
+    }
+}
+internal sealed class BaseDroneStateProcessor : PacketProcessor<BaseDroneStatePacket>
+{
+    protected override void ProcessPacket(BaseDroneStatePacket packet, NebulaeConnection conn)
+    {
+        if (!IsHost) Multiplayer.Session.BuildDispatch.ReceiveBaseDrones(packet);
+    }
+}
+internal sealed class DroneFlightSnapshotRequestProcessor : PacketProcessor<DroneFlightSnapshotRequestPacket>
+{
+    protected override void ProcessPacket(DroneFlightSnapshotRequestPacket packet, NebulaeConnection conn)
+    {
+        if (!IsHost) return;
+        var player = Players.Get(conn);
+        var planet = GameMain.galaxy?.PlanetById(packet.PlanetId);
+        if (planet?.factory == null || player?.Data.LocalStarId != planet.star.id) return;
+        Multiplayer.Session.BuildDispatch.SendBaseDroneSnapshot(planet.factory, conn);
+        Multiplayer.Session.Repairs.SendSnapshot(planet.factory, conn);
+    }
+}
+internal sealed class ConstructionStorageProcessor : PacketProcessor<ConstructionStoragePacket>
+{
+    protected override void ProcessPacket(ConstructionStoragePacket packet, NebulaeConnection conn)
+    {
+        if (!IsHost) Multiplayer.Session.BuildDispatch.ReceiveConstructionStorage(packet);
+    }
+}
 internal sealed class PrebuildInstanceProcessor : PacketProcessor<PrebuildInstancePacket>
 {
     protected override void ProcessPacket(PrebuildInstancePacket packet, NebulaeConnection conn)
@@ -33,10 +75,7 @@ internal sealed class BuildTargetReadyProcessor : PacketProcessor<BuildTargetRea
 {
     protected override void ProcessPacket(BuildTargetReadyPacket packet, NebulaeConnection conn)
     {
-        if (!IsHost) return;
-        var player = Players.Get(conn);
-        if (player != null && player.Data.LocalPlanetId == packet.PlanetId)
-            Multiplayer.Session.BuildDispatch.HandleReadyNotice(player.Id, packet);
+        // Superseded by a native next-flight offer. Readiness alone never owns a site.
     }
 }
 internal sealed class BuildTargetBaseReleaseAckProcessor : PacketProcessor<BuildTargetBaseReleaseAckPacket>

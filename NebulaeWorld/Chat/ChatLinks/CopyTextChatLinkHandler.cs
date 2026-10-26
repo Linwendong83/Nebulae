@@ -34,16 +34,6 @@ internal class CopyTextChatLinkHandler : IChatLinkHandler
         }
     }
 
-    public string GetIconName(string data)
-    {
-        return "";
-    }
-
-    public string GetDisplayRichText(string data)
-    {
-        return FormatCopyString(data);
-    }
-
     private static void UpdateTip(ChatLinkTrigger trigger, ref MonoBehaviour tipObject)
     {
         var rect = (RectTransform)trigger.transform;
@@ -78,8 +68,4 @@ internal class CopyTextChatLinkHandler : IChatLinkHandler
         }
     }
 
-    public static string FormatCopyString(string data)
-    {
-        return $"<link=\"copytext {data}\"><color=\"blue\"><u>{data}</u></color></link>";
-    }
 }

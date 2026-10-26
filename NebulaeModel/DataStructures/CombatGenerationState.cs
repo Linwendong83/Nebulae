@@ -7,7 +7,6 @@ internal sealed class CombatGenerationState
 {
     private readonly Dictionary<(int Astro, int Id), long> entries = new();
     private long next = DateTime.UtcNow.Ticks;
-    public IEnumerable<KeyValuePair<(int Astro, int Id), long>> Entries => entries;
     public static int NormalizeAstro(int astro) => astro > 1000000 ? 0 : astro;
     public long Get(int astro, int id) => entries.TryGetValue((NormalizeAstro(astro), id), out var value) ? value : 0;
     public long Create(int astro, int id)
@@ -22,6 +21,5 @@ internal sealed class CombatGenerationState
         var key = (NormalizeAstro(astro), id);
         if (!entries.TryGetValue(key, out var old) || generation > old) entries[key] = generation;
     }
-    public bool Matches(int astro, int id, long generation) => generation > 0 && generation == Get(astro, id);
     public void Clear() => entries.Clear();
 }

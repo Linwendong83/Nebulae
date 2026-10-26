@@ -155,6 +155,63 @@ internal sealed class ClientWorldReplica
     private readonly List<ObjectKey> runtimeAuditKeys = new();
     private int runtimeAuditIndex;
     private long runtimeAuditTick = -1;
+    private readonly DiagnosticWatchdog diagnosticWaits = new();
+    internal const double RecoveryTimeoutSeconds = 15;
+    private sealed class RecoveryWait
+    {
+        public (SubscriptionPhase Phase, long Epoch, long Sequence, long Baseline, int Chunks) Progress;
+        public double Since = double.NaN;
+    }
+    private readonly Dictionary<ScopeKey, RecoveryWait> recoveryWaits = [];
+    private readonly List<ScopeKey> recoveryScopes = [];
+
+    /// <summary>Retries stalled conversations by elapsed time, even when simulation ticks stop.</summary>
+    public void ServiceRecovery(double now)
+    {
+        recoveryScopes.Clear();
+        recoveryScopes.AddRange(recoveryWaits.Keys);
+        foreach (var scope in recoveryScopes)
+        {
+            var wait = recoveryWaits[scope];
+            if (!Versions.TryGetScope(scope, out var state) || state.Phase == SubscriptionPhase.Unsubscribed) continue;
+            var waiting = state.Phase != SubscriptionPhase.Live ||
+                pendingDigests.TryGetValue(scope, out var digests) && digests.Count > 0;
+            // A completed image waiting for a local factory is not a failed network transfer.
+            if (!waiting || state.Phase == SubscriptionPhase.Installing &&
+                MirrorObserver is IReplicaBaselineReadiness ready && !ready.IsReadyForBaseline(scope))
+            { wait.Since = double.NaN; continue; }
+            var progress = (state.Phase, state.SubscriptionEpoch, state.LastAppliedSequence,
+                state.BaselineId, Snapshots.ProgressFor(scope));
+            if (double.IsNaN(wait.Since) || wait.Progress != progress)
+            { wait.Progress = progress; wait.Since = now; continue; }
+            if (now - wait.Since < RecoveryTimeoutSeconds) continue;
+            RestartRecovery(scope, ScopeRecoveryReason.BaselineRefused);
+            wait.Since = now;
+        }
+    }
+
+    /// <summary>Abandons a known broken attempt; old facts remain suspended until a newer baseline.</summary>
+    public bool RestartRecovery(ScopeKey scope, ScopeRecoveryReason reason)
+    {
+        needsResync.Remove(scope);
+        return RequestResync(scope, reason);
+    }
+
+    public void RestartSubscribedScopes()
+    {
+        // Recovery may also request a dependency, so don't enumerate the dictionary while sending.
+        var scopes = new List<ScopeKey>(recoveryWaits.Keys);
+        foreach (var scope in scopes) RestartRecovery(scope, ScopeRecoveryReason.StreamGap);
+    }
+    public void CheckDiagnostics(IEnumerable<ScopeKey> scopes)
+    {
+        foreach (var scope in scopes)
+        {
+            if (!Versions.TryGetScope(scope, out var state)) continue;
+            diagnosticWaits.Observe("scope:" + scope, state.Phase is SubscriptionPhase.Snapshotting or SubscriptionPhase.Installing or SubscriptionPhase.Resyncing or SubscriptionPhase.CatchingUp,
+                () => $"[authority] scope={scope} phase={state.Phase} baseline={state.BaselineId} subscription={state.SubscriptionEpoch} sequence={state.LastAppliedSequence} staging={Snapshots.IsStaging(scope)} pendingInstall={pendingInstalls.ContainsKey(scope)} adapterReady={(MirrorObserver is not IReplicaBaselineReadiness ready || ready.IsReadyForBaseline(scope))} controlSink={ScopeControlSink != null} ackSink={SnapshotAckSink != null}", progress: state.LastAppliedSequence ^ state.SubscriptionEpoch ^ ((long)state.Phase << 56) ^ Snapshots.ProgressFor(scope));
+        }
+    }
     public long SpaceEnemyRequestId { get; private set; }
 
     public void BeginSpaceEnemySubscription()
@@ -199,23 +256,19 @@ internal sealed class ClientWorldReplica
 
     private long appliedTotal;
     private long duplicateTotal;
-    private long staleTotal;
     private long tombstoneRefusedTotal;
     private long unknownObjectTotal;
     private long baselineRefusedTotal;
     private long gapTotal;
     private long sequenceDroppedTotal;
-    private long invalidTotal;
     private long streamBeforeBaselineTotal;
     private long snapshotsInstalledTotal;
     private long unsentSnapshotAcksTotal;
     private long resyncsRequestedTotal;
-    private long unsentScopeControlTotal;
     private long streamSuspendedTotal;
     private long digestsMatchedTotal;
     private long digestsMismatchedTotal;
     private long digestsSupersededTotal;
-    private long digestsDroppedTotal;
     private long digestSummariesRecordedTotal;
 
     public ClientWorldReplica(AuthorityEpoch epoch)
@@ -306,13 +359,11 @@ internal sealed class ClientWorldReplica
 
     public long AppliedTotal => appliedTotal;
     public long DuplicateTotal => duplicateTotal;
-    public long StaleTotal => staleTotal;
     public long TombstoneRefusedTotal => tombstoneRefusedTotal;
     public long UnknownObjectTotal => unknownObjectTotal;
     public long BaselineRefusedTotal => baselineRefusedTotal;
     public long GapTotal => gapTotal;
     public long SequenceDroppedTotal => sequenceDroppedTotal;
-    public long InvalidTotal => invalidTotal;
 
     /// <summary>Live stream packets offered before their scope's baseline was installed.</summary>
     public long StreamBeforeBaselineTotal => streamBeforeBaselineTotal;
@@ -326,9 +377,6 @@ internal sealed class ClientWorldReplica
     /// <summary>Recovery requests the replica raised (deduplicated per scope).</summary>
     public long ResyncsRequestedTotal => resyncsRequestedTotal;
 
-    /// <summary>Scope-control requests dropped for lack of a sink; the host stays uninformed.</summary>
-    public long UnsentScopeControlTotal => unsentScopeControlTotal;
-
     /// <summary>Stream packets refused because their scope is suspended for a rebuild (Resyncing).</summary>
     public long StreamSuspendedTotal => streamSuspendedTotal;
 
@@ -340,9 +388,6 @@ internal sealed class ClientWorldReplica
 
     /// <summary>Digests for stream positions already applied past; old news, not a divergence.</summary>
     public long DigestsSupersededTotal => digestsSupersededTotal;
-
-    /// <summary>Digests refused outright (wrong phase, superseded subscription, full buffer).</summary>
-    public long DigestsDroppedTotal => digestsDroppedTotal;
 
     /// <summary>Digests recorded as observation summaries for digest-only scopes.</summary>
     public long DigestSummariesRecordedTotal => digestSummariesRecordedTotal;
@@ -377,12 +422,14 @@ internal sealed class ClientWorldReplica
     {
         if (digestOnly)
         {
+            recoveryWaits.Remove(scope);
             // A fresh observation cannot share version history with a subscription it replaces.
             Versions.RemoveScope(scope);
             pendingDigests.Remove(scope);
             Versions.GetOrCreateScope(scope).SetPhase(SubscriptionPhase.Live);
             return;
         }
+        if (!recoveryWaits.ContainsKey(scope)) recoveryWaits.Add(scope, new RecoveryWait());
         var state = Versions.GetOrCreateScope(scope);
         if (state.Phase == SubscriptionPhase.Snapshotting || state.Phase == SubscriptionPhase.Installing)
         {
@@ -397,6 +444,8 @@ internal sealed class ClientWorldReplica
     /// </summary>
     public void Unsubscribe(ScopeKey scope)
     {
+        recoveryWaits.Remove(scope);
+        diagnosticWaits.Observe("scope:" + scope, false, () => $"[authority] unsubscribed scope={scope}");
         pendingInstalls.Remove(scope);
         foreach (var mirror in mirrors.Values)
             if (mirror.Scope.Equals(scope)) MirrorObserver?.OnMemberRemoved(scope, mirror.Key);
@@ -447,18 +496,23 @@ internal sealed class ClientWorldReplica
             // One request per break is already outstanding; the host re-baselines from it.
             return true;
         }
+        Snapshots.Abandon(scope);
+        pendingInstalls.Remove(scope);
+        pendingDigests.Remove(scope);
+        if (!recoveryWaits.TryGetValue(scope, out var wait)) recoveryWaits.Add(scope, wait = new RecoveryWait());
+        wait.Since = double.NaN;
         if (scope.Kind == PoolKind.SpaceEnemy && SpaceEnemyRequestId != 0) BeginSpaceEnemySubscription();
-        if (state.Phase is SubscriptionPhase.Live or SubscriptionPhase.CatchingUp or SubscriptionPhase.Installing)
-        {
-            state.SetPhase(SubscriptionPhase.Resyncing);
-        }
+        state.SetPhase(SubscriptionPhase.Resyncing);
         System.Threading.Interlocked.Increment(ref resyncsRequestedTotal);
+        Diagnostics.Warn("replica:resync:" + scope + ":" + reason, () => $"[authority] resync requested reason={reason} scope={scope} phase={state.Phase} subscription={state.SubscriptionEpoch} baseline={state.BaselineId} sequence={state.LastAppliedSequence}");
         var sink = ScopeControlSink;
         if (sink == null)
         {
-            System.Threading.Interlocked.Increment(ref unsentScopeControlTotal);
+            Diagnostics.Error("replica:no-control-sink", () => $"[authority] cannot send resync: missing control sink scope={scope} reason={reason}");
             return true;
         }
+        // Even when Begin was lost, the host may already be waiting for our ACK. A plain
+        // Subscribe would be coalesced into that dead conversation, so always request recovery.
         sink.Send(ScopeControlOp.Resync, scope, reason, digestOnly: false, state.SubscriptionEpoch,
             state.LastAppliedSequence);
         return true;
@@ -480,20 +534,14 @@ internal sealed class ClientWorldReplica
     {
         if (!Versions.TryGetScope(scope, out var state) || state.Phase == SubscriptionPhase.Unsubscribed)
         {
-            System.Threading.Interlocked.Increment(ref digestsDroppedTotal);
             return false;
         }
         if (subscriptionEpoch != state.SubscriptionEpoch)
         {
-            // A digest of a superseded subscription says nothing about this one.
-            System.Threading.Interlocked.Increment(ref digestsDroppedTotal);
             return false;
         }
         if (state.Phase != SubscriptionPhase.Live && state.Phase != SubscriptionPhase.CatchingUp)
         {
-            // Snapshotting/Installing: nothing comparable yet. Resyncing: the digest describes the
-            // world being replaced. Both drop instead of verifying against a moving target.
-            System.Threading.Interlocked.Increment(ref digestsDroppedTotal);
             return false;
         }
         if (state.Phase == SubscriptionPhase.Live && state.BaselineId == 0)
@@ -518,7 +566,6 @@ internal sealed class ClientWorldReplica
                 // An observer that cannot keep up loses the oldest check, not a bounded guarantee:
                 // the next digest re-checks the scope anyway.
                 queue.Dequeue();
-                System.Threading.Interlocked.Increment(ref digestsDroppedTotal);
             }
             queue.Enqueue(pending);
             return true;
@@ -555,13 +602,12 @@ internal sealed class ClientWorldReplica
     {
         if (pending.BaselineId != state.BaselineId)
         {
-            // The subscription moved to a different baseline between the digest and its check; the
-            // new baseline's own digests are the ones that count.
-            System.Threading.Interlocked.Increment(ref digestsDroppedTotal);
             return;
         }
         if (state.MemberCount != pending.MemberCount)
         {
+            var remote = pending;
+            Diagnostics.Warn("replica:digest-count:" + scope, () => $"[authority] digest member mismatch scope={scope} sequence={state.LastAppliedSequence} local={state.MemberCount} remote={remote.MemberCount} baseline={state.BaselineId}");
             System.Threading.Interlocked.Increment(ref digestsMismatchedTotal);
             RequestResync(scope, ScopeRecoveryReason.DigestMismatch);
             return;
@@ -577,6 +623,8 @@ internal sealed class ClientWorldReplica
         var localDigest = ScopeDigestComputer.Compute(digestScratch);
         if (localDigest != pending.Digest)
         {
+            var remote = pending;
+            Diagnostics.Warn("replica:digest-content:" + scope, () => $"[authority] digest content mismatch scope={scope} sequence={state.LastAppliedSequence} local={localDigest} remote={remote.Digest} baseline={state.BaselineId}");
             System.Threading.Interlocked.Increment(ref digestsMismatchedTotal);
             RequestResync(scope, ScopeRecoveryReason.DigestMismatch);
             return;
@@ -595,13 +643,16 @@ internal sealed class ClientWorldReplica
             Snapshots.CountRefused();
             return false;
         }
-        if (!Versions.TryGetScope(scope, out var state))
+        if (!Versions.TryGetScope(scope, out var state) || !recoveryWaits.ContainsKey(scope))
         {
             Snapshots.CountRefused();
-            LogBaselineReject("begin:no-scope-state", scope, subscriptionEpoch, baselineId, state: null);
+            LogBaselineReject("begin:no-full-subscription", scope, subscriptionEpoch, baselineId, state);
             return false;
         }
-        if (state.Phase != SubscriptionPhase.Snapshotting && state.Phase != SubscriptionPhase.Resyncing)
+        var newer = subscriptionEpoch > state.SubscriptionEpoch;
+        if (state.Phase == SubscriptionPhase.Unsubscribed || subscriptionEpoch < state.SubscriptionEpoch ||
+            !newer && (state.Phase != SubscriptionPhase.Snapshotting ||
+                !Snapshots.IsStaging(scope, subscriptionEpoch, baselineId)))
         {
             Snapshots.CountRefused();
             LogBaselineReject("begin:wrong-phase", scope, subscriptionEpoch, baselineId, state);
@@ -612,29 +663,36 @@ internal sealed class ClientWorldReplica
             LogBaselineReject("begin:staging-refused", scope, subscriptionEpoch, baselineId, state);
             return false;
         }
+        if (newer)
+        {
+            pendingInstalls.Remove(scope);
+            pendingDigests.Remove(scope);
+        }
         // The host's epoch is what this subscription speaks from now on; the packet stream will be
         // refused against any other value.
         return state.AdoptSubscription(subscriptionEpoch, SubscriptionPhase.Snapshotting);
     }
 
-    private long baselineRejectsLogged;
-
     /// <summary>
-    /// Reports the guard that refused a baseline, with a bounded number of diagnostic messages per process.
+    /// Reports baseline refusals per scope and reason without permanently hiding later failures.
     /// </summary>
     private void LogBaselineReject(string reason, in ScopeKey scope, long subscriptionEpoch, long baselineId,
         ScopeVersionState state)
     {
-        if (System.Threading.Interlocked.Increment(ref baselineRejectsLogged) > 20) return;
-        Log.Warn($"[authority] baseline refused ({reason}) scope={scope} subEpoch={subscriptionEpoch} " +
+        var failedScope = scope;
+        Diagnostics.Warn("replica:baseline:" + scope + ":" + reason, () => $"[authority] baseline refused ({reason}) scope={failedScope} subEpoch={subscriptionEpoch} " +
                  $"baseline={baselineId} phase={(state == null ? "none" : state.Phase.ToString())} " +
                  $"stateSubEpoch={(state?.SubscriptionEpoch ?? -1)}");
     }
 
     /// <summary>Places one chunk of the baseline into staging.</summary>
     public bool ReceiveSnapshotChunk(ScopeKey scope, long subscriptionEpoch, long baselineId, int chunkIndex,
-        byte[] data) =>
-        Snapshots.Chunk(scope, subscriptionEpoch, baselineId, chunkIndex, data);
+        byte[] data)
+    {
+        var accepted = Snapshots.Chunk(scope, subscriptionEpoch, baselineId, chunkIndex, data);
+        if (!accepted) Diagnostics.Warn("replica:chunk:" + scope, () => $"[authority] snapshot chunk refused scope={scope} subscription={subscriptionEpoch} baseline={baselineId} index={chunkIndex} bytes={data?.Length ?? 0}");
+        return accepted;
+    }
 
     /// <summary>
     /// Completes a baseline: verifies the reassembly, decodes it, and installs it as one atomic
@@ -642,6 +700,9 @@ internal sealed class ClientWorldReplica
     /// </summary>
     public bool CommitSnapshot(ScopeKey scope, long subscriptionEpoch, long baselineId, int chunkCount, ulong hash)
     {
+        // A late Commit must not invalidate or restart the newer conversation.
+        if (Versions.TryGetScope(scope, out var current) && subscriptionEpoch != current.SubscriptionEpoch)
+        { Snapshots.CountRefused(); return false; }
         if (scope.Kind == PoolKind.SpaceEnemy && SpaceEnemyRequestId != 0 &&
             !Snapshots.IsStaging(scope, subscriptionEpoch, baselineId))
         {
@@ -656,12 +717,12 @@ internal sealed class ClientWorldReplica
         }
         if (!Snapshots.Commit(scope, subscriptionEpoch, baselineId, chunkCount, hash, out var assembled))
         {
-            LogBaselineReject("commit:staging-refused", scope, subscriptionEpoch, baselineId, state);
             RequestResync(scope, ScopeRecoveryReason.BaselineRefused);
             return false;
         }
-        if (!AuthoritySnapshotCodec.TryDecode(assembled, Epoch, scope, out var snapshot, out _))
+        if (!AuthoritySnapshotCodec.TryDecode(assembled, Epoch, scope, out var snapshot, out var decodeError))
         {
+            Diagnostics.Warn("replica:decode:" + scope, () => $"[authority] snapshot decode failed scope={scope} baseline={baselineId} bytes={assembled.Length} reason={decodeError}");
             // The bookkeeping agreed but the image did not decode: the buffer is already discarded,
             // and the scope is flagged rather than half-trusted.
             RequestResync(scope, ScopeRecoveryReason.BaselineRefused);
@@ -669,6 +730,7 @@ internal sealed class ClientWorldReplica
         }
         if (snapshot.BaselineId != baselineId || snapshot.SubscriptionEpoch != subscriptionEpoch)
         {
+            Diagnostics.Warn("replica:identity:" + scope, () => $"[authority] snapshot identity mismatch scope={scope} expectedBaseline={baselineId} actualBaseline={snapshot.BaselineId} expectedSubscription={subscriptionEpoch} actualSubscription={snapshot.SubscriptionEpoch}");
             // The envelope bookkeeping contradicts the image it described; neither can be trusted.
             RequestResync(scope, ScopeRecoveryReason.BaselineRefused);
             return false;
@@ -794,10 +856,12 @@ internal sealed class ClientWorldReplica
             snapshot.BaselineId, state.LastAppliedSequence, accepted: true);
         if (SnapshotAckSink == null)
         {
+            Diagnostics.Error("replica:no-ack-sink", () => $"[authority] baseline installed but ACK sink missing scope={scope} baseline={snapshot.BaselineId}");
             System.Threading.Interlocked.Increment(ref unsentSnapshotAcksTotal);
             return;
         }
         SnapshotAckSink.Send(ack);
+        Log.Debug($"[authority] baseline installed and ACK sent scope={scope} baseline={snapshot.BaselineId} subscription={state.SubscriptionEpoch} members={snapshot.Members.Count} sequence={state.LastAppliedSequence}");
     }
 
     /// <summary>
@@ -909,7 +973,10 @@ internal sealed class ClientWorldReplica
                             throw new System.IO.InvalidDataException("Invalid reconstructed state.");
                     }
                     catch (Exception error) when (error is System.IO.IOException or System.IO.InvalidDataException)
-                    { RequestResync(scope, ScopeRecoveryReason.BaselineRefused); return false; }
+                    {
+                        Diagnostics.Warn("replica:delta:" + scope, () => $"[authority] delta reconstruction failed scope={scope} key={record.Key} baseline={declaredBaselineId}/{state.BaselineId} revision={record.BaseRevision}/{previousRevision} bytes={record.State?.Length ?? 0}", error);
+                        RequestResync(scope, ScopeRecoveryReason.BaselineRefused); return false;
+                    }
                 }
                 var full = new AuthorityWorldStateRecord(record.Key, record.Revision, canonical);
                 expanded.Add(full);
@@ -1010,6 +1077,8 @@ internal sealed class ClientWorldReplica
                 System.Threading.Interlocked.Increment(ref duplicateTotal);
                 return false;
             case SequenceResult.Gap:
+                var expected = state.LastAppliedSequence + 1;
+                Diagnostics.Warn("replica:gap:" + scope, () => $"[authority] stream gap scope={scope} subscription={subscriptionEpoch} expected={expected} received={streamSequence}");
                 System.Threading.Interlocked.Increment(ref gapTotal);
                 RequestResync(scope, ScopeRecoveryReason.StreamGap);
                 return false;
@@ -1018,7 +1087,6 @@ internal sealed class ClientWorldReplica
                 System.Threading.Interlocked.Increment(ref sequenceDroppedTotal);
                 return false;
             default:
-                System.Threading.Interlocked.Increment(ref invalidTotal);
                 RequestResync(scope, ScopeRecoveryReason.ProtocolViolation);
                 return false;
         }
@@ -1029,7 +1097,7 @@ internal sealed class ClientWorldReplica
     /// </summary>
     /// <remarks>
     /// Duplicates, stale revisions and tombstoned keys are per-record facts, not stream failures:
-    /// they are counted and the batch continues. Unknown objects and baseline mismatches mean the
+    /// the batch continues. Unknown objects and baseline mismatches mean the
     /// batch's world assumptions are broken — the batch stops and the scope is flagged for resync.
     /// </remarks>
     private bool RecordAndContinue(ScopeKey scope, ReplicaApplyResult result)
@@ -1041,7 +1109,6 @@ internal sealed class ClientWorldReplica
             case ReplicaApplyResult.Stale:
             case ReplicaApplyResult.RejectedTombstone:
                 if (result == ReplicaApplyResult.Duplicate) System.Threading.Interlocked.Increment(ref duplicateTotal);
-                if (result == ReplicaApplyResult.Stale) System.Threading.Interlocked.Increment(ref staleTotal);
                 if (result == ReplicaApplyResult.RejectedTombstone)
                 {
                     System.Threading.Interlocked.Increment(ref tombstoneRefusedTotal);
@@ -1056,7 +1123,6 @@ internal sealed class ClientWorldReplica
                 RequestResync(scope, ScopeRecoveryReason.BaselineRefused);
                 return false;
             default:
-                System.Threading.Interlocked.Increment(ref invalidTotal);
                 RequestResync(scope, ScopeRecoveryReason.ProtocolViolation);
                 return false;
         }

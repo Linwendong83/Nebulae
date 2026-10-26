@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using System.IO;
 
@@ -27,6 +26,9 @@ internal sealed class BattleEffectData
     public BattleEffectKind OriginKind = BattleEffectKind.Impact;
     public int SourceObjectId;
     public long SourceGeneration;
+    public long TargetGeneration;
+    public long LaunchTick = -1;
+    public int SourcePort = -1, MuzzleIndex = -1;
     public byte[] Payload;
     public static bool IsTurret(BattleEffectKind kind) => kind is BattleEffectKind.TurretGauss or
         BattleEffectKind.TurretCannon or BattleEffectKind.TurretLocalPlasma or BattleEffectKind.TurretLaser or
@@ -66,6 +68,8 @@ internal sealed class BattleVisualFrame
         {
             w.Write((byte)effect.Kind); w.Write(effect.Id); w.Write(effect.Generation); w.Write(effect.Tick); w.Write(effect.End); w.Write(effect.Subtype);
             w.Write(effect.Life); w.Write(effect.SourceAstroId); w.Write((byte)effect.OriginKind); w.Write(effect.SourceObjectId); w.Write(effect.SourceGeneration);
+            if (BattleEffectData.IsCraft(effect.Kind))
+            { w.Write(effect.TargetGeneration); w.Write(effect.LaunchTick); w.Write(effect.SourcePort); w.Write(effect.MuzzleIndex); }
             w.Write(effect.Payload.Length); w.Write(effect.Payload);
         }
         return stream.ToArray();
@@ -94,6 +98,14 @@ internal sealed class BattleVisualFrame
                 SourceObjectId = r.ReadInt32(),
                 SourceGeneration = r.ReadInt64()
             };
+            if (BattleEffectData.IsCraft(effect.Kind))
+            {
+                effect.TargetGeneration = r.ReadInt64(); effect.LaunchTick = r.ReadInt64();
+                effect.SourcePort = r.ReadInt32(); effect.MuzzleIndex = r.ReadInt32();
+                if (effect.TargetGeneration < 0 || effect.LaunchTick < -1 || effect.LaunchTick > effect.Tick ||
+                    effect.SourcePort < -1 || effect.SourcePort > 255 || effect.MuzzleIndex < -1 || effect.MuzzleIndex > 255)
+                    throw new InvalidDataException("Invalid craft shot identity");
+            }
             var length = r.ReadInt32();
             if (effect.Kind > BattleEffectKind.LancerPlasma || effect.OriginKind > BattleEffectKind.LancerPlasma || effect.SourceObjectId < 0 || effect.SourceGeneration < 0 || effect.Id <= 0 || effect.Generation <= 0 || effect.Tick < 0 || effect.Life < 0 || effect.Life > 360000 || effect.SourceAstroId < 0 ||
                 effect.End && (length != 0 || effect.Life != 0) || !effect.End && length == 0 ||

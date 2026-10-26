@@ -48,10 +48,10 @@ internal static class AuthorityTranspilerGuard
             AuthorityHookLabels.SkillSystemDamageGroundObjectByLocalCaster, 1, exact: true),
         new("SkillSystem.DamageGroundObjectByRemoteCaster.playerId",
             AuthorityHookLabels.SkillSystemDamageGroundObjectByRemoteCaster, 1, exact: true),
-        // The item-required report is inserted at every material hand-off, so the count is a minimum:
-        // at least one insertion must have happened for the transformation to have done anything.
+        // Both completed material handoffs (near targets and the outer distribution ring) must
+        // report supply, including their base-storage branches.
         new("ConstructionModuleComponent.PlaceItems.itemRequired",
-            "ConstructionModuleComponent.PlaceItems", 1, exact: false)
+            "ConstructionModuleComponent.PlaceItems", 2, exact: true)
     ];
 
     /// <summary>

@@ -119,6 +119,11 @@ internal sealed class AuthoritySession : IDisposable
     private readonly AuthoritySessionState identity;
     private readonly Dictionary<ushort, ConnectionEpoch> connectionEpochs = [];
     private readonly Queue<PendingReplicaMessage> inbound = new();
+    private long inboundBytes;
+    private bool inboundOverflow;
+    private AuthorityEnvelopePacket blockedInboxHead;
+    private double blockedInboxSince;
+    internal Func<double> RecoveryTime { get; set; } = () => Diagnostics.Now;
     private readonly Queue<PendingSnapshotAck> snapshotAcks = new();
     private readonly Queue<PendingScopeControl> scopeControl = new();
     private readonly Queue<Action> lifecycle = new();
@@ -165,10 +170,23 @@ internal sealed class AuthoritySession : IDisposable
     private long framesDrained;
     private long inboundApplied;
     private long inboundDropped;
-    private long acksDropped;
     private long scopeControlDropped;
     private long scopeControlRefused;
     private long scopeControlHandled;
+    private readonly DiagnosticWatchdog diagnosticWaits = new();
+    private double nextDiagnosticCheck;
+    public void CheckDiagnostics()
+    {
+        if (Diagnostics.Now < nextDiagnosticCheck) return;
+        nextDiagnosticCheck = Diagnostics.Now + 1;
+        WorldReplica?.CheckDiagnostics(standingScopes);
+        lock (gate)
+        {
+            var head = inbound.Count == 0 ? null : inbound.Peek().Packet;
+            diagnosticWaits.Observe("authority-inbox", head != null && head.HostTick > LastFrameTick,
+                () => $"[authority] future message blocks inbox count={inbound.Count} family={head?.Family} hostTick={head?.HostTick} localTick={LastFrameTick} pausedJoin={applyingPausedJoin}", progress: (head?.Sequence ?? 0) ^ (head?.HostTick ?? 0));
+        }
+    }
 
     public AuthoritySession(AuthoritySessionState identity)
     {
@@ -307,9 +325,6 @@ internal sealed class AuthoritySession : IDisposable
     /// <summary>Replica messages refused or failed at a frame boundary.</summary>
     public long InboundDropped => System.Threading.Interlocked.Read(ref inboundDropped);
 
-    /// <summary>Snapshot acknowledgements refused or dropped for lack of a replicator.</summary>
-    public long AcksDropped => System.Threading.Interlocked.Read(ref acksDropped);
-
     /// <summary>Scope-control requests dropped (no host world, no replicator, or full queue).</summary>
     public long ScopeControlDropped => System.Threading.Interlocked.Read(ref scopeControlDropped);
 
@@ -385,6 +400,9 @@ internal sealed class AuthoritySession : IDisposable
             // per-world for the same reason: a reloaded world must not inherit the previous one's
             // seats or stock.
             inbound.Clear();
+            inboundBytes = 0;
+            inboundOverflow = false;
+            blockedInboxHead = null;
             connectionEpochs.Clear();
             lastConnectionEpoch = 0;
             commands?.Clear();
@@ -447,10 +465,7 @@ internal sealed class AuthoritySession : IDisposable
             {
                 Replica = WorldReplica
             };
-            var spaceBinding = new SpaceEnemyReplicaBinding
-            {
-                Replica = WorldReplica
-            };
+            var spaceBinding = new SpaceEnemyReplicaBinding();
             var craftBinding = new CraftReplicaBinding
             {
                 Replica = WorldReplica
@@ -602,15 +617,20 @@ internal sealed class AuthoritySession : IDisposable
         // The transport reuses one packet instance per type (`SubscribeReusable`), so the queued
         // message must own its data; otherwise the next packet of the same type overwrites it
         // before the frame boundary applies it.
-        var owned = packet.CreateOwnedCopy();
         lock (gate)
         {
-            if (inbound.Count >= AuthorityLimits.CommandQueueMax)
+            var bytes = (long)packet.DeclaredPayloadLength + AuthorityLimits.HeaderBytes;
+            if (inboundOverflow || inbound.Count >= AuthorityLimits.CommandQueueMax ||
+                bytes > AuthorityLimits.ConnectionPendingMaxBytes - inboundBytes)
             {
+                // The stream now has a hole, including when the lost packet is Commit or the
+                // last death in a quiet scope. Recover at the frame boundary, not on this thread.
+                inboundOverflow = true;
                 System.Threading.Interlocked.Increment(ref inboundDropped);
                 return false;
             }
-            inbound.Enqueue(new PendingReplicaMessage(owned, scope));
+            inbound.Enqueue(new PendingReplicaMessage(packet.CreateOwnedCopy(), scope));
+            inboundBytes += bytes;
         }
         // inbound traffic is counted per family at the moment it is accepted, so the receive
         // rate reflects what the session actually took in rather than what the transport delivered.
@@ -674,6 +694,7 @@ internal sealed class AuthoritySession : IDisposable
                 }
             DrainReplicaInbox();
             WorldReplica?.RetryPendingBaselines((scope, apply) => ApplyContext.Run(new ApplyScope(scope, hostTick: hostTick), apply));
+            WorldReplica?.ServiceRecovery(RecoveryTime());
             if (RequireGamePools)
             {
                 TurretReplica?.RetryPending();
@@ -729,24 +750,62 @@ internal sealed class AuthoritySession : IDisposable
     /// </remarks>
     private void DrainReplicaInbox()
     {
-        while (true)
+        var recover = false;
+        int remaining;
+        lock (gate)
         {
-            // The queue is drained in order until it is empty, so the frame applies everything that
-            // arrived. Nothing is dropped or reordered by a budget; the bound on a frame's work is
-            // the inbox's own ceiling, applied when a message is admitted.
+            recover = inboundOverflow;
+            if (!recover && inbound.Count > 0)
+            {
+                var head = inbound.Peek().Packet;
+                if (WaitsForTick(head) && !IsObsolete(inbound.Peek()))
+                {
+                    if (!ReferenceEquals(blockedInboxHead, head))
+                    { blockedInboxHead = head; blockedInboxSince = RecoveryTime(); }
+                    else recover = RecoveryTime() - blockedInboxSince >= ClientWorldReplica.RecoveryTimeoutSeconds;
+                }
+                else blockedInboxHead = null;
+            }
+            if (recover)
+            {
+                System.Threading.Interlocked.Add(ref inboundDropped, inbound.Count);
+                inbound.Clear();
+                inboundBytes = 0;
+                inboundOverflow = false;
+                blockedInboxHead = null;
+            }
+            // New arrivals belong to the next frame. A producer cannot extend this drain forever.
+            remaining = inbound.Count;
+        }
+        if (recover)
+        {
+            Diagnostics.Warn("authority:inbox-recovery", () => $"[authority] rebuilding replicas after inbox overflow or stalled tick localTick={LastFrameTick}");
+            WorldReplica?.RestartSubscribedScopes();
+        }
+        while (remaining-- > 0)
+        {
             PendingReplicaMessage message;
             lock (gate)
             {
-                if (inbound.Count == 0) break;
-                var next = inbound.Peek().Packet;
-                if (!applyingPausedJoin && next.HostTick > LastFrameTick && next.Family is AuthorityFamily.WorldState or
-                    AuthorityFamily.Lifecycle or AuthorityFamily.PlayerCombatState or AuthorityFamily.ScopeDigest) break;
+                if (inboundOverflow || inbound.Count == 0) break;
+                var pending = inbound.Peek();
+                var next = pending.Packet;
+                if (IsObsolete(pending))
+                {
+                    inbound.Dequeue();
+                    inboundBytes -= (long)next.DeclaredPayloadLength + AuthorityLimits.HeaderBytes;
+                    System.Threading.Interlocked.Increment(ref inboundDropped);
+                    continue;
+                }
+                if (WaitsForTick(next)) break;
                 message = inbound.Dequeue();
+                inboundBytes -= (long)next.DeclaredPayloadLength + AuthorityLimits.HeaderBytes;
             }
 
             var applier = replicaApplier;
             if (applier == null)
             {
+                Diagnostics.Error("authority:no-applier", () => $"[authority] replica message dropped: applier missing scope={message.Scope} family={message.Packet.Family} tick={LastFrameTick}");
                 // Refuse the message when no replica applier is configured.
                 System.Threading.Interlocked.Increment(ref inboundDropped);
                 continue;
@@ -768,10 +827,24 @@ internal sealed class AuthoritySession : IDisposable
             catch (Exception e)
             {
                 System.Threading.Interlocked.Increment(ref inboundDropped);
-                Log.Error($"[authority] replica apply failed for {message.Scope}: {e}");
+                Diagnostics.Error("authority:apply:" + message.Scope + ":" + message.Packet.Family,
+                    () => $"[authority] replica apply failed scope={message.Scope} family={message.Packet.Family} sequence={message.Packet.Sequence} hostTick={message.Packet.HostTick} localTick={LastFrameTick}", e);
             }
         }
 
+    }
+
+    private bool WaitsForTick(AuthorityEnvelopePacket packet) => !applyingPausedJoin &&
+        packet.HostTick > LastFrameTick && packet.Family is AuthorityFamily.WorldState or
+            AuthorityFamily.Lifecycle or AuthorityFamily.PlayerCombatState or AuthorityFamily.ScopeDigest;
+
+    private bool IsObsolete(in PendingReplicaMessage message)
+    {
+        var packet = message.Packet;
+        if (packet.Family == AuthorityFamily.PlayerCombatState || packet.SubscriptionEpoch <= 0 ||
+            WorldReplica?.Versions.TryGetScope(message.Scope.Scope, out var state) != true) return false;
+        return state.Phase == SubscriptionPhase.Unsubscribed || packet.SubscriptionEpoch < state.SubscriptionEpoch ||
+            state.Phase == SubscriptionPhase.Resyncing && packet.SubscriptionEpoch == state.SubscriptionEpoch;
     }
 
     /// <summary>
@@ -788,7 +861,6 @@ internal sealed class AuthoritySession : IDisposable
         {
             if (snapshotAcks.Count >= AuthorityLimits.CommandQueueMax)
             {
-                System.Threading.Interlocked.Increment(ref acksDropped);
                 return false;
             }
             snapshotAcks.Enqueue(new PendingSnapshotAck(playerId, baselineId, lastAppliedSequence, accepted));
@@ -823,8 +895,8 @@ internal sealed class AuthoritySession : IDisposable
     /// <remarks>
     /// The host-side eligibility check reads the transport's live player data: an unknown player
     /// subscribes to nothing, and a planet pool is only served for the planet the host accepted the
-    /// player on. Resync requests are not eligibility-gated — a broken stream is repaired whatever
-    /// the player did, because the alternative is a permanently divergent replica.
+    /// player on. Existing streams can recover after a location change; a resync that must open
+    /// a missing or inactive cursor follows the same eligibility check as a new subscription.
     /// </remarks>
     private void DrainScopeControl()
     {
@@ -838,6 +910,7 @@ internal sealed class AuthoritySession : IDisposable
             }
             if (HostReplicator == null)
             {
+                Diagnostics.Error("authority:no-replicator-control", () => $"[authority] scope control dropped: replicator missing player={request.PlayerId} op={request.Op} scope={request.Scope}");
                 System.Threading.Interlocked.Increment(ref scopeControlDropped);
                 continue;
             }
@@ -871,8 +944,16 @@ internal sealed class AuthoritySession : IDisposable
                 case ScopeControlOp.Resync:
                     if (!HostReplicator.RequestResync(request.PlayerId, request.Scope, request.RequestId))
                     {
-                        System.Threading.Interlocked.Increment(ref scopeControlRefused);
-                        continue;
+                        // The original Subscribe may have been refused before the player's location
+                        // arrived. Starting a missing/inactive cursor still requires normal eligibility.
+                        var recoveryLocation = SubscriptionPlanetProvider?.Invoke(request.PlayerId);
+                        if (ScopeSubscriptionPolicy.MaySubscribe(request.Scope, recoveryLocation.HasValue,
+                                recoveryLocation.GetValueOrDefault()) != ScopeSubscriptionDecision.Allowed)
+                        {
+                            System.Threading.Interlocked.Increment(ref scopeControlRefused);
+                            continue;
+                        }
+                        HostReplicator.Subscribe(request.PlayerId, request.Scope, requestId: request.RequestId);
                     }
                     System.Threading.Interlocked.Increment(ref scopeControlHandled);
                     break;
@@ -952,12 +1033,7 @@ internal sealed class AuthoritySession : IDisposable
         standingStarId = currentStarId;
         standingInSector = isInSector;
 
-        var context = new ScopeObservationContext
-        {
-            CurrentPlanetId = currentPlanetId,
-            IsInSector = isInSector
-        };
-        ScopeSubscriptionPolicy.DesiredScopes(context, desiredScratch);
+        ScopeSubscriptionPolicy.DesiredScopes(currentPlanetId, desiredScratch);
         if (supportsPool != null)
             desiredScratch.RemoveAll(scope => !supportsPool(scope.Kind));
 
@@ -998,7 +1074,7 @@ internal sealed class AuthoritySession : IDisposable
             if (!alreadyHeld && TrySubscribeScope(scope))
             {
                 standingScopes.Add(scope);
-                standingRetries[scope] = LastFrameTick + 120;
+                standingRetries[scope] = RecoveryTime() + 2;
             }
         }
     }
@@ -1006,14 +1082,15 @@ internal sealed class AuthoritySession : IDisposable
     /// <summary>The standing set this client currently holds, as last planned.</summary>
     public IReadOnlyList<ScopeKey> StandingScopes => standingScopes;
 
-    private readonly Dictionary<ScopeKey, long> standingRetries = new();
+    private readonly Dictionary<ScopeKey, double> standingRetries = new();
     private void RetryStandingSubscriptions()
     {
         foreach (var scope in standingScopes)
         {
-            if (!WorldReplica.Versions.TryGetScope(scope, out var state) || state.Phase != SubscriptionPhase.Snapshotting) continue;
-            if (standingRetries.TryGetValue(scope, out var due) && LastFrameTick < due) continue;
-            standingRetries[scope] = LastFrameTick + 120;
+            if (!WorldReplica.Versions.TryGetScope(scope, out var state) ||
+                state.Phase is not (SubscriptionPhase.Snapshotting or SubscriptionPhase.Resyncing)) continue;
+            if (standingRetries.TryGetValue(scope, out var due) && RecoveryTime() < due) continue;
+            standingRetries[scope] = RecoveryTime() + 2;
             // A location packet can arrive after the first subscribe. Repeat the request without
             // replacing staged data or incrementing identity; the host coalesces in-flight baselines.
             scopeControlSink?.Send(ScopeControlOp.Subscribe, scope, ScopeRecoveryReason.None, false,
@@ -1033,9 +1110,7 @@ internal sealed class AuthoritySession : IDisposable
             }
             if (HostReplicator == null)
             {
-                // An ack with no replicator cannot be matched to anything; counting it keeps the
-                // omission visible instead of stranding a client's subscription silently.
-                System.Threading.Interlocked.Increment(ref acksDropped);
+                Diagnostics.Error("authority:no-replicator-ack", () => $"[authority] snapshot ACK dropped: replicator missing player={ack.PlayerId} baseline={ack.BaselineId}");
                 continue;
             }
             HostReplicator.OnSnapshotAck(ack.PlayerId, ack.BaselineId, ack.LastAppliedSequence, ack.Accepted);
@@ -1059,10 +1134,14 @@ internal sealed class AuthoritySession : IDisposable
     /// </remarks>
     public void Reset()
     {
+        diagnosticWaits.Clear(); nextDiagnosticCheck = 0;
         CompletedSimulationTick = 0;
         lock (gate)
         {
             inbound.Clear();
+            inboundBytes = 0;
+            inboundOverflow = false;
+            blockedInboxHead = null;
             connectionEpochs.Clear();
             lastConnectionEpoch = 0;
             commands?.Clear();

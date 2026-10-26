@@ -4,9 +4,7 @@ using System;
 using System.Reflection;
 using BepInEx;
 using HarmonyLib;
-using NebulaeModel.Contracts;
 using NebulaeModel.Logger;
-using NebulaeModel.Networking;
 using NebulaeNetwork;
 using NebulaePatcher.Logger;
 using NebulaePatcher.MonoBehaviours;
@@ -30,9 +28,24 @@ public class NebulaePlugin : BaseUnityPlugin
 
         NebulaeModel.Config.ModInfo = Info;
         NebulaeModel.Config.ModVersion = PluginInfo.PLUGIN_DISPLAY_VERSION;
-        if (!NebulaeModel.Config.LoadOptions() || !NebulaeModel.Config.LoadCommandLineOptions())
+        if (!NebulaeModel.Config.LoadOptions())
         {
             Log.Error("Nebulae startup stopped because configuration could not be loaded or migrated.");
+            enabled = false;
+            return;
+        }
+        var errorReports = gameObject.AddComponent<ErrorReportBridge>();
+        try { errorReports.Initialize(Logger); }
+        catch (Exception error)
+        {
+            errorReports.Dispose();
+            Destroy(errorReports);
+            errorReports = null;
+            Log.Warn("[error-reporter] Could not start reporting: " + error.GetType().Name);
+        }
+        if (!NebulaeModel.Config.LoadCommandLineOptions())
+        {
+            Log.Error("Nebulae startup stopped because command line options could not be loaded.");
             enabled = false;
             return;
         }
@@ -41,6 +54,7 @@ public class NebulaePlugin : BaseUnityPlugin
             Application.Quit();
         }
         Multiplayer.IsDedicated = NebulaeModel.Config.CommandLineOptions.IsDedicatedServer;
+        errorReports?.RefreshEnvironment();
 
         try
         {
@@ -162,6 +176,7 @@ public class NebulaePlugin : BaseUnityPlugin
             {
                 Log.Info("Patching for headless mode...");
                 harmony.PatchAll(typeof(Dedicated_Server_Patches));
+                harmony.PatchAll(typeof(HeadlessDysonSwarm));
                 harmony.PatchAll(typeof(HeadlessShieldPipeline));
                 harmony.PatchAll(typeof(Headless_Steam_Patches));
                 Headless_Steam_Patches.Apply(harmony);

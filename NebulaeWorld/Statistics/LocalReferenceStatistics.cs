@@ -1,5 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using NebulaeModel.Packets.Statistics;
 using NebulaeModel.Networking;
@@ -9,6 +8,15 @@ namespace NebulaeWorld.Statistics;
 
 internal sealed class LocalReferenceStatistics
 {
+    public static int GetFactoryCount() => !Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost
+        ? GameMain.data.factoryCount : Multiplayer.Session.Statistics.FactoryCount;
+
+    public static int GetFactoryIndex(PlanetData planet) => !Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost
+        ? planet.factoryIndex : Multiplayer.Session.Statistics.GetFactoryIndex(planet);
+
+    public static bool HasFactory(PlanetData planet) => !Multiplayer.IsActive || Multiplayer.Session.LocalPlayer.IsHost
+        ? planet.factory != null : Multiplayer.Session.Statistics.HasFactory(planet);
+
     private readonly Dictionary<int, FactoryProductionStat> scratch = new();
     private readonly Dictionary<string, (byte[] Bytes, float At)> tips = new();
 

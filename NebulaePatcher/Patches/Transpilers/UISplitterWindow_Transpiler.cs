@@ -34,9 +34,9 @@ internal class UISplitterWindow_Transpiler
                 );
             return matcher.InstructionEnumeration();
         }
-        catch
+        catch (System.Exception error)
         {
-            Log.Error("UISpraycoaterWindow.SetPriority_Transpiler failed. Mod version not compatible with game version.");
+            Log.Error("UISpraycoaterWindow.SetPriority_Transpiler failed. Mod version not compatible with game version.", error);
             return codeInstructions;
         }
     }

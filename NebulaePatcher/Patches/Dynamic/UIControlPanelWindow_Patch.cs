@@ -1,7 +1,6 @@
 ﻿#region
 
 using HarmonyLib;
-using NebulaeModel.Packets.Logistics.ControlPanel;
 using NebulaeWorld;
 
 #endregion

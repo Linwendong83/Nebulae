@@ -21,13 +21,6 @@ internal static class BuildCandidateScore
             return 0f;
         return (kind == BuildOwnerKind.Base ? 1.2f : 1f) / Math.Max(squaredDistance, 1f);
     }
-
-    public static bool Beats(float score, BuildOwnerKind kind, int id, float bestScore,
-        BuildOwnerKind bestKind, int bestId)
-    {
-        return score > bestScore || score > 0f && score == bestScore &&
-            ((int)kind < (int)bestKind || kind == bestKind && id < bestId);
-    }
 }
 
 internal readonly struct BuildTargetClaim
