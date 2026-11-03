@@ -1,4 +1,4 @@
-﻿using NebulaeModel.Networking;
+using NebulaeModel.Networking;
 #region
 
 using System;
@@ -8,6 +8,7 @@ using BepInEx;
 using NebulaeModel.DataStructures;
 using NebulaeModel.Contracts;
 using NebulaeModel.Logger;
+using NebulaeModel.Packets.Factory;
 
 #endregion
 
@@ -23,6 +24,50 @@ internal class FactoryManager : IDisposable
     public PlanetFactory EventFactory { get; set; }
     public int PacketAuthor { get; set; } = SessionSentinels.AUTHOR_NONE;
     public int TargetPlanet { get; set; } = SessionSentinels.PLANET_NONE;
+
+    // The request whose preview payload the host is replaying right now. The re-entrant
+    // CreatePrebuilds call broadcasts to the star; forwarding these bytes keeps the blueprint off
+    // the encoder a second time, and the payload is exactly the list the host builds from.
+    [ThreadStatic] private static CreatePrebuildsRequest relayedPrebuildRequest;
+    [ThreadStatic] private static byte[] relayedCollection;
+    [ThreadStatic] private static long relayedCollectionRevision;
+    public CreatePrebuildsRequest RelayedPrebuildRequest => relayedPrebuildRequest;
+
+    /// <summary>The author's collection bytes carried by the request being replayed, if any.</summary>
+    public byte[] RelayedCollection => relayedCollection;
+    public long RelayedCollectionRevision => relayedCollectionRevision;
+
+    /// <summary>Marks <paramref name="packet"/> as the request being replayed until the scope ends.</summary>
+    public IDisposable RelayPrebuildRequest(CreatePrebuildsRequest packet) => new RelayedRequestScope(packet);
+
+    /// <summary>
+    ///     Exposes the collection payload of the request being replayed, so the host rebroadcasts the
+    ///     author's bytes instead of serializing its own copy once per dismantled building.
+    /// </summary>
+    public IDisposable RelayCollection(byte[] bytes, long revision) => new RelayedCollectionScope(bytes, revision);
+
+    private sealed class RelayedRequestScope : IDisposable
+    {
+        private readonly CreatePrebuildsRequest previous;
+        public RelayedRequestScope(CreatePrebuildsRequest packet)
+        { previous = relayedPrebuildRequest; relayedPrebuildRequest = packet; }
+        public void Dispose() => relayedPrebuildRequest = previous;
+    }
+
+    private sealed class RelayedCollectionScope : IDisposable
+    {
+        private readonly byte[] previousBytes;
+        private readonly long previousRevision;
+        public RelayedCollectionScope(byte[] bytes, long revision)
+        {
+            previousBytes = relayedCollection; previousRevision = relayedCollectionRevision;
+            relayedCollection = bytes; relayedCollectionRevision = revision;
+        }
+        public void Dispose()
+        {
+            relayedCollection = previousBytes; relayedCollectionRevision = previousRevision;
+        }
+    }
 
     public void Dispose()
     {

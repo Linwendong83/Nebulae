@@ -36,6 +36,8 @@ internal class GlobalGameDataRequestProcessor : PacketProcessor<GlobalGameDataRe
             writer.BinaryWriter.Write((int)GameMain.data.gameDesc.goalLevel);
             writer.BinaryWriter.Write(NebulaeWorld.Multiplayer.Session.Metadata.SourceClusterKey);
             writer.BinaryWriter.Write(GameMain.gameTick);
+            writer.BinaryWriter.Write(GameStatesManager.HostWorldPaused);
+            writer.BinaryWriter.Write(GameStatesManager.HostPauseLimit);
             AddSnapshot(new GlobalGameDataResponse(GlobalGameDataResponse.EDataType.Session, writer.CloseAndGetBytes()));
         }
 

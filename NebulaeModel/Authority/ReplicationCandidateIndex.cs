@@ -12,7 +12,9 @@ internal sealed class ReplicationCandidateIndex
     private readonly HashSet<ObjectKey> fast = new();
     private readonly HashSet<ObjectKey> frequent = new();
     private readonly List<ObjectKey>[] unitDue = new List<ObjectKey>[EnemyStatePolicy.UnitCheckpointIntervalTicks];
-    private readonly List<ObjectKey>[] due = new List<ObjectKey>[EnemyStatePolicy.CheckpointIntervalTicks];
+    private readonly List<ObjectKey>[] due;
+    public ReplicationCandidateIndex(int checkpointInterval = EnemyStatePolicy.CheckpointIntervalTicks)
+    { due = new List<ObjectKey>[System.Math.Max(1, checkpointInterval)]; }
     private object identity;
     private long auditTick;
     private volatile int dirtyCount;
@@ -29,6 +31,23 @@ internal sealed class ReplicationCandidateIndex
             foreach (var bucket in due) bucket?.Clear();
             foreach (var bucket in unitDue) bucket?.Clear();
             foreach (var key in keys) Add(key, false);
+        }
+    }
+
+    public int Count { get { lock (gate) return live.Count; } }
+    public bool IsCurrent(object poolIdentity, int count, long tick)
+    {
+        lock (gate) return identity != null && ReferenceEquals(identity, poolIdentity) && count == live.Count &&
+            tick >= auditTick && tick - auditTick < AuditIntervalTicks;
+    }
+
+    public bool ReadRetired(object poolIdentity, int count, long tick, List<ObjectKey> removed)
+    {
+        lock (gate)
+        {
+            if (!IsCurrent(poolIdentity, count, tick)) return false;
+            removed.AddRange(retired); retired.Clear();
+            return true;
         }
     }
 

@@ -184,6 +184,11 @@ internal class Server : IServer
             Log = { Level = LogLevel.Warn, Output = Log.SocketOutput }
         };
 
+        // A port forwarder (frp, nginx stream, ...) reaches this listener on the local port but
+        // forwards the client's Host header with the public port, and websocket-sharp otherwise
+        // rejects that upgrade with a 400. The requested path is still matched below.
+        socket.AllowForwardedRequest = true;
+
         if (!string.IsNullOrWhiteSpace(Config.Options.ServerPassword))
         {
             socket.AuthenticationSchemes = AuthenticationSchemes.Basic;
@@ -367,7 +372,9 @@ internal class Server : IServer
             Multiplayer.Session.FactoryProducts.TickHostFighterPorts(GameMain.gameTick, true);
             Multiplayer.Session.CombatAuthority.PumpPausedCheckpoints();
             Multiplayer.Session.CombatAuthority.FlushFighterPorts();
+            Multiplayer.Session.Enemies.TickHivePreviews(GameMain.spaceSector);
             Multiplayer.Session.AuthorityRuntime?.PumpHostSubscriptions();
+            Multiplayer.Session.AuthorityRuntime?.HostReplicator?.RefreshViews();
         }
 
         if (!Multiplayer.Session.IsGameLoaded)

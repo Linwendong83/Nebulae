@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using System;
 using System.Collections.Generic;
@@ -31,8 +31,8 @@ internal class PlanetFactory_Transpiler
             var factoryManager = Multiplayer.Session.Factories;
             if ((Multiplayer.Session.LocalPlayer.IsHost && !factoryManager.IsIncomingRequest.Value) || Multiplayer.Session.LocalPlayer.Id == factoryManager.PacketAuthor)
             {
-                Multiplayer.Session.Network.SendPacketToLocalStar(new NewSetInserterPickTargetPacket(objId, otherObjId, inserterId,
-                    offset, pointPos, GameMain.localPlanet?.id ?? -1));
+                Multiplayer.Session.Network.SendPacketToLocalStar(new NewSetInserterTargetPacket(true, objId, otherObjId,
+                    inserterId, offset, pointPos, GameMain.localPlanet?.id ?? -1));
             }
         }
     }
@@ -44,7 +44,7 @@ internal class PlanetFactory_Transpiler
             var factoryManager = Multiplayer.Session.Factories;
             if ((Multiplayer.Session.LocalPlayer.IsHost && !factoryManager.IsIncomingRequest.Value) || Multiplayer.Session.LocalPlayer.Id == factoryManager.PacketAuthor)
             {
-                Multiplayer.Session.Network.SendPacketToLocalStar(new NewSetInserterInsertTargetPacket(objId, otherObjId,
+                Multiplayer.Session.Network.SendPacketToLocalStar(new NewSetInserterTargetPacket(false, objId, otherObjId,
                     inserterId, offset, pointPos, GameMain.localPlanet?.id ?? -1));
             }
         }

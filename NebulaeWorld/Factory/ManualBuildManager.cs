@@ -62,7 +62,9 @@ internal sealed class ManualBuildManager
         EnsureWorld();
         var session = Multiplayer.Session;
         if (requests.Count == 0 || session.InventoryTransfers.Pending) return;
-        if (!session.Life.EnsureInventoryCheckpoint(ref checkpointTicket)) return;
+        // One recent checkpoint covers a burst of hand-built buildings; only its age (not the
+        // number of builds) decides when a new player snapshot is worth a round trip.
+        if (!session.Life.EnsureInventoryCheckpoint(ref checkpointTicket, maxAgeSeconds: 5)) return;
         checkpointTicket = 0;
         var request = requests.Dequeue(); queued.Remove((request.Planet, request.Prebuild, request.Generation));
         var factory = GameMain.galaxy.PlanetById(request.Planet)?.factory;

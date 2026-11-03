@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using NebulaeModel.Authority;
@@ -53,10 +53,22 @@ internal sealed class RepairDispatchManager : IDisposable
     public bool HasRemoteRepairs(PlanetFactory factory) => flights.Values.Any(f => !f.Native && !f.Returning && f.Factory == factory);
     public void BeginFrame(PlanetFactory factory)
     {
+        // Repair assignments are written and consumed by the host's construction tick. Clients
+        // block UpdateModules entirely, so scanning every construct stat here every frame only
+        // cost them cache traffic and never cleared anything they would use.
+        if (!Multiplayer.Session.IsServer) return;
         var stats = factory.constructionSystem.constructStats;
         for (var id = 1; id < stats.cursor; id++)
-            if (stats.buffer[id].id == id) { stats.buffer[id].repairerModuleId = 0; stats.buffer[id].repairerValue = 0; }
-        if (Multiplayer.Session.IsServer) Recount(factory);
+        {
+            ref var stat = ref stats.buffer[id];
+            // Most slots are already clear; skipping them keeps the whole pool out of the dirty set.
+            if (stat.id == id && (stat.repairerModuleId != 0 || stat.repairerValue != 0f))
+            {
+                stat.repairerModuleId = 0;
+                stat.repairerValue = 0f;
+            }
+        }
+        Recount(factory);
     }
 
     public void Dispose() { flights.Clear(); bindings.Clear(); nativeBindings.Clear(); continuations.Clear(); offers.Clear(); ended.Clear(); endedOrder.Clear(); }

@@ -214,7 +214,7 @@ internal class Client : IClient
         Multiplayer.Session.InventoryTransfers.CheckDiagnostics();
         serverConnection?.CheckSendDiagnostics();
 
-        if (Multiplayer.Session.IsGameLoaded && Multiplayer.Session.WorldPaused && !Multiplayer.Session.JoinSync.LocalPending)
+        if (Multiplayer.Session.IsGameLoaded && (Multiplayer.Session.WorldPaused || Multiplayer.Session.State.HostClockPaused) && !Multiplayer.Session.JoinSync.LocalPending)
         {
             // A stopped clock still has inventory receipts and replica messages to settle.
             NebulaeWorld.GameStates.JoinSyncManager.WaitForSimulation();

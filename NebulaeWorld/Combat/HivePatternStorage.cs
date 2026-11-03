@@ -16,6 +16,7 @@ internal static class HivePatternStorage
     {
         public GrowthPattern_DFSpace.Builder[] Stub, Full;
         public byte[] Tail;
+        public Task<byte[]> PendingTail;
         public int Length, Completed, NativeBytes;
     }
     private static ConditionalWeakTable<EnemyDFHiveSystem, Cold> cold = new();
@@ -48,6 +49,10 @@ internal static class HivePatternStorage
 
     internal static int CoreEnemyId(EnemyDFHiveSystem hive, int index)
     {
+        // A cropped client shell is not evidence that a distant hive core died.
+        if (index == 1 && Multiplayer.Session?.IsClient == true &&
+            Multiplayer.Session.AuthorityRuntime?.DarkFogReplica?.HiveRoots.TryGetValue(hive.hiveAstroId, out var root) == true)
+            return root;
         WaitImport(hive);
         var builders = hive.pbuilders;
         if ((uint)index >= (uint)(builders?.Length ?? 0)) builders = Read(hive);
@@ -69,7 +74,7 @@ internal static class HivePatternStorage
             if (!ReferenceEquals(hive.pbuilders, state.Stub)) return hive.pbuilders;
             var full = new GrowthPattern_DFSpace.Builder[state.Length];
             Array.Copy(state.Stub, full, state.Stub.Length);
-            using var input = new MemoryStream(state.Tail, false);
+            using var input = new MemoryStream(Tail(state), false);
             using var deflate = new DeflateStream(input, CompressionMode.Decompress);
             var buffer = Buffer();
             deflate.CopyTo(buffer); buffer.Position = 0;
@@ -104,6 +109,13 @@ internal static class HivePatternStorage
     }
 
     internal static void Compact(EnemyDFHiveSystem hive)
+        => CompactCore(hive, false);
+
+    // Creation runs on the world thread. Only detached serialized bytes may leave it.
+    internal static void CompactCreated(EnemyDFHiveSystem hive)
+        => CompactCore(hive, true);
+
+    private static void CompactCore(EnemyDFHiveSystem hive, bool backgroundCompression)
     {
         if (hive.galaxy?.starCount < 256 || hive.galaxy == null || hive.realized || hive.isPreview || IsCold(hive)) return;
         var builders = hive.pbuilders;
@@ -118,6 +130,15 @@ internal static class HivePatternStorage
         Array.Copy(builders, state.Stub, prefix);
         // Tail arrays are about to be discarded, so interning millions of them only wastes load time.
         for (var i = 0; i < prefix; i++) state.Stub[i].connections = HiveSharedArrays.Intern(state.Stub[i].connections);
+        var buffer = SerializeTail(builders, prefix, state);
+        if (!backgroundCompression || !HiveColdCompression.TryQueue(buffer.GetBuffer(), (int)buffer.Length, out state.PendingTail))
+            state.Tail = HiveColdCompression.Compress(buffer.GetBuffer(), (int)buffer.Length);
+        cold.Add(hive, state); hive.pbuilders = state.Stub;
+        Interlocked.Increment(ref dormantHives);
+    }
+
+    private static MemoryStream SerializeTail(GrowthPattern_DFSpace.Builder[] builders, int prefix, Cold state)
+    {
         var buffer = Buffer();
         using (var writer = new BinaryWriter(buffer, System.Text.Encoding.UTF8, true))
         {
@@ -134,12 +155,18 @@ internal static class HivePatternStorage
                 if (!builders[i].isConn && builders[i].matterProvided >= builders[i].matterNeeded) state.Completed++;
             }
         }
-        using var output = new MemoryStream();
-        using (var deflate = new DeflateStream(output, CompressionLevel.Fastest, true))
-            deflate.Write(buffer.GetBuffer(), 0, (int)buffer.Length);
-        state.Tail = output.ToArray();
-        cold.Add(hive, state); hive.pbuilders = state.Stub;
-        Interlocked.Increment(ref dormantHives);
+        return buffer;
+    }
+
+    private static byte[] Tail(Cold state)
+    {
+        lock (state)
+        {
+            if (state.PendingTail == null) return state.Tail;
+            state.Tail = state.PendingTail.GetAwaiter().GetResult();
+            state.PendingTail = null;
+            return state.Tail;
+        }
     }
 
     internal static bool TryCompletedCount(EnemyDFHiveSystem hive, out int count)
@@ -165,7 +192,7 @@ internal static class HivePatternStorage
         {
             writer.Write(state.Length);
             foreach (var core in state.Stub) core.Export(writer);
-            using var input = new MemoryStream(state.Tail, false);
+            using var input = new MemoryStream(Tail(state), false);
             using var deflate = new DeflateStream(input, CompressionMode.Decompress);
             var chunk = exportBuffer ??= new byte[64 * 1024];
             var left = state.NativeBytes;
@@ -283,6 +310,7 @@ internal static class HivePatternStorage
             {
                 importScheduler?.Complete(); importScheduler = null;
                 imports.Clear(); importJobs = new(); Volatile.Write(ref importCount, 0);
+                HiveColdCompression.Complete();
             }
         }
     }

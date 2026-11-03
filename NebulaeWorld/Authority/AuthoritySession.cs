@@ -271,6 +271,7 @@ internal sealed class AuthoritySession : IDisposable
     public SpaceEnemySnapshotAdapter SpaceEnemyHost { get; set; }
 
     /// <summary>Reads subscription eligibility directly from the transport's live player data.</summary>
+    public DarkFogSnapshotAdapter DarkFogHost { get; set; }
     public Func<ushort, int?> SubscriptionPlanetProvider { get; set; }
 
     /// <summary>
@@ -416,7 +417,7 @@ internal sealed class AuthoritySession : IDisposable
             HostDeathCapture = null;
             FactoryCombatHost = null;
             CraftHost = null;
-            GroundEnemyHost = null; SpaceEnemyHost = null;
+            GroundEnemyHost = null; SpaceEnemyHost = null; DarkFogHost = null;
             // the new world plans its standing subscriptions from scratch; the old world's
             // scopes must not suppress the new world's initial subscribes.
             standingScopes.Clear();
@@ -678,34 +679,49 @@ internal sealed class AuthoritySession : IDisposable
             return;
         }
 
-        var frameObserver = WorldReplica?.MirrorObserver as IReplicaFrameObserver;
-        frameObserver?.BeginReplicaFrame();
+        var profileFrame = AuthorityProfile.Begin();
         try
         {
-            if (ReplicaPoolIdentity != null && WorldReplica != null)
-                foreach (var scope in standingScopes)
-                {
-                    if (WorldReplica.MirrorObserver is IReplicaBaselineReadiness readiness && !readiness.IsReadyForBaseline(scope)) continue;
-                    var pool = ReplicaPoolIdentity(scope);
-                    if (pool == null) continue;
-                    if (replicaPools.TryGetValue(scope, out var oldPool) && ReferenceEquals(pool, oldPool)) continue;
-                    ApplyContext.Run(new ApplyScope(scope, hostTick: hostTick), () => WorldReplica.ReapplyScope(scope));
-                    replicaPools[scope] = pool;
-                }
-            DrainReplicaInbox();
-            WorldReplica?.RetryPendingBaselines((scope, apply) => ApplyContext.Run(new ApplyScope(scope, hostTick: hostTick), apply));
-            WorldReplica?.ServiceRecovery(RecoveryTime());
-            if (RequireGamePools)
+            var frameObserver = WorldReplica?.MirrorObserver as IReplicaFrameObserver;
+            frameObserver?.BeginReplicaFrame();
+            try
             {
-                TurretReplica?.RetryPending();
-                DarkFogReplica?.FlushSearchReferences();
+                if (ReplicaPoolIdentity != null && WorldReplica != null)
+                    foreach (var scope in standingScopes)
+                    {
+                        if (WorldReplica.MirrorObserver is IReplicaBaselineReadiness readiness && !readiness.IsReadyForBaseline(scope)) continue;
+                        var pool = ReplicaPoolIdentity(scope);
+                        if (pool == null) continue;
+                        if (replicaPools.TryGetValue(scope, out var oldPool) && ReferenceEquals(pool, oldPool)) continue;
+                        var reapplyStart = AuthorityProfile.Begin();
+                        try { ApplyContext.Run(new ApplyScope(scope, hostTick: hostTick), () => WorldReplica.ReapplyScope(scope)); }
+                        finally { AuthorityProfile.End(AuthorityProfile.Reapply, reapplyStart); }
+                        replicaPools[scope] = pool;
+                    }
+                var drainStart = AuthorityProfile.Begin();
+                DrainReplicaInbox();
+                AuthorityProfile.End(AuthorityProfile.Drain, drainStart);
+                WorldReplica?.RetryPendingBaselines((scope, apply) => ApplyContext.Run(new ApplyScope(scope, hostTick: hostTick), apply));
+                WorldReplica?.ServiceRecovery(RecoveryTime());
+                if (RequireGamePools)
+                {
+                    TurretReplica?.RetryPending();
+                    DarkFogReplica?.FlushSearchReferences();
+                }
             }
+            finally
+            {
+                frameObserver?.EndReplicaFrame((scope, write) => ApplyContext.Run(new ApplyScope(scope, hostTick: hostTick), write));
+            }
+            var afterStart = AuthorityProfile.Begin();
+            AfterClientFrame?.Invoke(hostTick);
+            AuthorityProfile.End(AuthorityProfile.AfterFrame, afterStart);
         }
         finally
         {
-            frameObserver?.EndReplicaFrame((scope, write) => ApplyContext.Run(new ApplyScope(scope, hostTick: hostTick), write));
+            AuthorityProfile.End(AuthorityProfile.Frame, profileFrame);
+            AuthorityProfile.FrameCompleted(hostTick);
         }
-        AfterClientFrame?.Invoke(hostTick);
     }
 
     public void AuditRuntime(long tick)
@@ -950,7 +966,11 @@ internal sealed class AuthoritySession : IDisposable
                         if (ScopeSubscriptionPolicy.MaySubscribe(request.Scope, recoveryLocation.HasValue,
                                 recoveryLocation.GetValueOrDefault()) != ScopeSubscriptionDecision.Allowed)
                         {
+                            // A silently dropped resync is what a client experiences as "the scope
+                            // never comes back": the request is refused here and it keeps asking.
                             System.Threading.Interlocked.Increment(ref scopeControlRefused);
+                            Diagnostics.Warn("authority:resync-refused:" + request.PlayerId + ":" + request.Scope,
+                                () => $"[authority] scope resync refused for player {request.PlayerId}: {request.Scope} (registered planet {recoveryLocation.GetValueOrDefault()}); waiting for the player's location");
                             continue;
                         }
                         HostReplicator.Subscribe(request.PlayerId, request.Scope, requestId: request.RequestId);
@@ -1155,7 +1175,7 @@ internal sealed class AuthoritySession : IDisposable
             HostDeathCapture = null;
             FactoryCombatHost = null;
             CraftHost = null;
-            GroundEnemyHost = null; SpaceEnemyHost = null;
+            GroundEnemyHost = null; SpaceEnemyHost = null; DarkFogHost = null;
             standingScopes.Clear();
             standingRetries.Clear();
             replicaPools.Clear();

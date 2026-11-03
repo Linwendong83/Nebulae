@@ -1,7 +1,10 @@
-﻿#region
+#region
 
 using System;
+using System.IO;
 using System.Net;
+using System.Net.Sockets;
+using System.Reflection;
 using System.Threading;
 using NebulaeModel.Logger;
 using NebulaeModel.Networking.Serialization;
@@ -91,22 +94,40 @@ internal class NebulaeConnection : INebulaeConnection
         }, onFailure: error =>
         {
             if (IsStopped) return;
-            Diagnostics.Error("send:failure:" + Id, () => $"[network] send queue failed connection={Id} addressFamily={this.peerEndpoint?.AddressFamily} status={ConnectionStatus} stage={error.Data["Nebulae.SendStage"]} packet={error.Data["Nebulae.PacketType"]} beforeFailure=({sender.FailureDiagnostics})", error);
+            Func<string> detail = () => $"[network] send queue failed connection={Id} addressFamily={this.peerEndpoint?.AddressFamily} status={ConnectionStatus} stage={error.Data["Nebulae.SendStage"]} packet={error.Data["Nebulae.PacketType"]} beforeFailure=({sender.FailureDiagnostics})";
+            if (IsTransportSendFailure(error)) Diagnostics.Warn("send:failure:" + Id, detail, error);
+            else Diagnostics.Error("send:failure:" + Id, detail, error);
             StopSending();
             NebulaeModel.Utils.UnityDispatchQueue.RunOnMainThread(() =>
                 peerSocket.Close((ushort)DisconnectionReason.InvalidData, "Packet send failed"));
-        }, combine: hostSide ? packets =>
+        }, combine: packets =>
         {
             if (batchWriter == null) { batchWriter = new NebulaeNetPacketProcessor(); PacketUtils.RegisterNestedTypes(batchWriter); }
+            // The envelope names star 0: the receiving host applies the children and has nobody to
+            // forward them to, which is exactly what a direct client send means. Keeping the same
+            // wrapper in both directions lets a client's dismantle/trash burst use one frame too.
             return RealtimePacketBatch.Encode(packets, batchWriter);
-        }
-        : null, canCombine: bytes => hostSide && ConnectionStatus == EConnectionStatus.Connected && RealtimePacketBatch.CanInclude(bytes));
+        }, canCombine: bytes => ConnectionStatus == EConnectionStatus.Connected && RealtimePacketBatch.CanInclude(bytes, hostSide));
     }
 
+
+    internal static bool IsTransportSendFailure(Exception error)
+    {
+        if (!Equals(error.Data["Nebulae.SendStage"], "socket-send")) return false;
+        while (error is TargetInvocationException { InnerException: not null }) error = error.InnerException;
+        return error is IOException or SocketException or ObjectDisposedException;
+    }
 
     public void SendPacket<T>(T packet) where T : class, new()
     {
         lock (packetProcessor) sender.Enqueue(packetProcessor.Write(packet));
+    }
+
+    /// <summary>Queues a control frame ahead of the replication backlog; see
+    /// <see cref="OrderedSendQueue.EnqueueUrgent"/>.</summary>
+    internal void SendUrgentPacket<T>(T packet) where T : class, new()
+    {
+        lock (packetProcessor) sender.EnqueueUrgent(packetProcessor.Write(packet));
     }
 
     public byte[] SerializePacket<T>(T packet) where T : class, new()

@@ -17,7 +17,7 @@ namespace NebulaeWorld.Authority;
 /// when none can — which keeps "unreadable is not empty" per-domain: a planet whose factory is not
 /// loaded is skipped, never published as a wave of deaths, no matter how many domains exist.
 /// </remarks>
-internal sealed class CompositeHostWorldView : IHostWorldView, IHostIncrementalWorldView, IHostSnapshotWorldView, IHostCaptureBatchWorldView
+internal sealed class CompositeHostWorldView : IHostWorldView, IHostIncrementalWorldView, IHostSnapshotWorldView, IHostCaptureBatchWorldView, IHostInterestWorldView
 {
     private readonly List<IHostWorldView> views = [];
     private readonly Dictionary<ScopeKey, IHostWorldView> routes = new();
@@ -26,6 +26,12 @@ internal sealed class CompositeHostWorldView : IHostWorldView, IHostIncrementalW
     {
         if (views == null || views.Length == 0) throw new ArgumentException("At least one world view is required.", nameof(views));
         this.views.AddRange(views);
+    }
+
+    public void SetInterestedStars(IReadOnlyCollection<int> stars)
+    {
+        foreach (var view in views)
+            if (view is IHostInterestWorldView interested) interested.SetInterestedStars(stars);
     }
 
     public void BeginCapture(ScopeKey scope)

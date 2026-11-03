@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net472</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+
+        <IsPackable>false</IsPackable>
+        <IsolatedBuild>true</IsolatedBuild>
+        <!-- MSTest 4 ships the Microsoft.Testing.Platform runner. Running the test
+             executable directly keeps the binding switches in App.config effective;
+             vstest loads its adapters in a host process we cannot configure. -->
+        <OutputType>Exe</OutputType>
+        <EnableMSTestRunner>true</EnableMSTestRunner>
+        <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+        <!-- Keep dotnet test results and MSTest deployment files with the toolkit's test artifacts. -->
+        <VSTestResultsDirectory Condition="'$(VSTestResultsDirectory)' == ''">$(NebulaeArtifactsRoot)\tests</VSTestResultsDirectory>
+        <!-- No test uses [DeploymentItem]; turn off MSTest's default deployment so
+             no TestResults\Deploy_* scratch folders are produced. -->
+        <RunSettingsFilePath>$(MSBuildProjectDirectory)\NebulaeTests.runsettings</RunSettingsFilePath>
+    </PropertyGroup>
+
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="15.3.0"/>
+        <PackageReference Include="MSTest.TestFramework" Version="4.0.*"/>
+        <!-- GeneratePathProperty lets the runner target below copy the adapter that the
+             MSTest package only adds to the compile references when EnableMSTestRunner is on. -->
+        <PackageReference Include="MSTest.TestAdapter" Version="4.0.*" GeneratePathProperty="true"/>
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\NebulaeModel\NebulaeModel.csproj" />
+      <ProjectReference Include="..\NebulaeNetwork\NebulaeNetwork.csproj" />
+      <ProjectReference Include="..\NebulaePatcher\NebulaePatcher.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- Tests run native game method bodies; compile against publicized references. -->
+        <PackageReference Update="DysonSphereProgram.GameLibs" IncludeAssets="compile;runtime" Condition="'$(UseInstalledGameAssemblies)' != 'true'" />
+        <Reference Update="Assembly-CSharp" Private="true" Condition="'$(UseInstalledGameAssemblies)' == 'true'" />
+        <Reference Update="UnityEngine.UI" Private="true" Condition="'$(UseInstalledGameAssemblies)' == 'true'" />
+        <PackageReference Update="UnityEngine.Modules" IncludeAssets="compile;runtime" />
+        <!-- The test runner does not have BepInEx's runtime assemblies preloaded. -->
+        <PackageReference Update="BepInEx.Core" ExcludeAssets="build" />
+    </ItemGroup>
+
+    <!-- MSTest.TestAdapter 4.0 adds its assembly as a compile reference for
+         EnableMSTestRunner but no longer copies it to the output; the generated platform entry
+         point loads it by name at startup. Copy it beside the test executable. -->
+    <Target Name="CopyMSTestAdapterForRunner" AfterTargets="Build" Condition="'$(EnableMSTestRunner)' == 'true'">
+        <Copy SourceFiles="$(PkgMSTest_TestAdapter)\buildTransitive\net462\MSTest.TestAdapter.dll"
+              DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    </Target>
+
+    <Target Name="CopyInstalledGameRuntime" AfterTargets="Build"
+            Condition="'$(UseInstalledGameAssemblies)' == 'true'">
+        <Copy SourceFiles="$(DSPGameDir)DSPGAME_Data\Managed\Assembly-CSharp.dll;$(DSPGameDir)DSPGAME_Data\Managed\UnityEngine.UI.dll;$(DSPGameDir)DSPGAME_Data\Managed\UnityEngine.CoreModule.dll"
+              DestinationFolder="$(TargetDir)" />
+    </Target>
+
+</Project>

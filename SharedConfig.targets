@@ -49,15 +49,23 @@
             Condition="!Exists('$(DSPGameDir)')"/>
 
     <ItemGroup>
-        <ProjectAssembliesForUnityProject Include="$(OutputPath)\*.dll"/>
         <ProjectAssembliesMetaFilesFolder Include="..\NebulaeUnity\AssemblyMeta\*.meta"/>
     </ItemGroup>
+    <!-- Every project writes into one shared plugin folder, so a parallel Rebuild can remove a
+         sibling's DLL between item evaluation and the copy. Resolve the set inside the target and
+         keep only the files that still exist: the shared folder must never fail the build. -->
     <Target Name="CopyAssembliesToUnityProject"
             AfterTargets="Build" Condition="'$(IsolatedBuild)' != 'true'">
-        <Message Text="Executing CopyAssembliesToUnityProject task $(ProjectName)" Importance="high"/>
+        <ItemGroup>
+            <_UnityAssembliesCandidate Include="$(OutputPath)*.dll"/>
+            <_UnityAssembliesToCopy Include="@(_UnityAssembliesCandidate)" Condition="Exists('%(FullPath)')"/>
+        </ItemGroup>
+        <Message Text="CopyAssembliesToUnityProject $(ProjectName): @(_UnityAssembliesToCopy->Count()) assemblies" Importance="high"/>
         <Copy
-                SourceFiles="@(ProjectAssembliesForUnityProject)"
-                DestinationFolder="..\NebulaeUnity\Assets\Assemblies\"/>
+                SourceFiles="@(_UnityAssembliesToCopy)"
+                DestinationFolder="..\NebulaeUnity\Assets\Assemblies\"
+                SkipUnchangedFiles="true"
+                Condition="'@(_UnityAssembliesToCopy)' != ''"/>
     </Target>
 
     <Target Name="CopyMetaFilesToUnityProject"

@@ -31,6 +31,11 @@ internal static class NativeEnemySimulation
         public object Context;
         public bool Ready;
         public long PreparedFrame;
+        // Unit id -> frame stamp. Prepare validates every condition SimulationId would check, so
+        // the native loops can answer "may this component run?" with one array read instead of a
+        // conditional-weak-table and dictionary walk per slot they scan. A stamp from an older
+        // frame simply does not match, which is exactly the fail-closed answer.
+        public long[] Simulatable = Array.Empty<long>();
     }
     private static readonly ConditionalWeakTable<object, WorldState> worlds = new();
     private static long frame;
@@ -40,7 +45,11 @@ internal static class NativeEnemySimulation
     private static WorldState StateFor(object world, EnemyData[] pool)
     {
         var state = worlds.GetValue(world, _ => new WorldState());
-        if (!ReferenceEquals(state.Pool, pool)) { state.Units.Clear(); state.Pool = pool; state.PreparedTick = -1; }
+        if (!ReferenceEquals(state.Pool, pool))
+        {
+            state.Units.Clear(); state.Pool = pool; state.PreparedTick = -1;
+            state.Simulatable = Array.Empty<long>();
+        }
         return state;
     }
 
@@ -167,7 +176,9 @@ internal static class NativeEnemySimulation
         IsLive(PoolKind.HiveSummary, AuthorityScope.Sector) && IsLive(PoolKind.SpaceCraft, AuthorityScope.Sector);
 
     public static bool CanRun(EnemyDFHiveSystem hive) => hive?.sector?.model?.gpuiManager != null &&
-        (hive.starData.id == GameMain.localStar?.id || UIGame.viewMode == EViewMode.Starmap) &&
+        (hive.starData.id == GameMain.localStar?.id ||
+            UIGame.viewMode == EViewMode.Starmap && hive.starData.id == GameMain.data?.starmapViewStar?.id) &&
+        IsLive(PoolKind.Hive, hive.hiveAstroId) &&
         (Prepared(hive.sector, out var state) ? state.Ready : SpaceReady());
 
     public static int SimulationId(ref EnemyUnitComponent unit)
@@ -175,20 +186,40 @@ internal static class NativeEnemySimulation
         if (!WorldSimulation.IsClient) return unit.id;
         object world = unit.planetId > 0 ? GameMain.galaxy?.PlanetById(unit.planetId)?.factory : GameMain.spaceSector;
         var pool = world is PlanetFactory factory ? factory.enemyPool : (world as SpaceSector)?.enemyPool;
-        if (world == null || pool == null || unit.enemyId <= 0 || unit.enemyId >= pool.Length ||
-            !worlds.TryGetValue(world, out var state) || !ReferenceEquals(state.Pool, pool) ||
+        if (world == null || pool == null || unit.enemyId <= 0 || unit.enemyId >= pool.Length) return 0;
+        // The ground loops re-read this decision for every pool slot they scan. Prepare already
+        // evaluated it for the current frame with the workers parked, so the answer is a stamp
+        // read; a frame that did not prepare, or another pool, keeps the full walk below.
+        if (world is PlanetFactory ground && worlds.TryGetValue(ground, out var prepared) &&
+            prepared.PreparedFrame == frame && prepared.PreparedTick == GameMain.gameTick &&
+            ReferenceEquals(prepared.Context, Multiplayer.Session?.AuthorityRuntime) &&
+            ReferenceEquals(prepared.Pool, pool))
+        {
+            var stamps = prepared.Simulatable;
+            return unit.id > 0 && unit.id < stamps.Length && stamps[unit.id] == frame ? unit.id : 0;
+        }
+        if (!worlds.TryGetValue(world, out var state) || !ReferenceEquals(state.Pool, pool) ||
             !state.Units.TryGetValue(unit.enemyId, out var entry) || GameMain.gameTick <= entry.Tick ||
             entry.PendingTargets || entry.UnitId != unit.id ||
             pool[unit.enemyId].id != unit.enemyId || pool[unit.enemyId].unitId != unit.id) return 0;
-        return world is PlanetFactory ground ? CanRun(ground) ? unit.id : 0 :
+        return world is PlanetFactory groundFactory ? CanRun(groundFactory) ? unit.id : 0 :
             CanRun(((SpaceSector)world).GetHiveByAstroId(pool[unit.enemyId].originAstroId)) ? unit.id : 0;
     }
 
     public static void Prepare(PlanetFactory factory)
     {
+        var started = AuthorityProfile.Begin();
+        try { PrepareGround(factory); }
+        finally { AuthorityProfile.End(AuthorityProfile.PrepareGround, started); }
+    }
+
+    private static void PrepareGround(PlanetFactory factory)
+    {
         if (factory == null || !worlds.TryGetValue(factory, out var state) || !ReferenceEquals(state.Pool, factory.enemyPool)) return;
         state.Context = Multiplayer.Session?.AuthorityRuntime; state.Ready = GroundReady(factory);
         state.PreparedTick = GameMain.gameTick; state.PreparedFrame = frame;
+        var units = factory.enemySystem?.units;
+        EnsureSimulatable(state, units?.buffer?.Length ?? 0);
         foreach (var pair in state.Units)
         {
             var id = pair.Key;
@@ -209,10 +240,32 @@ internal static class NativeEnemySimulation
             var position = factory.enemyPool[id].pos; var rotation = factory.enemyPool[id].rot;
             GroundEnemyReplicaPools.RefreshPhysics(factory, id, position != entry.Position, rotation != entry.Rotation);
             entry.Position = position; entry.Rotation = rotation;
+            // Everything SimulationId would re-check for this component, decided once here while
+            // the workers are parked. The stamp is scoped to this frame, so a stale stamp is the
+            // same refusal the per-call walk would have produced.
+            if (!entry.PendingTargets && GameMain.gameTick > entry.Tick && state.Ready &&
+                entry.UnitId > 0 && units != null && entry.UnitId < units.buffer.Length &&
+                units.buffer[entry.UnitId].id == entry.UnitId && units.buffer[entry.UnitId].enemyId == id &&
+                factory.enemyPool[id].unitId == entry.UnitId)
+                state.Simulatable[entry.UnitId] = frame;
         }
     }
 
+    private static void EnsureSimulatable(WorldState state, int capacity)
+    {
+        if (capacity <= 0 || state.Simulatable.Length >= capacity) return;
+        var size = state.Simulatable.Length == 0 ? Math.Max(64, capacity) : Math.Max(capacity, state.Simulatable.Length * 2);
+        Array.Resize(ref state.Simulatable, size);
+    }
+
     public static void Prepare(SpaceSector sector)
+    {
+        var started = AuthorityProfile.Begin();
+        try { PrepareSpace(sector); }
+        finally { AuthorityProfile.End(AuthorityProfile.PrepareSpace, started); }
+    }
+
+    private static void PrepareSpace(SpaceSector sector)
     {
         if (sector == null) return;
         var prepared = StateFor(sector, sector.enemyPool);

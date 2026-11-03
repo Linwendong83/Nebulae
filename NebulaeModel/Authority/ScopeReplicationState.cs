@@ -82,7 +82,7 @@ internal sealed class HostMemberRecord
 
     /// <summary>Last published canonical state, or null while none has been published.</summary>
     public byte[] State { get; set; }
-    public ReplicationInterest Interest { get; }
+    public ReplicationInterest Interest { get; set; }
 }
 
 /// <summary>Where one subscriber stands in a scope's stream.</summary>
@@ -93,6 +93,8 @@ internal sealed class SubscriberCursor
     // A filtered scope is digested against exactly the identities and revisions delivered here.
     public Dictionary<ObjectKey, HostMemberRecord> VisibleMembers;
     public int InterestStarId;
+    public int ViewedStarId;
+    public bool InterestChanged;
     public long RequestId;
 
     /// <summary>Last log position delivered to this subscriber.</summary>

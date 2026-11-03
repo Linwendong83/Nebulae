@@ -6,6 +6,20 @@ namespace NebulaePatcher.Patches.Authority;
 [HarmonyPatch]
 internal static class DarkFogPresentation_Patch
 {
+    [HarmonyPrefix, HarmonyPatch(typeof(EnemyDFHiveSystem), nameof(EnemyDFHiveSystem.isVisible), MethodType.Getter)]
+    public static bool HiveVisible(EnemyDFHiveSystem __instance, ref bool __result)
+    {
+        if (!Multiplayer.IsActive || Multiplayer.Session.IsServer) return true;
+        return !Multiplayer.Session.AuthorityRuntime.DarkFogReplica.HiveVisible.TryGetValue(__instance.hiveAstroId, out __result);
+    }
+
+    [HarmonyPrefix, HarmonyPatch(typeof(EnemyDFHiveSystem), nameof(EnemyDFHiveSystem.hasAnyStructureOrUnit), MethodType.Getter)]
+    public static bool HiveHasStructure(EnemyDFHiveSystem __instance, ref bool __result)
+    {
+        if (!Multiplayer.IsActive || Multiplayer.Session.IsServer) return true;
+        return !Multiplayer.Session.AuthorityRuntime.DarkFogReplica.HiveHasStructureOrUnit.TryGetValue(__instance.hiveAstroId, out __result);
+    }
+
     [HarmonyPrefix]
     [HarmonyPatch(typeof(DFGBaseComponent), nameof(DFGBaseComponent.totalAvailableBuildingCount), MethodType.Getter)]
     public static bool BaseBuildings(DFGBaseComponent __instance, ref int __result)

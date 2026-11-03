@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using NebulaeModel.Networking;
 using NebulaeModel.Packets;

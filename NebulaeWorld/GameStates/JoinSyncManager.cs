@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -22,6 +22,7 @@ internal sealed class JoinSyncManager : IDisposable
     private readonly Dictionary<INebulaeConnection, Action> completions = new();
     private JoinSyncView view;
     internal JoinDataTransfer DataTransfer { get; } = new();
+
     private bool worldDataReceived;
     internal Action CloseLoading { get; set; } = () => UIRoot.instance?.CloseLoadingUI();
     private JoinPacketPolicy policy;
@@ -88,7 +89,7 @@ internal sealed class JoinSyncManager : IDisposable
             {
                 var limit = Math.Min(JoinSyncBuffer.ConnectionLimit, buffer.Bytes + Math.Max(0, JoinSyncBuffer.ServerLimit - bufferedBytes));
                 var before = buffer.Bytes;
-                var accepted = buffer.Append(entry.Scope, entry.Data, limit);
+                var accepted = buffer.Append(entry.Scope, entry.Data, limit, entry.Key);
                 bufferedBytes += buffer.Bytes - before;
                 if (!accepted) break;
             }
@@ -337,7 +338,7 @@ internal sealed class JoinSyncManager : IDisposable
         {
             var runtime = Multiplayer.Session?.AuthorityRuntime;
             if (runtime?.WorldReplica == null || runtime.StandingScopes.Count == 0) return false;
-            return runtime.StandingScopes.All(scope => runtime.WorldReplica.Versions.TryGetScope(scope, out var state) &&
+            return Multiplayer.Session.Enemies?.HiveDetailsReady != false && runtime.StandingScopes.All(scope => runtime.WorldReplica.Versions.TryGetScope(scope, out var state) &&
                 state.Phase == SubscriptionPhase.Live);
         }
     }
@@ -373,7 +374,7 @@ internal sealed class JoinSyncManager : IDisposable
             HasReplicaAdapter, GameMain.localStar?.id ?? 0);
         // Running clients catch up by executing native frames. A manually paused world still
         // needs a safe apply window to finish its initial baseline conversation.
-        if (Multiplayer.Session.WorldPaused) runtime.ApplyPausedJoin(GameMain.gameTick);
+        if (Multiplayer.Session.WorldPaused || Multiplayer.Session.State.HostClockPaused) runtime.ApplyPausedJoin(GameMain.gameTick);
         if (!barrierAcknowledged)
         {
             if (!TryOpenInteraction(AuthorityReady, Multiplayer.Session.FactoryProducts.JoinReady,

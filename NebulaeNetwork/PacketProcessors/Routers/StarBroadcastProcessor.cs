@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using NebulaeModel.Logger;
 using NebulaeModel.Networking;
@@ -18,8 +18,10 @@ internal class StarBroadcastProcessor : PacketProcessor<StarBroadcastPacket>
         // Apply the children in order before forwarding the committed operation. Requeueing
         // them could let a later snapshot include the wrong side of this change.
         ForwardInnerPackets(envelope.PacketObjects, conn);
-        //Forward packet to other users if we're the host
-        if (IsHost && ((NebulaeModel.Networking.Serialization.NebulaeNetPacketProcessor)Multiplayer.Session.Network.PacketProcessor).DispatchDepth <= 1)
+        //Forward packet to other users if we're the host. A transport batch carries
+        //RealtimePacketBatch.UnroutableStarId: the host already applied it and nobody may receive it.
+        //Every other scope, including "no star" (-1), keeps the vanilla forwarding behaviour.
+        if (envelope.StarId != RealtimePacketBatch.UnroutableStarId && IsHost && ((NebulaeModel.Networking.Serialization.NebulaeNetPacketProcessor)Multiplayer.Session.Network.PacketProcessor).DispatchDepth <= 1)
             Multiplayer.Session.Server.SendToMatching(envelope, p =>
                 p.Data.LocalStarId == envelope.StarId &&
                 !p.Connection.Equals(conn)

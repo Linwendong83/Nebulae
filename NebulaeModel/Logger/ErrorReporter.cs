@@ -65,6 +65,7 @@ internal sealed class HttpReportTransport : IReportTransport
 /// <summary>Bounded capture on producer threads; all disk and network work runs on one worker.</summary>
 internal sealed class ErrorReporter : IDisposable
 {
+    private const string NativeAnimationWarning = "Non-Legacy animations cannot be sampled outside the Editor without an Animator. If you want to sample this clip outside the Editor, add an Animator Component to this GameObject";
     private sealed class Aggregate
     {
         public string Source, Role, Message, Stack;
@@ -141,6 +142,7 @@ internal sealed class ErrorReporter : IDisposable
             role ??= environment.Role;
             if (!enabled || disposed || unity && role is not ("host" or "client" or "dedicated")) return;
             message ??= ""; stack ??= "";
+            if (unity && string.Equals(message.Trim(), NativeAnimationWarning, StringComparison.Ordinal)) return;
             var truncated = message.Length > 16384 || stack.Length > 49152;
             message = ReportCodec.Clip(message, 16384);
             stack = ReportCodec.Clip(stack, 49152);

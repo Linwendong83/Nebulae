@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using NebulaeModel.Authority;
@@ -82,12 +82,6 @@ internal sealed class NativeDarkFogTurrets : IDisposable
         target.id = mirror.LocalComponentId;
         return target.id > 0;
     }
-    public bool CounterAttackFor(PlanetFactory factory, int playerId, int enemyId) =>
-        entries.TryGetValue((factory.planetId, enemyId), out var entry) && ReferenceEquals(entry.World, factory) &&
-        entry.CounterAttack && GameMain.gameTick - entry.Received <= 120 &&
-        entry.Builders[0].state >= 3 && enemyId > 0 && enemyId < factory.enemyCursor && factory.enemyPool[enemyId].id == enemyId &&
-        entry.Ground.state == EDFTurretState.Aiming && entry.Ground.target.type == ETargetType.Player && entry.Ground.target.id == playerId &&
-        GroundTurretCombat.TryPlayer(factory, playerId, out _);
     public bool TryGetGroundState(PlanetFactory factory, int enemyId, out DFGTurretComponent turret, out bool counterAttack)
     {
         turret = default; counterAttack = false;
@@ -96,6 +90,12 @@ internal sealed class NativeDarkFogTurrets : IDisposable
         counterAttack = CounterAttackFor(factory, turret.target.id, enemyId);
         return true;
     }
+    public bool CounterAttackFor(PlanetFactory factory, int playerId, int enemyId) =>
+        entries.TryGetValue((factory.planetId, enemyId), out var entry) && ReferenceEquals(entry.World, factory) &&
+        entry.CounterAttack && GameMain.gameTick - entry.Received <= 120 &&
+        entry.Builders[0].state >= 3 && enemyId > 0 && enemyId < factory.enemyCursor && factory.enemyPool[enemyId].id == enemyId &&
+        entry.Ground.state == EDFTurretState.Aiming && entry.Ground.target.type == ETargetType.Player && entry.Ground.target.id == playerId &&
+        GroundTurretCombat.TryPlayer(factory, playerId, out _);
     // A pose mirror alone does not own a shot: a tower can fire and lose its target before
     // the next state capture. Keep that host effect unless a matching native shot exists.
     public bool OwnsGroundEffect(BattleEffectData effect)

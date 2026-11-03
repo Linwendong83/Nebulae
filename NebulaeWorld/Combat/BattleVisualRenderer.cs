@@ -495,7 +495,11 @@ internal sealed class BattleVisualRenderer : IDisposable
                 missile.id = proxy.PoolId; missile.life += (int)age;
                 if (proxy.PreviousSample is GeneralMissile oldMissile) missile.uRot = Quaternion.Slerp(oldMissile.uRot, missile.uRot, alpha);
                 missile.uPos = BattleEffectMotion.UniversalPosition(BlendUniversal(proxy, missile.uPos, alpha), missile.uVel, age);
-                missile.vel = rotation * missile.uVel / 60f;
+                // Native TickSkillLogic leaves vel in universal units per second and only
+                // rotates it into the render frame; UpdateMechaMissileRenderingData copies
+                // that value unchanged into the missile instance. Dividing by 60 here made a
+                // replicated missile's velocity 60x smaller than the native one.
+                missile.vel = BattleEffectMotion.MissileVelocity(rotation, missile.uVel);
                 var missilePool = proxy.Kind == BattleEffectKind.MechaMissile ? visuals.mechaMissiles : visuals.turretMissiles;
                 missilePool.buffer[proxy.PoolId] = missile;
                 var trails = proxy.Kind == BattleEffectKind.MechaMissile ? visuals.mechaMissileTrails : visuals.turretMissileTrails;
@@ -603,7 +607,12 @@ internal sealed class BattleVisualRenderer : IDisposable
             case BattleEffectKind.MechaSpaceLaser: visuals.mechaSpaceLaserOneShots.Remove(effect.PoolId); break;
             case BattleEffectKind.MechaSpaceGauss: visuals.mechaSpaceGaussProjectiles.Remove(effect.PoolId); break;
             case BattleEffectKind.MechaPlasma: visuals.mechaPlasmas.Remove(effect.PoolId); break;
-            case BattleEffectKind.MechaMissile: visuals.mechaMissiles.Remove(effect.PoolId); break;
+            case BattleEffectKind.MechaMissile:
+                var mechaTrails = visuals.mechaMissileTrails;
+                if (mechaTrails.smokePool != null && (effect.PoolId + 1) * mechaTrails.trailStride <= mechaTrails.smokePool.Length)
+                    Array.Clear(mechaTrails.smokePool, effect.PoolId * mechaTrails.trailStride, mechaTrails.trailStride);
+                visuals.mechaMissiles.Remove(effect.PoolId);
+                break;
             case BattleEffectKind.MechaLocalCannon: visuals.mechaLocalCannonades.Remove(effect.PoolId); break;
             case BattleEffectKind.MechaSpaceCannon: visuals.mechaSpaceCannonades.Remove(effect.PoolId); break;
             case BattleEffectKind.MechaShieldBurst: visuals.mechaShieldBursts.Remove(effect.PoolId); break;

@@ -1,6 +1,7 @@
 ﻿#region
 
 using System;
+using System.Collections.Generic;
 using NebulaeModel.Contracts;
 using NebulaeModel.Networking;
 using NebulaeModel.Authority;
@@ -27,6 +28,13 @@ namespace NebulaeWorld;
 internal class MultiplayerSession : IDisposable
 {
     private bool canPause = true;
+
+    // A player that steps into space (planet 0) keeps the planet streams it holds until it
+    // unsubscribes. A scope that needs a fresh cursor after a lost baseline was refused for as long
+    // as the mecha stayed in space, so the last planet is remembered for a bounded window; a real
+    // planet change wins as soon as the new location arrives.
+    private const double PlanetMemorySeconds = 120;
+    private Dictionary<ushort, (int Planet, double At)> lastPlanets = new();
 
     public MultiplayerSession(INetworkProvider networkProvider)
     {
@@ -155,6 +163,7 @@ internal class MultiplayerSession : IDisposable
         get => canPause;
         set
         {
+            if (canPause != value) State?.ResetHostRate();
             canPause = value;
             SimulatedWorld.SetPauseIndicator(value);
         }
@@ -183,6 +192,7 @@ internal class MultiplayerSession : IDisposable
         {
             Network = null;
             JoinSync?.Dispose();
+            lastPlanets?.Clear();
         }
 
         LocalPlayer?.Dispose();
@@ -316,6 +326,18 @@ internal class MultiplayerSession : IDisposable
 
     public bool IsGameLoaded { get; set; }
 
+    /// <summary>Finishes building deaths an interrupted commit left half-applied.</summary>
+    private static void RepairFactories()
+    {
+        var data = GameMain.data;
+        if (data?.factories == null) return;
+        var count = Math.Min(data.factoryCount, data.factories.Length);
+        var repaired = 0;
+        for (var index = 0; index < count; index++)
+            if (data.factories[index] != null) repaired += FactoryRepair.RepairBattleBaseEntities(data.factories[index], "load");
+        Log.Debug($"[factory] battle-base repair scan factories={count} repaired={repaired}");
+    }
+
     public void OnGameLoadCompleted()
     {
         if (IsGameLoaded)
@@ -332,7 +354,11 @@ internal class MultiplayerSession : IDisposable
             Goals.PrepareHostProfile();
         }
         IsGameLoaded = true;
-        if (IsServer) Metadata.Initialize();
+        if (IsServer)
+        {
+            Metadata.Initialize();
+            RepairFactories();
+        }
 
         // A loaded host world gets its authority identity here, once, so every peer keys its
         // commands and objects to the same world. The client adopts the epoch from the host's
@@ -353,6 +379,7 @@ internal class MultiplayerSession : IDisposable
                 var crafts = new CraftSnapshotAdapter(epoch);
                 AuthorityRuntime.CraftHost = crafts;
                 var darkFog = new DarkFogSnapshotAdapter(epoch);
+                AuthorityRuntime.DarkFogHost = darkFog;
                 var ruins = new RuinSnapshotAdapter(epoch);
                 AuthorityRuntime.RuinHost = ruins;
                 Turrets.BeginHostWorld(epoch);
@@ -373,6 +400,8 @@ internal class MultiplayerSession : IDisposable
                 };
                 AuthorityRuntime.AfterHostFrame = tick =>
                 {
+                    State.ObserveHostTick(tick);
+                    Enemies.UpdateGlobalEnemyTargets();
                     CombatAuthority.CompleteFrame(tick);
                     FactoryProducts.TickHostFighterPorts(tick);
                     // Workers are parked here; projectile pools must not be sampled mid-tick.
@@ -382,7 +411,18 @@ internal class MultiplayerSession : IDisposable
                 AuthorityRuntime.SubscriptionPlanetProvider = playerId =>
                 {
                     var player = Server?.Players?.Get(playerId) ?? Server?.Players?.Get(playerId, EConnectionStatus.Syncing);
-                    return player == null ? (int?)null : System.Math.Max(0, player.Data.LocalPlanetId);
+                    if (player == null) return (int?)null;
+                    var planet = System.Math.Max(0, player.Data.LocalPlanetId);
+                    var now = Diagnostics.Now;
+                    lastPlanets ??= new Dictionary<ushort, (int Planet, double At)>();
+                    if (planet != 0)
+                    {
+                        lastPlanets[playerId] = (planet, now);
+                        return planet;
+                    }
+                    if (lastPlanets.TryGetValue(playerId, out var remembered) && now - remembered.At <= PlanetMemorySeconds)
+                        return remembered.Planet;
+                    return 0;
                 };
                 AuthorityRuntime.CommandResultSink = (command, disposition, outcome) =>
                 {
@@ -408,7 +448,7 @@ internal class MultiplayerSession : IDisposable
                     // then answer with that same cadence, because an override may only slow a member
                     // down. Duplicating the predicate instead of sharing it would let the two drift,
                     // and a drifted table would silently throttle turrets or ground enemies.
-                    bool EventDriven(ObjectKey key) => key.Kind is PoolKind.Turret or PoolKind.GroundEnemy or PoolKind.SpaceEnemy ||
+                    bool EventDriven(ObjectKey key) => key.Kind is PoolKind.Turret or PoolKind.GroundEnemy or PoolKind.SpaceEnemy or PoolKind.HiveSummary ||
                         key.Kind == PoolKind.GroundCraft && GameMain.galaxy.PlanetById(key.Scope)?.factory is { } craftFactory &&
                         key.NativeId < craftFactory.craftCursor && craftFactory.craftPool[key.NativeId].dynamic ||
                         key.Kind == PoolKind.SpaceCraft && GameMain.spaceSector is { } craftSector &&
@@ -421,6 +461,7 @@ internal class MultiplayerSession : IDisposable
                     AuthorityRuntime.HostReplicator.ColdStateIntervalTicks = 15;
                     AuthorityRuntime.HostReplicator.EngagementProvider = CombatAuthority.IsEngaged;
                     AuthorityRuntime.HostReplicator.MemberInterestFor = spaceEnemies.InterestFor;
+                    AuthorityRuntime.HostReplicator.SubscriberViewedStarProvider = Enemies.ViewedStarFor;
                     AuthorityRuntime.HostReplicator.SubscriberStarProvider = playerId =>
                     {
                         var player = Server?.Players?.Get(playerId) ?? Server?.Players?.Get(playerId, EConnectionStatus.Syncing);

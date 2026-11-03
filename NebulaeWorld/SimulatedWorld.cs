@@ -131,6 +131,9 @@ internal class SimulatedWorld : IDisposable
         NebulaeWorld.GameStates.LocalPlayerPreferences.RestoreDashboard();
         // The native startup Restore has finished and the session now has its final world ID.
         NebulaeWorld.GameStates.LocalPlayerPreferences.RestorePickFilters();
+        // Sandbox replicator switches are native world preferences on the host; a client keeps its
+        // own choice so rejoining the same world restores it instead of the handshake defaults.
+        NebulaeWorld.GameStates.LocalPlayerPreferences.RestoreSandboxReplicatorPreferences();
         Multiplayer.Session.Factories.InitializePrebuildRequests();
 
         if (player is { IsClient: true })
@@ -185,6 +188,9 @@ internal class SimulatedWorld : IDisposable
         // ChatManager should exist continuously until the game is closed
         GameMain.mainPlayer.gameObject.AddComponentIfMissing<ChatManager>();
         // The player list is part of ChatManager's canvas overlay.
+        // Remote players are also drawn on the space minimap in the bottom-left corner; the
+        // component lives on the player so it is created and destroyed with the session.
+        GameMain.mainPlayer.gameObject.AddComponentIfMissing<SpaceMinimapPlayerMarkers>();
     }
 
     public void PublishLocalMovement() => localPlayerMovement?.Publish();
@@ -391,6 +397,7 @@ internal class SimulatedWorld : IDisposable
     /// </summary>
     public void SetWorldPause(bool paused, long stepTick = 0)
     {
+        if (Multiplayer.Session.WorldPaused != paused) Multiplayer.Session.State?.OnWorldPauseChanged();
         Multiplayer.Session.WorldPaused = paused;
         Multiplayer.Session.WorldPauseStepTick = paused ? Math.Max(0, stepTick) : 0;
         GameMain.isFullscreenPaused = paused;
@@ -489,6 +496,10 @@ internal class SimulatedWorld : IDisposable
             var model = new RemotePlayerModel(playerData.PlayerId, playerData.Username);
             model.Movement.LocalStarId = playerData.LocalStarId;
             model.Movement.localPlanetId = playerData.LocalPlanetId;
+            // The roster entry carries the last accepted pose. Seed the body with it so a joining
+            // client never leaves remote meshes at the prefab origin while waiting for the next
+            // movement display (players in another star only ever send map positions).
+            if (playerData is NebulaeModel.DataStructures.PlayerData data) model.Movement.Initialize(data);
             remotePlayersModels.Add(playerData.PlayerId, model);
             Multiplayer.Session.Life.ApplyRemote(playerData.PlayerId, ((PlayerData)playerData).Life);
 
@@ -551,6 +562,7 @@ internal class SimulatedWorld : IDisposable
         // Make a copy of the "Icarus" text from the starmap
         var starmap_playerNameText = starmap.playerNameText;
         var starmap_playerTrack = starmap.playerTrack;
+        if (starmap_playerNameText == null || starmap_playerTrack == null) return;
 
         using (GetRemotePlayersModels(out var remotePlayersModels))
         {
@@ -578,51 +590,31 @@ internal class SimulatedWorld : IDisposable
                     starmapTracker.gameObject.SetActive(true);
                 }
 
-                // One lookup per player per frame serves both the position and the rotation below.
-                var localPlanetId = playerModel.Movement.localPlanetId;
-                var planet = localPlanetId > 0 ? GameMain.galaxy.PlanetById(localPlanetId) : null;
-
-                VectorLF3 adjustedVector;
-                if (localPlanetId > 0)
+                if (playerModel.Movement == null ||
+                    !playerModel.Movement.TryGetStarmapPose(out var universal, out var planetId, out var forward))
                 {
-                    // Get the position of the planet
-                    adjustedVector = planet.uPosition;
-
-                    // Add the local position of the player
-                    var localPlanetPosition = playerModel.Movement.GetLastPosition().LocalPlanetPosition.ToVector3();
-                    adjustedVector += (VectorLF3)Maths.QRotate(planet.runtimeRotation, localPlanetPosition);
-                }
-                else
-                {
-                    // Just use the raw uPos as we don't care too much about precise locations
-                    adjustedVector = playerModel.Movement.absolutePosition;
+                    HideStarmapMarker(nameText, starmapTracker);
+                    continue;
                 }
 
-                // Scale as required
-                adjustedVector = (adjustedVector - starmap.viewTargetUPos) * 0.00025;
+                // The map packet carries the player's true universal position. Reconstructing it
+                // from the planet plus a stale pose snapshot is what made distant markers jump.
+                var adjustedVector = (universal - starmap.viewTargetUPos) * 0.00025;
 
                 // Get the point on the screen that represents the world position
-                if (!starmap.WorldPointIntoScreen(adjustedVector, out var rectPoint))
+                if (starmap.screenCamera == null || !starmap.WorldPointIntoScreen(adjustedVector, out var rectPoint))
                 {
+                    HideStarmapMarker(nameText, starmapTracker);
                     continue;
                 }
 
                 // Put the marker directly on the location of the player
+                starmapTracker.gameObject.SetActive(true);
                 starmapTracker.position = adjustedVector;
-
-                if (localPlanetId > 0)
-                {
-                    var rotation = planet.runtimeRotation *
-                                   Quaternion.LookRotation(playerModel.PlayerModelTransform.forward,
-                                       playerModel.Movement.GetLastPosition().LocalPlanetPosition.ToVector3());
-                    starmapTracker.rotation = rotation;
-                }
-                else
-                {
-                    var rotation = Quaternion.LookRotation(playerModel.PlayerModelTransform.forward,
-                        playerModel.PlayerTransform.localPosition);
-                    starmapTracker.rotation = rotation;
-                }
+                var rotation = Quaternion.LookRotation(forward, Vector3.up);
+                var planet = planetId > 0 && GameMain.galaxy != null ? GameMain.galaxy.PlanetById(planetId) : null;
+                if (planet != null) rotation = planet.runtimeRotation * rotation;
+                starmapTracker.rotation = rotation;
 
                 starmapTracker.localScale = UIStarmap.isChangingToMilkyWay
                     ? Vector3.zero
@@ -640,6 +632,12 @@ internal class SimulatedWorld : IDisposable
         }
     }
 
+    private static void HideStarmapMarker(Text nameText, Transform starmapTracker)
+    {
+        if (nameText != null && nameText.gameObject.activeSelf) nameText.gameObject.SetActive(false);
+        if (starmapTracker != null && starmapTracker.gameObject.activeSelf) starmapTracker.gameObject.SetActive(false);
+    }
+
     public void ClearPlayerNameTagsOnStarmap()
     {
         using (GetRemotePlayersModels(out var remotePlayersModels))
@@ -647,8 +645,8 @@ internal class SimulatedWorld : IDisposable
             foreach (var player in remotePlayersModels)
             {
                 // Destroy the marker and name so they don't linger and cause problems
-                Object.Destroy(player.Value.StarmapNameText.gameObject);
-                Object.Destroy(player.Value.StarmapTracker.gameObject);
+                if (player.Value.StarmapNameText != null) Object.Destroy(player.Value.StarmapNameText.gameObject);
+                if (player.Value.StarmapTracker != null) Object.Destroy(player.Value.StarmapTracker.gameObject);
 
                 // Null them out so they can be recreated next time the map is opened
                 player.Value.StarmapNameText = null;

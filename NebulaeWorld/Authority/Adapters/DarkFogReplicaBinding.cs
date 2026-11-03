@@ -25,20 +25,33 @@ internal sealed class DarkFogReplicaBinding : IReplicaMirrorObserver, IReplicaBa
         return identity;
     }
     public readonly Dictionary<int, bool> HiveAlive = new();
+    public readonly Dictionary<int, bool> HiveVisible = new(), HiveHasStructureOrUnit = new();
+    public readonly Dictionary<int, int> HiveRoots = new();
     public readonly Dictionary<int, int> HiveBuildings = new();
     public readonly Dictionary<int, int> HiveUnits = new();
     public readonly Dictionary<(int Planet, int Base), int> BaseBuildings = new();
     public readonly Dictionary<(int Planet, int Base), int> BaseUnits = new();
     public readonly Dictionary<(int Planet, int Base), bool> BaseAlive = new();
     public readonly Dictionary<(int Planet, int Base), byte> BaseRemovalFlags = new();
-    public bool IsReadyForBaseline(ScopeKey scope) => scope.Kind == PoolKind.HiveSummary
+    public bool IsReadyForBaseline(ScopeKey scope) => scope.Kind == PoolKind.Hive
+        ? GameMain.spaceSector?.GetHiveByAstroId(scope.Scope) != null
+        : scope.Kind == PoolKind.HiveSummary
         ? GameMain.spaceSector?.dfHivesByAstro != null
         : scope.Kind != PoolKind.Base || GameMain.galaxy?.PlanetById(scope.Scope)?.factory?.planet.factoryLoaded == true;
 
     public void OnStateApplied(ScopeKey scope, in ObjectKey key, long revision, byte[] state)
     {
-        if (scope.Kind != PoolKind.HiveSummary && scope.Kind != PoolKind.Base) return;
+        if (scope.Kind != PoolKind.HiveSummary && scope.Kind != PoolKind.Base && scope.Kind != PoolKind.Hive) return;
         if (!Multiplayer.Session.AuthorityRuntime.ApplyContext.IsActiveOnCurrentThread) throw new InvalidOperationException("Dark fog state outside replica apply.");
+        if (scope.Kind == PoolKind.Hive)
+        {
+            var hive = GameMain.spaceSector.GetHiveByAstroId(scope.Scope);
+            using var input = new MemoryStream(state, false);
+            using var formationReader = new BinaryReader(input);
+            for (var form = 0; form < 3; form++) InstallFormation(hive.forms[form], HiveFormationStateCodec.Read(formationReader, form));
+            if (input.Position != input.Length) throw new InvalidDataException("Trailing formation details.");
+            return;
+        }
         if (scope.Kind == PoolKind.Base)
         {
             ApplyBase(scope.Scope, key.NativeId, GroundBaseStateCodec.Decode(state));
@@ -74,14 +87,15 @@ internal sealed class DarkFogReplicaBinding : IReplicaMirrorObserver, IReplicaBa
                 AppendHive(sector, hive);
             }
             PrepareHivePresentation(hive, realized);
-            hive.isEmpty = empty; hive.rootEnemyId = root;
+            hive.isEmpty = empty; hive.rootEnemyId = root; HiveRoots[hive.hiveAstroId] = root;
             var hostOrbit = hive.hiveAstroOrbit;
             hostOrbit.orbitRadius = reader.ReadSingle(); hostOrbit.orbitInclination = reader.ReadSingle(); hostOrbit.orbitLongitude = reader.ReadSingle();
             hostOrbit.orbitalPeriod = reader.ReadDouble(); hostOrbit.orbitPhase = reader.ReadSingle();
             hostOrbit.orbitRotation = new Quaternion(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
             hostOrbit.orbitNormal = new VectorLF3(reader.ReadDouble(), reader.ReadDouble(), reader.ReadDouble());
             hive.orbitRadius = reader.ReadDouble();
-            for (var form = 0; form < 3; form++) InstallFormation(hive.forms[form], HiveFormationStateCodec.Read(reader, form));
+            HiveVisible[hive.hiveAstroId] = reader.ReadBoolean();
+            HiveHasStructureOrUnit[hive.hiveAstroId] = reader.ReadBoolean();
             if (hostOrbit.orbitalPeriod <= 0 || double.IsNaN(hostOrbit.orbitalPeriod) || double.IsInfinity(hostOrbit.orbitalPeriod))
                 throw new InvalidDataException("Invalid hive orbital period.");
             hostOrbit.PredictPose(GameMain.gameTick, hive.starData.uPosition, ref sector.astros[key.NativeId]);
@@ -138,7 +152,11 @@ internal sealed class DarkFogReplicaBinding : IReplicaMirrorObserver, IReplicaBa
 
     private void ApplyBase(int planet, int id, GroundBaseState state)
     {
-        var factory = GameMain.galaxy.PlanetById(planet).factory;
+        // A Base scope can outlive the player's stay on its planet. The replica must drop the
+        // update instead of dereferencing an unloaded factory; the next baseline re-applies it.
+        var planetData = GameMain.galaxy?.PlanetById(planet);
+        var factory = planetData?.factory;
+        if (planetData?.factoryLoaded != true || factory?.enemySystem == null) return;
         using var evolutionStream = new MemoryStream(state.Evolution, false);
         using var reader = new BinaryReader(evolutionStream);
         var evolve = new EvolveData(); evolve.Import(reader);
@@ -180,7 +198,13 @@ internal sealed class DarkFogReplicaBinding : IReplicaMirrorObserver, IReplicaBa
 
     public void OnBaselineInstalled(ScopeKey scope, IReadOnlyList<SnapshotMemberRecord> members)
     {
-        if (scope.Kind != PoolKind.HiveSummary && scope.Kind != PoolKind.Base) return;
+        if (scope.Kind != PoolKind.HiveSummary && scope.Kind != PoolKind.Base && scope.Kind != PoolKind.Hive) return;
+        AuthorityProfile.BaselineInstalled();
+        if (scope.Kind == PoolKind.Hive)
+        {
+            foreach (var member in members) OnStateApplied(scope, member.Key, member.Revision, member.State);
+            return;
+        }
         var keep = new HashSet<int>();
         foreach (var member in members) keep.Add(member.Key.NativeId);
         if (scope.Kind == PoolKind.Base)
@@ -199,13 +223,27 @@ internal sealed class DarkFogReplicaBinding : IReplicaMirrorObserver, IReplicaBa
         }
         else
             foreach (var id in new List<int>(HiveAlive.Keys))
-                if (!keep.Contains(id - 1000000)) HiveAlive[id] = false;
+                if (!keep.Contains(id - 1000000))
+                {
+                    HiveAlive[id] = HiveVisible[id] = HiveHasStructureOrUnit[id] = false;
+                    HiveRoots[id] = 0;
+                }
         foreach (var member in members) OnStateApplied(scope, member.Key, member.Revision, member.State);
     }
 
     public void OnMemberRemoved(ScopeKey scope, in ObjectKey key)
     {
-        if (scope.Kind == PoolKind.HiveSummary) HiveAlive[1000000 + key.NativeId] = false;
+        if (scope.Kind == PoolKind.Hive)
+        {
+            var hive = GameMain.spaceSector?.GetHiveByAstroId(scope.Scope);
+            if (hive != null) for (var form = 0; form < 3; form++) hive.forms[form].Clear();
+        }
+        else if (scope.Kind == PoolKind.HiveSummary)
+        {
+            HiveAlive[1000000 + key.NativeId] = false;
+            HiveRoots[1000000 + key.NativeId] = 0;
+            HiveVisible[1000000 + key.NativeId] = HiveHasStructureOrUnit[1000000 + key.NativeId] = false;
+        }
         else if (scope.Kind == PoolKind.Base)
         {
             var identity = (scope.Scope, key.NativeId);
@@ -224,6 +262,13 @@ internal sealed class DarkFogReplicaBinding : IReplicaMirrorObserver, IReplicaBa
     }
 
     public void FlushSearchReferences()
+    {
+        var started = AuthorityProfile.Begin();
+        try { FlushSearchReferencesCore(); }
+        finally { AuthorityProfile.End(AuthorityProfile.Search, started); }
+    }
+
+    private void FlushSearchReferencesCore()
     {
         var replica = Multiplayer.Session.AuthorityRuntime.WorldReplica;
         foreach (var pair in baseSearch)

@@ -182,6 +182,10 @@ internal sealed class GroundCraftReplicaPools : ILocalCraftPools
         craftId = localId;
         if (factory == null || craftId <= 0 || craftId >= factory.craftPool.Length) return;
         if (factory.craftPool[craftId].id != craftId) return;
+        // A battle-base fleet also owns a module key that native rules clear when they remove the
+        // fleet themselves. The pure removal path below is not that rule, so the derived key has to
+        // be dropped here — with the craft still live, which is how its owner is resolved.
+        NativeCraftSimulation.UnlinkBaseFleet(factory, craftId);
         NativeCraftSimulation.Remove(factory, craftId);
         factory.RemoveCraftWithComponents(craftId);
     }

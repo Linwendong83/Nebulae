@@ -63,7 +63,50 @@ internal class GameStatesManager : IDisposable
     }
 
     public static long RealGameTick => GameMain.gameTick;
-    public static float RealUPS => (float)FPSController.currentUPS;
+    public static bool HostWorldPaused => Multiplayer.Session?.WorldPaused == true ||
+        Multiplayer.Session?.CanPause == true && (GameMain.isPaused || GameMain.isFullscreenPaused);
+    public static long HostPauseLimit => Math.Max(GameMain.gameTick, Multiplayer.Session?.WorldPauseStepTick ?? 0);
+    public static float RealUPS => HostWorldPaused ? 0 : Multiplayer.Session?.State?.MeasuredHostUPS ?? (float)FPSController.currentUPS;
+    private double hostRateTime = -1;
+    private long hostRateTick;
+    private float measuredHostUps;
+    private float MeasuredHostUPS => measuredHostUps > 0 ? measuredHostUps : (float)FPSController.currentUPS;
+    public void ResetHostRate() { hostRateTime = -1; measuredHostUps = 0; }
+    public void SuspendHostRate() => hostRateTime = -1;
+    public void OnWorldPauseChanged()
+    {
+        SuspendHostRate();
+        phaseRecoveryUntil = ClockNow + ClockCorrectionLeaseSeconds;
+        if (!hasClockSample || !clockCorrectionActive) return;
+        clockCorrectionActive = false;
+        var speed = Multiplayer.Session?.WorldSimSpeed ?? lastClockSpeed;
+        if (speed < 0.1f || speed > 8f || float.IsNaN(speed)) speed = lastClockSpeed;
+        var factor = IsSimulateSpeedActive(speed) ? speed : 1f;
+        FPSController.SetFixUPS(ComputeFixUPS(0, serverUPS, factor));
+    }
+    public void ObserveHostTick(long tick)
+    {
+        var now = ClockNow;
+        if (HostWorldPaused) { hostRateTime = -1; return; }
+        if (hostRateTime < 0 || tick < hostRateTick)
+        {
+            // Retain the last running rate through a pause until a new running interval
+            // is measured. FPSController's rolling rate still includes the save stall.
+            if (tick < hostRateTick) measuredHostUps = 0;
+            hostRateTime = now; hostRateTick = tick; return;
+        }
+        var elapsed = now - hostRateTime;
+        if (elapsed < 1) return;
+        measuredHostUps = (float)Math.Max(0, (tick - hostRateTick) / elapsed);
+        hostRateTime = now; hostRateTick = tick;
+    }
+    private bool hostClockPaused;
+    private long hostClockLimit;
+    public bool HostClockPaused => hostClockPaused;
+    public bool CanAdvanceHostClock => !hostClockPaused || GameMain.gameTick < hostClockLimit;
+    public void InstallHostClockState(bool paused, long limit)
+    { hostClockPaused = paused; hostClockLimit = Math.Max(0, limit); }
+
     public static long LastSaveTime { get; set; } // UnixTimeSeconds
     public static int FragmentSize { get; set; }
 
@@ -73,6 +116,7 @@ internal class GameStatesManager : IDisposable
     private long lastClockTick;
     private long lastClockRequestTime;
     private double lastClockCorrectionTime;
+    private double phaseRecoveryUntil;
     private bool clockCorrectionActive;
     private float lastClockSpeed = 1f;
     internal const double ClockCorrectionLeaseSeconds = 3;
@@ -93,6 +137,8 @@ internal class GameStatesManager : IDisposable
     private int birthPlanetId;
     private EGoalLevel goalLevel;
     private long initialSimulationTick = -1;
+    private bool initialClockPaused;
+    private long initialPauseLimit;
 
     public void ApplyBirthData(GameData data)
     {
@@ -110,6 +156,7 @@ internal class GameStatesManager : IDisposable
     public void Dispose()
     {
         hasClockSample = clockCorrectionActive = false;
+        phaseRecoveryUntil = 0;
         preservedFeatureKeys.Clear();
         preservedTutorialUnlocked.Clear();
 
@@ -130,22 +177,26 @@ internal class GameStatesManager : IDisposable
     }
 
     public void ProcessGameStateUpdatePacket(long sentTime, long gameTick, float unitsPerSecond, float simSpeed,
-        double queuedSeconds = 0)
+        double queuedSeconds = 0, bool paused = false, long pauseLimit = 0)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        if (sentTime <= 0 || sentTime > now || gameTick < 0 || unitsPerSecond <= 0 ||
+        if (sentTime <= 0 || sentTime > now || gameTick < 0 || unitsPerSecond < 0 || unitsPerSecond == 0 && !paused ||
             float.IsNaN(unitsPerSecond) || float.IsInfinity(unitsPerSecond) ||
             float.IsNaN(simSpeed) || float.IsInfinity(simSpeed) || simSpeed < 0.1f || simSpeed > 8f) return;
         // A delayed duplicate cannot replace a newer host observation or renew its correction.
         if (hasClockSample && (gameTick < lastClockTick ||
             gameTick == lastClockTick && sentTime <= lastClockRequestTime)) return;
         var rttSeconds = (now - sentTime) / 1000d;
+        // Requests accumulated during a save can all observe the same host tick.
+        // A shorter RTT for that same observation is not new evidence for a stronger brake.
+        var freshTick = !hasClockSample || gameTick > lastClockTick;
         hasClockSample = true;
         lastClockTick = gameTick;
         lastClockRequestTime = sentTime;
         // A real host slowdown must take effect now. Rejecting it as a rate outlier lets the
         // client run ahead for several seconds and then crawl while the host catches up.
-        serverUPS = unitsPerSecond;
+        serverUPS = paused ? Math.Max(MinUPS, serverUPS) : Math.Max(MinUPS, unitsPerSecond);
+        InstallHostClockState(paused, paused ? Math.Max(gameTick, pauseLimit) : 0);
         lastClockSpeed = simSpeed;
 
         // The host reports the world sim speed it dialed in with the outer-space UIUPSTool.
@@ -155,7 +206,7 @@ internal class GameStatesManager : IDisposable
         ApplyWorldSimSpeed(simSpeed);
         var factor = IsSimulateSpeedActive(simSpeed) ? simSpeed : 1f;
         var diff = 0d;
-        if (rttSeconds <= ClockCorrectionLeaseSeconds)
+        if (!paused && freshTick && rttSeconds <= ClockCorrectionLeaseSeconds)
         {
             // The host sampled after our request and before this reply reached the receive
             // queue. Only the local queue age is known; RTT/2 is not a measured one-way delay.
@@ -170,6 +221,11 @@ internal class GameStatesManager : IDisposable
         }
         // Old replies can still report the host's rate, but cannot justify a large phase
         // correction. Advance through native steps; never skip or rewind the simulation clock.
+        // Pause delivery can leave a few pre-existing ticks of lead. Ease that phase debt
+        // out on resume rather than turning it into another near-stop. The reported rate
+        // itself is never filtered: a genuinely slow host is followed immediately.
+        if (ClockNow < phaseRecoveryUntil)
+            diff = Math.Max(-serverUPS * 0.25, Math.Min(serverUPS * 0.25, diff));
         var fixUps = ComputeFixUPS((float)diff, serverUPS, factor);
         clockCorrectionActive = fixUps != ComputeFixUPS(0, serverUPS, factor);
         lastClockCorrectionTime = ClockNow;
@@ -247,6 +303,8 @@ internal class GameStatesManager : IDisposable
                     goalLevel = (EGoalLevel)br.ReadInt32();
                     Multiplayer.Session.Metadata.SourceClusterKey = br.ReadInt64();
                     initialSimulationTick = br.ReadInt64();
+                    initialClockPaused = br.ReadBoolean();
+                    initialPauseLimit = br.ReadInt64();
                 }
                 break;
             case GlobalGameDataResponse.EDataType.History:
@@ -506,6 +564,8 @@ internal class GameStatesManager : IDisposable
     {
         if (initialSimulationTick < 0) return;
         hasClockSample = clockCorrectionActive = false;
+        phaseRecoveryUntil = 0;
+        InstallHostClockState(initialClockPaused, initialPauseLimit);
         GameMain.gameTick = initialSimulationTick;
         initialSimulationTick = -1;
         // New clients generate orbital poses at t=0. Pose and clock must agree before

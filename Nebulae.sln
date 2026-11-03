@@ -23,6 +23,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "websocket-sharp", "dep\webs
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NebulaeNetwork", "NebulaeNetwork\NebulaeNetwork.csproj", "{36A3D8AE-2A0A-4A1F-8A65-4FB61B01F779}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NebulaeTests", "NebulaeTests\NebulaeTests.csproj", "{9390C159-75BA-4DEA-817F-971BA6C0C881}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -49,6 +51,10 @@ Global
 		{36A3D8AE-2A0A-4A1F-8A65-4FB61B01F779}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{36A3D8AE-2A0A-4A1F-8A65-4FB61B01F779}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{36A3D8AE-2A0A-4A1F-8A65-4FB61B01F779}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9390C159-75BA-4DEA-817F-971BA6C0C881}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9390C159-75BA-4DEA-817F-971BA6C0C881}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9390C159-75BA-4DEA-817F-971BA6C0C881}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9390C159-75BA-4DEA-817F-971BA6C0C881}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -273,16 +273,28 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
         return actor;
     }
 
-    public bool ValidateCheckpoint(ushort id, long commandAck, double debitAck, int[] itemAcks, int[] debitAcks)
+    public bool ValidateCheckpoint(ushort id, long commandAck, double debitAck, int[] itemAcks, int[] debitAcks) =>
+        ValidateCheckpoint(id, commandAck, debitAck, itemAcks, debitAcks, out _);
+
+    /// <summary>
+    ///     Validates a checkpoint and normalizes a stale command watermark. A client whose host actor
+    ///     was recreated can hold a higher sequence than the server's new actor; refusing that
+    ///     checkpoint forever deadlocks the client's exit path. Acknowledging no more than the server
+    ///     actually issued is safe, while the separate debit and inventory ledgers still apply.
+    /// </summary>
+    public bool ValidateCheckpoint(ushort id, long commandAck, double debitAck, int[] itemAcks, int[] debitAcks,
+        out long acceptedCommandAck)
     {
+        acceptedCommandAck = commandAck;
         if (!actors.TryGetValue(id, out var actor)) return true;
+        if (commandAck < 0) return false;
+        if (commandAck > actor.LastCommand) acceptedCommandAck = actor.LastCommand;
         bool Refuse(string reason, int item = 0, int acknowledged = 0, int total = 0)
         {
             Diagnostics.Warn("combat:checkpoint:" + id + ":" + reason, () =>
                 $"[combat] checkpoint ledger refused player={id} reason={reason} command={commandAck}/{actor.LastCommand} core={debitAck}/{actor.CoreDebit} item={item} debit={acknowledged}/{total}");
             return false;
         }
-        if (commandAck < 0 || commandAck > actor.LastCommand) return Refuse("command-watermark");
         if (double.IsNaN(debitAck) || double.IsInfinity(debitAck) || debitAck < 0 || debitAck > actor.CoreDebit) return Refuse("core-watermark");
         if (itemAcks == null || debitAcks == null || itemAcks.Length != debitAcks.Length || itemAcks.Length > 512) return Refuse("item-layout");
         var seen = new HashSet<int>();
@@ -413,13 +425,24 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
             var current = session.Server.Players.Get(checkpoint.Data.PlayerId);
             var valid = current != null && ReferenceEquals(current.Data, checkpoint.Data) &&
                 session.AuthorityRuntime.ConnectionEpochFor(checkpoint.Data.PlayerId).Equals(checkpoint.Connection);
+            // Every queued checkpoint has to answer its sender, including the ones dropped before
+            // validation. A receipt the client never gets leaves its ticket pending forever, and a
+            // client that is quitting then never finishes its exit.
+            var answered = false;
+            void Finish(CheckpointReceiptStatus status, CheckpointRejectReason reason)
+            {
+                if (answered) return;
+                answered = true;
+                try { checkpoint.Finish?.Invoke(status, reason); }
+                catch (Exception error) { NebulaeModel.Logger.Log.Warn("[authority] personal checkpoint receipt failed: " + error); }
+            }
             try
             {
-                if (!valid) continue;
+                if (!valid) { Finish(CheckpointReceiptStatus.Retry, CheckpointRejectReason.Busy); continue; }
                 if (actors.TryGetValue(checkpoint.Data.PlayerId, out var unavailable) &&
                     (unavailable.DetachedFight != null || unavailable.Connection != checkpoint.Connection))
                 {
-                    checkpoint.Finish?.Invoke(CheckpointReceiptStatus.Retry, CheckpointRejectReason.Busy);
+                    Finish(CheckpointReceiptStatus.Retry, CheckpointRejectReason.Busy);
                     continue;
                 }
                 var status = PlayerLifeManager.StoreServerResult(checkpoint.Data, checkpoint.Snapshot, out var reason,
@@ -427,9 +450,13 @@ internal sealed class CombatAuthorityManager : IHostCommandExecutor, IHostTickAw
                     checkpoint.CombatRevision, checkpoint.InventoryTransferSequence);
                 if (status == CheckpointReceiptStatus.Retry && actors.TryGetValue(checkpoint.Data.PlayerId, out var staleActor))
                     staleActor.LastPublishedCombat = null;
-                checkpoint.Finish?.Invoke(status, reason);
+                Finish(status, reason);
             }
-            catch (Exception error) { NebulaeModel.Logger.Log.Warn("[authority] personal checkpoint failed: " + error); }
+            catch (Exception error)
+            {
+                NebulaeModel.Logger.Log.Warn("[authority] personal checkpoint failed: " + error);
+                Finish(CheckpointReceiptStatus.Retry, CheckpointRejectReason.Busy);
+            }
         }
     }
 

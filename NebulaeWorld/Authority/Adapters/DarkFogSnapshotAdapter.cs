@@ -7,9 +7,19 @@ using NebulaeModel.Packets.Authority;
 namespace NebulaeWorld.Authority.Adapters;
 
 /// <summary>Small UI facts independent of instantiated enemies and local preview lifetimes.</summary>
-internal sealed class DarkFogSnapshotAdapter : IHostWorldView
+internal sealed class DarkFogSnapshotAdapter : IHostWorldView, IHostIncrementalWorldView
 {
     private readonly AuthorityEpoch epoch;
+    private readonly ReplicationCandidateIndex hiveCandidates = new(60);
+    private bool directoryDirty = true;
+    private readonly Dictionary<ObjectKey, byte[]> publishedFormations = new();
+    public void InvalidateDirectory() => directoryDirty = true;
+    public bool TryReadChanges(ScopeKey scope, long tick, List<ObjectKey> changed, List<ObjectKey> removed) =>
+        scope.Kind == PoolKind.HiveSummary && !directoryDirty && GameMain.spaceSector?.dfHivesByAstro is { } hives &&
+        hiveCandidates.Read(hives, hiveCandidates.Count, tick, changed, removed);
+    public void StateSampled(in ObjectKey key)
+    { if (key.Kind == PoolKind.HiveSummary) hiveCandidates.Sampled(key); }
+
     private readonly Dictionary<ScopeKey, SlotGenerationTracker> trackers = new();
     private readonly Dictionary<ObjectKey, byte[]> publishedHives = new();
     private readonly Dictionary<ObjectKey, HiveFormationExportCache> formationExports = new();
@@ -28,6 +38,12 @@ internal sealed class DarkFogSnapshotAdapter : IHostWorldView
 
     public bool TryReadMembers(ScopeKey scope, List<ObjectKey> members)
     {
+        if (scope.Kind == PoolKind.Hive)
+        {
+            if (GameMain.spaceSector?.GetHiveByAstroId(scope.Scope) == null) return false;
+            members.Add(ObjectKey.Create(epoch, PoolKind.Hive, scope.Scope, 1, 1));
+            return true;
+        }
         if (scope.Kind != PoolKind.HiveSummary && scope.Kind != PoolKind.Base) return false;
         if (!trackers.TryGetValue(scope, out var tracker)) trackers[scope] = tracker = new SlotGenerationTracker();
         if (scope.Kind == PoolKind.HiveSummary)
@@ -47,6 +63,11 @@ internal sealed class DarkFogSnapshotAdapter : IHostWorldView
                 if (bases.buffer[id]?.id == id) members.Add(ObjectKey.Create(epoch, scope.Kind, scope.Scope, id, tracker.ObserveOccupied(id)));
         }
         tracker.EndScan();
+        if (scope.Kind == PoolKind.HiveSummary)
+        {
+            hiveCandidates.Rebuild(GameMain.spaceSector.dfHivesByAstro, GameMain.gameTick, members);
+            directoryDirty = false;
+        }
         // A record whose identity moved on is no longer described by this scope: drop it so a later
         // sample of the same slot starts from a fresh reading rather than reusing a stale one.
         retired.Clear();
@@ -66,6 +87,7 @@ internal sealed class DarkFogSnapshotAdapter : IHostWorldView
     {
         state = null;
         if (!key.Epoch.Equals(epoch)) return false;
+        if (key.Kind == PoolKind.Hive) return TryReadFormationState(key, out state);
         if (!trackers.TryGetValue(new ScopeKey(key.Kind, key.Scope), out var tracker) || tracker.GenerationOf(key.NativeId) != key.Generation) return false;
         if (key.Kind == PoolKind.HiveSummary) return TryReadHiveState(key, out state);
         if (key.Kind == PoolKind.Base) return TryReadBaseState(key, out state);
@@ -96,8 +118,7 @@ internal sealed class DarkFogSnapshotAdapter : IHostWorldView
         writer.Write(orbit.orbitRotation.x); writer.Write(orbit.orbitRotation.y); writer.Write(orbit.orbitRotation.z); writer.Write(orbit.orbitRotation.w);
         writer.Write(orbit.orbitNormal.x); writer.Write(orbit.orbitNormal.y); writer.Write(orbit.orbitNormal.z);
         writer.Write(hive.orbitRadius);
-        if (!formationExports.TryGetValue(key, out var formations)) formationExports[key] = formations = new();
-        for (var form = 0; form < 3; form++) formations.Write(writer, form, hive.forms[form].units);
+        writer.Write(hive.isVisible); writer.Write(hive.hasAnyStructureOrUnit);
 
         var length = (int)stream.Position;
         var buffer = stream.GetBuffer();
@@ -112,6 +133,25 @@ internal sealed class DarkFogSnapshotAdapter : IHostWorldView
         state = new byte[length];
         Buffer.BlockCopy(buffer, 0, state, 0, length);
         publishedHives[key] = state;
+        return true;
+    }
+
+    private bool TryReadFormationState(ObjectKey key, out byte[] state)
+    {
+        state = null;
+        var hive = GameMain.spaceSector?.GetHiveByAstroId(key.Scope);
+        if (hive == null || key.NativeId != 1 || key.Generation != 1) return false;
+        var stream = hiveBuffer ??= new MemoryStream(512);
+        var writer = hiveWriter ??= new BinaryWriter(stream, System.Text.Encoding.UTF8, true);
+        stream.SetLength(0);
+        if (!formationExports.TryGetValue(key, out var formations)) formationExports[key] = formations = new();
+        for (var form = 0; form < 3; form++) formations.Write(writer, form, hive.forms[form].units);
+        var length = (int)stream.Position;
+        var buffer = stream.GetBuffer();
+        if (publishedFormations.TryGetValue(key, out var previous) && previous.Length == length && SameBytes(previous, buffer, length))
+        { state = previous; return true; }
+        state = new byte[length]; Buffer.BlockCopy(buffer, 0, state, 0, length);
+        publishedFormations[key] = state;
         return true;
     }
 

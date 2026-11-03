@@ -52,7 +52,16 @@ internal class AuthorityFrame_Patch
             // Now admit the messages that arrived while the previous frame ran. Both queues were
             // filled by the socket thread, which never touches the world itself.
             runtime.OnFrameBoundary(hostTick);
+        }
+        catch (Exception e)
+        {
+            // One broken scope must not cost every frame its boundary work, and must not print a
+            // popup per frame: a failing tick is a condition, not an event.
+            Diagnostics.Error("authority:frame-boundary", () => "[authority] frame boundary failed; the frame continues unchanged", e);
+        }
 
+        try
+        {
             // the standing subscription set follows where the client actually is. The context
             // is the client's own local view — the same observation the standing-set policy is
             // defined over — and a change of view is what issues the subscribe/unsubscribe delta.
@@ -78,7 +87,9 @@ internal class AuthorityFrame_Patch
         }
         catch (Exception e)
         {
-            Log.Error("[authority] frame boundary failed; the frame continues unchanged", e);
+            // Runs even when the boundary above failed: a stale standing set is how one broken
+            // scope turns into a resync request for every scope the client holds.
+            Diagnostics.Error("authority:standing-subscriptions", () => "[authority] standing subscription update failed; keeping the previous set", e);
         }
     }
 

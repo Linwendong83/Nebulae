@@ -70,7 +70,17 @@ internal sealed class GroundEnemyReplicaPools : IGroundEnemyPools
 
     public void CreateEnemyShell(int enemyId, in GroundEnemyState state)
     {
-        Multiplayer.Session?.AuthorityRuntime?.DarkFogReplica?.MarkSearchDirty(planetId);
+        var started = AuthorityProfile.Begin();
+        try { CreateEnemyShellCore(enemyId, state); }
+        finally { AuthorityProfile.End(AuthorityProfile.ShellCreate, started); }
+    }
+
+    private void CreateEnemyShellCore(int enemyId, in GroundEnemyState state)
+    {
+        // The builder index and the turret/base pairs describe static members only, so a dynamic
+        // unit entering the pool cannot change either. Invalidating them here would rebuild both
+        // for every unit spawn of a large battle, and the rebuilt result would be identical.
+        if (!state.IsDynamic) Multiplayer.Session?.AuthorityRuntime?.DarkFogReplica?.MarkSearchDirty(planetId);
         var factory = Factory;
         if (factory == null || enemyId <= 0) return;
         EnsureCapacity(factory, enemyId);
@@ -152,6 +162,13 @@ internal sealed class GroundEnemyReplicaPools : IGroundEnemyPools
     }
 
     public void WriteEnemyState(int enemyId, in GroundEnemyState state)
+    {
+        var started = AuthorityProfile.Begin();
+        try { WriteEnemyStateCore(enemyId, state); }
+        finally { AuthorityProfile.End(AuthorityProfile.PoolWrite, started); }
+    }
+
+    private void WriteEnemyStateCore(int enemyId, in GroundEnemyState state)
     {
         var factory = Factory;
         if (factory == null || enemyId <= 0 || enemyId >= factory.enemyPool.Length) return;
@@ -343,11 +360,21 @@ internal sealed class GroundEnemyReplicaPools : IGroundEnemyPools
     }
     public void RemoveEnemyShell(int enemyId)
     {
-        Multiplayer.Session?.AuthorityRuntime?.DarkFogReplica?.MarkSearchDirty(planetId);
+        var started = AuthorityProfile.Begin();
+        try { RemoveEnemyShellCore(enemyId); }
+        finally { AuthorityProfile.End(AuthorityProfile.ShellRemove, started); }
+    }
+
+    private void RemoveEnemyShellCore(int enemyId)
+    {
         presentationWrites.FlushOne(enemyId, writePose);
         var factory = Factory;
         if (factory == null || enemyId <= 0 || enemyId >= factory.enemyPool.Length) return;
         if (factory.enemyPool[enemyId].id != enemyId) return;
+        // Same rule as creation: only a static member changes the builder index or a turret pair.
+        // A dynamic unit that leaves (or a slot that is already empty) leaves both unchanged.
+        if (!factory.enemyPool[enemyId].dynamic)
+            Multiplayer.Session?.AuthorityRuntime?.DarkFogReplica?.MarkSearchDirty(planetId);
         Multiplayer.Session?.EnemyMotion?.Remove(factory, enemyId);
         NebulaeWorld.Combat.NativeEnemySimulation.Remove(factory, enemyId);
         var statId = factory.enemyPool[enemyId].combatStatId;

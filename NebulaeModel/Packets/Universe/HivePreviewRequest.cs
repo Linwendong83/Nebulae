@@ -7,4 +7,5 @@ internal sealed class HivePreviewRequest
 {
     // Zero closes this connection's previous star preview.
     [WireOrder(0)] public int StarId { get; set; }
+    [WireOrder(1)] public int TargetEnemyId { get; set; }
 }

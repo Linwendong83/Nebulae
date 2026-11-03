@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Reflection;
 
@@ -97,11 +97,6 @@ internal static class AuthorityRuleGuard
     /// <summary>The session state the guard is currently deciding against.</summary>
     public static AuthorityGuardSession CurrentSession() => probe?.Invoke() ?? AuthorityGuardSession.Inactive;
 
-    public static bool AllowHostRule()
-    {
-        var session = CurrentSession();
-        return !session.IsActive || session.IsHost || session.ReplicaApplyActive;
-    }
 
     /// <summary>Forgets the verification result. Used by tests and by leaving a room.</summary>
     public static void ResetVerification()
@@ -111,6 +106,11 @@ internal static class AuthorityRuleGuard
             loadVerified = false;
             loadFailure = null;
         }
+    }
+    public static bool AllowHostRule()
+    {
+        var session = CurrentSession();
+        return !session.IsActive || session.IsHost || session.ReplicaApplyActive;
     }
 
     /// <summary>
@@ -157,14 +157,6 @@ internal static class AuthorityRuleGuard
     /// therefore registers a verifier that reports which of its required transformations actually
     /// applied, and a failure there stops multiplayer just like a missing method does.
     /// </remarks>
-    public static void RegisterVerifier(Func<IReadOnlyList<string>> verifier)
-    {
-        if (verifier == null) throw new ArgumentNullException(nameof(verifier));
-        lock (gate)
-        {
-            if (!extraVerifiers.Contains(verifier)) extraVerifiers.Add(verifier);
-        }
-    }
 
     /// <summary>Forgets every registered verifier. Used by tests.</summary>
     public static void ClearVerifiers()
@@ -172,6 +164,14 @@ internal static class AuthorityRuleGuard
         lock (gate)
         {
             extraVerifiers.Clear();
+        }
+    }
+    public static void RegisterVerifier(Func<IReadOnlyList<string>> verifier)
+    {
+        if (verifier == null) throw new ArgumentNullException(nameof(verifier));
+        lock (gate)
+        {
+            if (!extraVerifiers.Contains(verifier)) extraVerifiers.Add(verifier);
         }
     }
 

@@ -60,10 +60,15 @@ internal static class SaveManager
     private static bool pendingLoadSaveFile;
     private static bool hasPendingLoad;
     private static bool serverDataLoadFailed;
+    private static bool serverDataLoaded;
     private static byte[] legacyAuthorityArchive;
     private static bool loadedServerIdentity;
 
-    public static bool CanSave => !serverDataLoadFailed;
+    // A dedicated server asks for its companion save before the world exists. While that request is
+    // pending, WorldId and playerSaves are still empty, so allowing a save here writes a companion
+    // with a fresh identity and no players. The next start then sees a world/companion identity
+    // mismatch and refuses to load. Only a completed load may enable saving.
+    public static bool CanSave => serverDataLoaded && !serverDataLoadFailed;
     public static IReadOnlyDictionary<string, IPlayerData> PlayerSaves => playerSaves;
 
     public static void SaveServerData(string saveName)
@@ -79,6 +84,7 @@ internal static class SaveManager
             Log.ErrorWithoutPopup($"[save] companion save failed after native save path={GameConfig.gameSaveFolder + saveName + FILE_EXTENSION} world={WorldId} revision={REVISION} stage={error.Data["Nebulae.FileStage"] ?? "capture-or-serialize"} source={error.Data["Nebulae.FileSource"]} target={error.Data["Nebulae.FileTarget"]} elapsed={Diagnostics.Now - started:F2}s", error);
             throw;
         }
+        finally { GameStates.SavePerformance.RecordCompanion(Diagnostics.Now - started); }
     }
 
     private static void SaveServerDataCore(string saveName)
@@ -152,6 +158,7 @@ internal static class SaveManager
             pendingLoadFileName = DSPGame.LoadFile;
             pendingLoadSaveFile = true;
             hasPendingLoad = true;
+            serverDataLoaded = false;
             return;
         }
 
@@ -173,6 +180,7 @@ internal static class SaveManager
     private static void LoadServerDataNow(bool loadSaveFile, string saveName)
     {
         serverDataLoadFailed = false;
+        serverDataLoaded = false;
         legacyAuthorityArchive = null;
         loadedServerIdentity = false;
         playerSaves.Clear();
@@ -180,6 +188,7 @@ internal static class SaveManager
 
         if (!loadSaveFile)
         {
+            serverDataLoaded = true;
             return;
         }
         var path = GameConfig.gameSaveFolder + saveName + FILE_EXTENSION;
@@ -189,6 +198,7 @@ internal static class SaveManager
             if (GameMain.data?.history?.featureValues.TryGetValue(-1708469024, out var marker) == true && marker == 0x4e42574c)
                 Diagnostics.Warn("save:missing-companion", () => $"[save] multiplayer world has no companion file path={path}; player records are unavailable");
             else Log.Debug($"[save] no companion file path={path}; initializing player records");
+            serverDataLoaded = true;
             return;
         }
 
@@ -241,6 +251,7 @@ internal static class SaveManager
                 }
             }
             legacyAuthorityArchive = ServerSaveAuthorityArchive.Read(netDataReader, WorldId);
+            serverDataLoaded = true;
         }
         catch (Exception e)
         {

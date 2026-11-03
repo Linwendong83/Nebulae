@@ -24,7 +24,7 @@ internal sealed class PlayerMovementRelay
         lastMapPositionAt = now;
         lastStarId = starId;
         lastPlanetId = display.LocalPlanetId;
-        network.SendToMatching(new PlayerMapPosition(display.PlayerId, display.LocalPlanetId, display.UPosition),
+        network.SendToMatching(new PlayerMapPosition(display.PlayerId, display.LocalPlanetId, display.UPosition, starId),
             p => p.Data.LocalStarId != starId && !p.Connection.Equals(exclude));
     }
 }

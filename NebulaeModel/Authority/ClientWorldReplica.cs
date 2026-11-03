@@ -220,8 +220,22 @@ internal sealed class ClientWorldReplica
         var scope = new ScopeKey(PoolKind.SpaceEnemy, AuthorityScope.Sector);
         Snapshots.Abandon(scope);
         pendingInstalls.Remove(scope);
+        pendingRetries.Remove(scope);
     }
     private readonly Dictionary<ScopeKey, FrozenScopeSnapshot> pendingInstalls = [];
+
+    /// <summary>How often one baseline install has been retried, and how long until the next try.</summary>
+    private sealed class PendingRetry
+    {
+        public long BaselineId;
+        public int Attempts;
+        public int SkipFrames;
+    }
+
+    private readonly Dictionary<ScopeKey, PendingRetry> pendingRetries = [];
+
+    /// <summary>An install that keeps failing is handed to recovery rather than retried forever.</summary>
+    private const int MaxBaselineInstallAttempts = 8;
     private readonly Dictionary<ObjectKey, ReplicaObjectMirror> mirrors = new();
     private readonly Dictionary<(PoolKind Kind, int Scope, int Slot), ObjectKey> currentSlots = new();
     private readonly HashSet<ScopeKey> needsResync = [];
@@ -392,11 +406,11 @@ internal sealed class ClientWorldReplica
     /// <summary>Digests recorded as observation summaries for digest-only scopes.</summary>
     public long DigestSummariesRecordedTotal => digestSummariesRecordedTotal;
 
-    /// <summary>Last digest recorded per digest-only scope: the observation summary a UI reads.</summary>
-    public IReadOnlyDictionary<ScopeKey, ScopeDigestState> DigestSummaries => digestSummaries;
 
     public bool IsSubscribed(ScopeKey scope) =>
         Versions.TryGetScope(scope, out var state) && state.Phase != SubscriptionPhase.Unsubscribed;
+    /// <summary>Last digest recorded per digest-only scope: the observation summary a UI reads.</summary>
+    public IReadOnlyDictionary<ScopeKey, ScopeDigestState> DigestSummaries => digestSummaries;
 
     /// <summary>
     /// Asks to subscribe to a scope. The subscription only completes when the host's baseline
@@ -447,6 +461,7 @@ internal sealed class ClientWorldReplica
         recoveryWaits.Remove(scope);
         diagnosticWaits.Observe("scope:" + scope, false, () => $"[authority] unsubscribed scope={scope}");
         pendingInstalls.Remove(scope);
+        pendingRetries.Remove(scope);
         foreach (var mirror in mirrors.Values)
             if (mirror.Scope.Equals(scope)) MirrorObserver?.OnMemberRemoved(scope, mirror.Key);
         Snapshots.Abandon(scope);
@@ -498,6 +513,7 @@ internal sealed class ClientWorldReplica
         }
         Snapshots.Abandon(scope);
         pendingInstalls.Remove(scope);
+        pendingRetries.Remove(scope);
         pendingDigests.Remove(scope);
         if (!recoveryWaits.TryGetValue(scope, out var wait)) recoveryWaits.Add(scope, wait = new RecoveryWait());
         wait.Since = double.NaN;
@@ -638,18 +654,27 @@ internal sealed class ClientWorldReplica
     public bool BeginSnapshot(ScopeKey scope, long subscriptionEpoch, long baselineId, int chunkCount,
         long totalBytes, ulong hash, long requestId = 0)
     {
-        if (scope.Kind == PoolKind.SpaceEnemy && SpaceEnemyRequestId != 0 && requestId != SpaceEnemyRequestId)
+        var hasState = Versions.TryGetScope(scope, out var state);
+        var newer = hasState && subscriptionEpoch > state.SubscriptionEpoch;
+        // A host-initiated recovery carries the cursor's last request id. The client may already
+        // have minted a newer id for an interest change; refusing that newer baseline would leave
+        // its chunks without staging and turn a single gap into an endless recovery. Subscription
+        // epochs are minted per baseline, so only a same-epoch stale begin is superseded. The
+        // override needs an adopted baseline to recover from: a scope that never installed one has
+        // nothing to resume, and a delayed begin from a superseded subscription must stay refused.
+        var adoptedBaseline = hasState && state.SubscriptionEpoch > 0;
+        if (scope.Kind == PoolKind.SpaceEnemy && SpaceEnemyRequestId != 0 &&
+            requestId != SpaceEnemyRequestId && !(newer && adoptedBaseline))
         {
             Snapshots.CountRefused();
             return false;
         }
-        if (!Versions.TryGetScope(scope, out var state) || !recoveryWaits.ContainsKey(scope))
+        if (!hasState || !recoveryWaits.ContainsKey(scope))
         {
             Snapshots.CountRefused();
             LogBaselineReject("begin:no-full-subscription", scope, subscriptionEpoch, baselineId, state);
             return false;
         }
-        var newer = subscriptionEpoch > state.SubscriptionEpoch;
         if (state.Phase == SubscriptionPhase.Unsubscribed || subscriptionEpoch < state.SubscriptionEpoch ||
             !newer && (state.Phase != SubscriptionPhase.Snapshotting ||
                 !Snapshots.IsStaging(scope, subscriptionEpoch, baselineId)))
@@ -745,6 +770,17 @@ internal sealed class ClientWorldReplica
         return true;
     }
 
+    /// <summary>
+    /// Retries the baselines whose backing pool was not ready when they arrived.
+    /// </summary>
+    /// <remarks>
+    /// A baseline the adapter keeps refusing is retried, never dropped on the first failure: the
+    /// pool may simply not have been built yet. It is not retried every frame forever either — one
+    /// broken member would otherwise throw inside the frame boundary on every frame and starve the
+    /// rest of it, which is how a single scope becomes a resync storm. Each failure pushes the next
+    /// attempt out (2, 4, … 64 frames) and the last failure hands the scope to recovery, whose new
+    /// baseline is the only thing that can fix an image the adapter cannot install.
+    /// </remarks>
     public void RetryPendingBaselines(Action<ScopeKey, Action> apply)
     {
         foreach (var scope in new List<ScopeKey>(pendingInstalls.Keys))
@@ -754,11 +790,46 @@ internal sealed class ClientWorldReplica
                 state.Phase != SubscriptionPhase.Installing || state.SubscriptionEpoch != snapshot.SubscriptionEpoch)
             {
                 pendingInstalls.Remove(scope);
+                pendingRetries.Remove(scope);
                 continue;
             }
             if (MirrorObserver is IReplicaBaselineReadiness ready && !ready.IsReadyForBaseline(scope)) continue;
-            apply(scope, () => InstallBaseline(scope, state, snapshot));
+
+            if (!pendingRetries.TryGetValue(scope, out var retry) || retry.BaselineId != snapshot.BaselineId)
+            {
+                pendingRetries[scope] = retry = new PendingRetry { BaselineId = snapshot.BaselineId };
+            }
+            if (retry.SkipFrames > 0)
+            {
+                retry.SkipFrames--;
+                continue;
+            }
+
+            try
+            {
+                apply(scope, () => InstallBaseline(scope, state, snapshot));
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                // The observer already reported why the adapter refused the image. Rethrowing here
+                // would abort the rest of the frame boundary on every single frame, so back off and
+                // eventually hand the scope to recovery: a baseline the adapter cannot install is
+                // replaced by a new one, not retried until the client leaves.
+                retry.Attempts++;
+                if (retry.Attempts < MaxBaselineInstallAttempts)
+                {
+                    retry.SkipFrames = Math.Min(64, 1 << Math.Min(6, retry.Attempts));
+                    continue;
+                }
+                pendingInstalls.Remove(scope);
+                pendingRetries.Remove(scope);
+                Diagnostics.Error("replica:baseline:abandon:" + scope,
+                    () => $"[authority] baseline install abandoned scope={scope} baseline={snapshot.BaselineId} attempts={retry.Attempts} members={snapshot.Members.Count} reason={error.GetType().Name}: {error.Message}");
+                RequestResync(scope, ScopeRecoveryReason.BaselineRefused);
+                continue;
+            }
             pendingInstalls.Remove(scope);
+            pendingRetries.Remove(scope);
         }
     }
 
@@ -844,10 +915,12 @@ internal sealed class ClientWorldReplica
         try { MirrorObserver?.OnBaselineInstalled(scope, snapshot.Members); }
         catch
         {
+            // The retry bookkeeping must survive this failure; it is what bounds the retries.
             state.SetPhase(SubscriptionPhase.Installing);
             pendingInstalls[scope] = snapshot;
             throw;
         }
+        pendingRetries.Remove(scope);
 
         var ack = AuthoritySnapshotAckPacket.Create(
             new AuthorityEnvelopeHeader(AuthorityFamily.SnapshotAck, Epoch,
@@ -897,6 +970,10 @@ internal sealed class ClientWorldReplica
                 // Spawning the exact key a tombstone holds is a host protocol violation, not a late
                 // packet: the batch stops and the scope is flagged instead of half-trusting it.
                 System.Threading.Interlocked.Increment(ref tombstoneRefusedTotal);
+                var deadKey = record.Key;
+                var deadRevision = record.Revision;
+                var deathSequence = state.TryGetVersion(deadKey, out var deadVersion) ? deadVersion.DeathSequence : 0;
+                Diagnostics.Warn("replica:tombstone:" + scope, () => $"[authority] spawn refused by tombstone scope={scope} key={deadKey} revision={deadRevision} deathSequence={deathSequence} stream={streamSequence} phase={state.Phase}");
                 RequestResync(scope, ScopeRecoveryReason.ProtocolViolation);
                 return false;
             }
@@ -1087,6 +1164,10 @@ internal sealed class ClientWorldReplica
                 System.Threading.Interlocked.Increment(ref sequenceDroppedTotal);
                 return false;
             default:
+                var invalidSequence = result;
+                var lastSequence = state.LastAppliedSequence;
+                var sequencePhase = state.Phase;
+                Diagnostics.Warn("replica:sequence:" + scope, () => $"[authority] stream refused scope={scope} subscription={subscriptionEpoch} sequence={streamSequence} result={invalidSequence} last={lastSequence} phase={sequencePhase}");
                 RequestResync(scope, ScopeRecoveryReason.ProtocolViolation);
                 return false;
         }
@@ -1123,6 +1204,8 @@ internal sealed class ClientWorldReplica
                 RequestResync(scope, ScopeRecoveryReason.BaselineRefused);
                 return false;
             default:
+                var invalidResult = result;
+                Diagnostics.Warn("replica:result:" + scope, () => $"[authority] record refused scope={scope} result={invalidResult}");
                 RequestResync(scope, ScopeRecoveryReason.ProtocolViolation);
                 return false;
         }

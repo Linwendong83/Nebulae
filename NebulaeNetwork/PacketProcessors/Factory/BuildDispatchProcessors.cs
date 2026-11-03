@@ -54,6 +54,14 @@ internal sealed class PrebuildInstanceProcessor : PacketProcessor<PrebuildInstan
     }
 }
 
+internal sealed class PrebuildInstanceBatchProcessor : PacketProcessor<PrebuildInstanceBatchPacket>
+{
+    protected override void ProcessPacket(PrebuildInstanceBatchPacket packet, NebulaeConnection conn)
+    {
+        if (!IsHost) Multiplayer.Session.BuildDispatch.Instances.Apply(packet);
+    }
+}
+
 internal sealed class BuildTargetAssignmentProcessor : PacketProcessor<BuildTargetAssignmentPacket>
 {
     protected override void ProcessPacket(BuildTargetAssignmentPacket packet, NebulaeConnection conn)

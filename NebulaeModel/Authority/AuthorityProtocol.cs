@@ -171,11 +171,12 @@ internal static class AuthorityLimits
     public const int CommandQueueMax = 1024;
 
     /// <summary>
-    /// Maximum scopes one subscriber may hold at once. A subscribe past it is refused rather than
-    /// silently growing delivery cost; a subscriber that needs more scopes is a design question,
-    /// not a per-call-site decision.
+    /// Maximum full subscriptions one subscriber may hold at once. A subscribe past it is refused
+    /// rather than silently growing delivery cost; a subscriber that needs more scopes is a design
+    /// question, not a per-call-site decision. Digest-only observations are not counted: they hold
+    /// no baseline and receive no stream.
     /// </summary>
-    public const int ScopesPerSubscriberMax = 16;
+    public const int ScopesPerSubscriberMax = 24;
 
     /// <summary>Digest statements buffered per scope while the stream catches up to them.</summary>
     public const int PendingDigestsPerScopeMax = 4;

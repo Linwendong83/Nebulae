@@ -7,6 +7,9 @@ internal static class BattleEffectMotion
 {
     public static Vector3 LocalPosition(LocalGeneralProjectile sample, double ageTicks) => sample.pos + sample.dir * (sample.speed * (float)ageTicks);
     public static VectorLF3 UniversalPosition(VectorLF3 position, Vector3 velocity, double ageTicks) => position + (VectorLF3)velocity * (ageTicks / 60);
+    // GeneralMissile.vel stays in universal units per second until native TickSkillLogic
+    // rotates it into the render frame, and UpdateMechaMissileRenderingData copies it as-is.
+    public static Vector3 MissileVelocity(Quaternion rotation, Vector3 universalVelocity) => rotation * universalVelocity;
     public static float CannonProgress(float progress, float distance, float speed, double ageTicks) => Math.Min(distance, progress + speed * (float)ageTicks);
     public static int CannonRemaining(float progress, float distance, float speed) => speed > 0
         ? (int)Math.Min(360000, Math.Max(0, Math.Ceiling((distance - progress) / speed))) : 0;

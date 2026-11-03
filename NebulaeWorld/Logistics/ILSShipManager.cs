@@ -57,7 +57,7 @@ internal class ILSShipManager
         if (!Lifecycle.Receive(packet, station))
         {
             if (Lifecycle.NeedsRepair(packet.GId))
-                Multiplayer.Session.Network.SendPacket(new ILSRequestgStationPoolSync { GId = packet.GId });
+                Multiplayer.Session.Network.SendPacket(new ILSRequestStationPoolSync { GId = packet.GId });
             return;
         }
         EnsureDestinations(station);
@@ -145,7 +145,7 @@ internal class ILSShipManager
             }
 
             if (Multiplayer.Session.Ships.Lifecycle.NeedsRepair(gId))
-                Multiplayer.Session.Network.SendPacket(new ILSRequestgStationPoolSync { GId = gId });
+                Multiplayer.Session.Network.SendPacket(new ILSRequestStationPoolSync { GId = gId });
         }
 
         GameMain.data.galacticTransport.stationCursor = Math.Max(GameMain.data.galacticTransport.stationCursor, gId + 1);

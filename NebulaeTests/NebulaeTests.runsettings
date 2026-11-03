@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+    <MSTest>
+        <!-- MSTest's legacy deployment is enabled by default. Nothing here uses
+             [DeploymentItem], so all it does is create a scratch
+             TestResults\Deploy_<user> <timestamp>_<pid> folder on every run and
+             leave it behind whenever a test fails. -->
+        <DeploymentEnabled>false</DeploymentEnabled>
+    </MSTest>
+</RunSettings>

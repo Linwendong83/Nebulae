@@ -109,11 +109,6 @@ public class ChatManager : MonoBehaviour
         return true;
     }
 
-    internal void SendChatMessage(string text, ChatMessageType messageType = ChatMessageType.SystemInfoMessage)
-    {
-        ChatService.Instance.AddMessage(text, messageType);
-    }
-
     public void NotifyPlayerPresence(string name, bool joined)
     {
         if (view == null) TryCreateView();

@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using System;
 using NebulaeModel.Packets.Players;
@@ -46,6 +46,7 @@ public class RemoteWarpEffect : MonoBehaviour
     private Vector4[] warpRotations;
     private Transform distortTransform;
     private Transform nebulasTransform;
+    private bool worldVisible = true;
 
     public void Awake()
     {
@@ -107,6 +108,7 @@ public class RemoteWarpEffect : MonoBehaviour
 
     public void Update()
     {
+        if (!worldVisible) return;
         if (isWarping)
         {
             WarpState += 0.0055655558f;
@@ -190,12 +192,21 @@ public class RemoteWarpEffect : MonoBehaviour
 
     public void StartWarp()
     {
-        if (rootAnimation.sailWeight <= 0.001f || isWarping)
+        if (!worldVisible || rootAnimation.sailWeight <= 0.001f || isWarping)
         {
             return;
         }
 
         isWarping = true;
+    }
+
+    internal void SetWorldVisible(bool visible)
+    {
+        worldVisible = visible;
+        if (visible) return;
+        isWarping = false;
+        WarpState = 0f;
+        if (warpEffectActivated) ToggleEffect(false);
     }
 
     public void StopWarp()
@@ -225,6 +236,7 @@ public class RemotePlayerEffects : MonoBehaviour
     private ParticleSystem[] FootLargeSmoke;
     private ParticleSystem[] FootSmallSmoke;
     private bool isGrounded, inWater;
+    private bool worldVisible = true;
     private int lastTriggeredFoot;
 
     private float maxAltitude;
@@ -303,6 +315,37 @@ public class RemotePlayerEffects : MonoBehaviour
     {
         StopAllFlyAudio();
         StopAndNullAudio(ref miningAudio);
+    }
+
+    /// <summary>
+    ///     A remote body in another star system is represented only by PlayerMapPosition, so its
+    ///     effects must stop instead of remaining at the prefab origin (which is the local player
+    ///     while in space).
+    /// </summary>
+    internal void SetWorldVisible(bool visible)
+    {
+        if (worldVisible == visible) return;
+        worldVisible = visible;
+        if (visible)
+        {
+            if (rootWarp != null) rootWarp.SetWorldVisible(true);
+            return;
+        }
+
+        StopAllFlyAudio();
+        if (psys != null)
+            foreach (var effect in psys)
+                if (effect != null && effect.isPlaying) effect.Stop();
+        if (torchEffect != null && torchEffect.isPlaying) torchEffect.Stop();
+        StopAndNullAudio(ref miningAudio);
+        shieldBurstPrepareTime = 0f;
+        if (shieldBurstActive)
+        {
+            shieldBurstActive = false;
+            if (shieldBurstPrepareEffect1 != null) shieldBurstPrepareEffect1.SetActive(false);
+            if (shieldBurstPrepareEffect2 != null) shieldBurstPrepareEffect2.SetActive(false);
+        }
+        if (rootWarp != null) rootWarp.SetWorldVisible(false);
     }
 
     private static void StopAndNullAudio(ref VFAudio vfAudio)
@@ -589,6 +632,7 @@ public class RemotePlayerEffects : MonoBehaviour
 
     internal void UpdateState(ref RemotePlayerAnimation.Snapshot packet)
     {
+        if (!worldVisible) return;
         var allowSounds = GameMain.localPlanet?.id == rootMovement.localPlanetId;
         var runActive = rootAnimation.runWeight > 0.001f;
         var driftActive = rootAnimation.driftWeight > 0.001f;

@@ -1,4 +1,4 @@
-﻿namespace NebulaeModel.Packets.Factory;
+namespace NebulaeModel.Packets.Factory;
 
 [NebulaeModel.Networking.PacketId(6363043609523338168UL)]
 internal class DestructEntityRequest : NebulaeModel.Networking.IVegetationOperation
@@ -25,4 +25,7 @@ internal class DestructEntityRequest : NebulaeModel.Networking.IVegetationOperat
     public byte[] CollectionBefore { get; set; } = System.Array.Empty<byte>();
     [NebulaeModel.Networking.WireOrder(5)]
     public long CommandSequence { get; set; }
+    /// <summary>Author collection version; repeated payloads in one burst share it.</summary>
+    [NebulaeModel.Networking.WireOrder(6)]
+    public long CollectionRevision { get; set; }
 }

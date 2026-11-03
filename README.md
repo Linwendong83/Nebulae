@@ -10,6 +10,8 @@ Nebulae 基于 [Nebula Multiplayer Mod](https://github.com/NebulaModTeam/nebula)
 
 3. **更加简洁和现代的UI**：多人联机界面改为现代的服务器列表，聊天系统、玩家列表更加简洁并修改延迟显示位置
 
+4. **更多恒星**：星区恒星数量上限从原版的 64 颗提升到 8191 颗，新建星区时可直接输入自定义数量
+
 ## 安装教程及无头服务器配置
 
 [戴森球计划 Nebula 安装指北](https://0xarch.codeberg.page/posts/nebulae/)

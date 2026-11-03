@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using BepInEx.Logging;
 using NebulaeModel.Logger;
@@ -16,23 +16,25 @@ internal class BepInExLogger : ILogger
         this.logger = logger;
     }
 
+    // The stamp lives at the sink, not in the message, so the error report keeps its own ISO time and
+    // LastErrorMsg stays free of transport detail.
     public void LogDebug(object data)
     {
-        logger.LogDebug(data);
+        logger.LogDebug(LogTimestamp.Stamp(data));
     }
 
     public void LogError(object data)
     {
-        logger.LogError(data);
+        logger.LogError(LogTimestamp.Stamp(data));
     }
 
     public void LogInfo(object data)
     {
-        logger.LogInfo(data);
+        logger.LogInfo(LogTimestamp.Stamp(data));
     }
 
     public void LogWarning(object data)
     {
-        logger.LogWarning(data);
+        logger.LogWarning(LogTimestamp.Stamp(data));
     }
 }

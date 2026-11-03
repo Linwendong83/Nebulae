@@ -24,8 +24,14 @@ internal static class NativeCraftSimulation
         public CraftData[] Pool;
         public readonly Dictionary<int, Entry> Crafts = new();
         public readonly Dictionary<int, List<Entry>> Fighters = new();
+        public long NextBaseFleetSweep;
     }
     private static readonly ConditionalWeakTable<object, WorldState> worlds = new();
+    // Runtime probe switch: "0" reproduces the pre-fix client, where a battle-base fleet never got
+    // the module foreign key the native owner check requires. Default keeps the link.
+    private static readonly bool LinkBaseFleet = Environment.GetEnvironmentVariable("NEBULAE_BASE_FLEET_LINK") != "0";
+    // How often the backstop sweep re-checks base module keys; the removal path clears them directly.
+    private const long BaseFleetSweepTicks = 30;
 
     public static void Install(object world, CraftData[] pool, int localId, int hostId, in CraftState state)
     {
@@ -125,6 +131,10 @@ internal static class NativeCraftSimulation
         var planet = world is PlanetFactory factory ? factory.planetId : 0;
         if (!ScopeReady(planet)) return false;
         if (!MatchesModule(registry, entry, planet)) return false;
+        // The native engage/repair loops read "defenseSystem.battleBases.buffer[id].energy"
+        // without a null check. A replicated fleet (or its units) can arrive before, or outlive,
+        // the base component on this client; running it then dereferences a freed pool slot.
+        if (!OwnerBasePresent(world, registry.Pool, localId)) return false;
         // Native formation code averages unlocked ports. Craft facts can arrive before
         // the matching research/module data; a zero count would produce NaN positions.
         if (entry.State.NativeUnit?.Length > 0 &&
@@ -135,6 +145,27 @@ internal static class NativeCraftSimulation
         if (planet == 0 && (GameMain.localStar == null ||
             entry.State.AstroId / 100 != GameMain.localStar.id)) return false;
         return entry.State.Owner != -1 && entry.State.PlayerOwner == 0 || PlayerMecha(entry.State.PlayerOwner) != null;
+    }
+    // Duplicates the native owner walk: a fleet names the battle-base entity, a unit names its
+    // fleet craft. Anything still pointing at a base that no longer exists locally is not run.
+    private static bool OwnerBasePresent(object world, CraftData[] pool, int localId)
+    {
+        if (world is not PlanetFactory factory) return true;
+        var craft = pool[localId];
+        if (craft.unitId <= 0 && craft.fleetId <= 0) return true; // not a fleet or fighter craft
+        var owner = craft.owner;
+        if (craft.unitId > 0)
+        {
+            if (owner <= 0 || owner >= pool.Length || pool[owner].id != owner) return false;
+            owner = pool[owner].owner;
+        }
+        if (owner <= 0) return true;
+        var entity = factory.entityPool;
+        if (entity == null) return true;
+        if (owner >= entity.Length || owner >= factory.entityCursor || entity[owner].id != owner) return false;
+        var id = entity[owner].battleBaseId;
+        var bases = factory.defenseSystem?.battleBases;
+        return id > 0 && bases != null && id < bases.cursor && bases.buffer[id]?.id == id;
     }
     private static bool MatchesModule(WorldState registry, Entry entry, int planet)
     {
@@ -224,27 +255,141 @@ internal static class NativeCraftSimulation
                 entry.Pending = false;
             }
             craft.pos += entry.Motion.Advance(GameMain.gameTick);
-            var mecha = PlayerMecha(entry.State.PlayerOwner);
-            if (craft.fleetId > 0 && mecha != null && entry.State.PlayerOwner == Multiplayer.Session?.LocalPlayer?.Id &&
-                MatchesModule(registry, entry, planet))
-            {
-                var module = planet > 0 ? mecha.groundCombatModule : mecha.spaceCombatModule;
-                if (craft.port >= 0 && craft.port < module.fleetCount)
-                {
-                    ref var fleet = ref module.moduleFleets[craft.port];
-                    fleet.fleetId = craft.fleetId; fleet.fleetAstroId = planet > 0 ? planet : craft.astroId;
-                    if (registry.Fighters.TryGetValue(entry.HostId, out var children))
-                        foreach (var child in children)
-                            if (child.State.Port >= 0 && child.State.Port < fleet.fighters.Length)
-                                fleet.fighters[child.State.Port].craftId = child.LocalId;
-                }
-            }
+            LinkOwnerModule(world, registry, entry, ref craft, planet, PlayerMecha(entry.State.PlayerOwner));
             if (world is PlanetFactory ground)
                 CraftPresentation.RefreshGround(ground, entry.LocalId, craft.pos != entry.Position, craft.rot != entry.Rotation);
             else CraftPresentation.RefreshSpace((SpaceSector)world, entry.LocalId);
             entry.Position = craft.pos; entry.Rotation = craft.rot;
         }
+        if (LinkBaseFleet && planet > 0 && world is PlanetFactory baseFactory) ReconcileBaseFleets(baseFactory, registry);
     }
+    /// <summary>
+    /// Drops the battle-base module key that named a fleet replica which is being released.
+    /// </summary>
+    /// <remarks>
+    /// The host clears the key in <c>ModuleFleet.OnFleetComponentRemoved</c> when it removes the fleet
+    /// component; a client's fleet disappears through the craft binding instead, which never touches
+    /// the module. Called with the craft still live, so the owner walk in
+    /// <see cref="LinkOwnerModule"/> can still resolve the module.
+    /// </remarks>
+    internal static void UnlinkBaseFleet(PlanetFactory factory, int craftId)
+    {
+        if (!LinkBaseFleet || factory?.combatGroundSystem == null) return;
+        var pool = factory.craftPool;
+        if (craftId <= 0 || craftId >= factory.craftCursor || craftId >= pool.Length) return;
+        ref var craft = ref pool[craftId];
+        if (craft.id != craftId || craft.fleetId <= 0 || craft.unitId > 0 || craft.port < 0) return;
+        var entity = factory.entityPool;
+        var owner = craft.owner;
+        if (entity == null || owner <= 0 || owner >= entity.Length || owner >= factory.entityCursor ||
+            entity[owner].id != owner) return;
+        var modules = factory.combatGroundSystem.combatModules;
+        var moduleId = entity[owner].combatModuleId;
+        if (modules?.buffer == null || moduleId <= 0 || moduleId >= modules.cursor || moduleId >= modules.buffer.Length) return;
+        var module = modules.buffer[moduleId];
+        if (module?.id != moduleId || module.moduleFleets == null ||
+            craft.port >= module.fleetCount || craft.port >= module.moduleFleets.Length) return;
+        ref var slot = ref module.moduleFleets[craft.port];
+        if (slot.fleetId != craft.fleetId) return;
+        slot.OnFleetComponentRemoved();
+    }
+
+    /// <summary>
+    /// Clears a battle-base module key that no longer names a live fleet component.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The base panel and the fighter-port entries read <c>moduleFleets[0].fleetId &gt; 0</c> to decide
+    /// whether a sortie is out: the panel reports 出击/召回 and locks the fighter-type button, and a
+    /// fighter cannot be taken out of the hangar while the key is set. A key left behind by a fleet
+    /// that already landed therefore keeps describing a sortie that is not happening.
+    /// </para>
+    /// <para>
+    /// <see cref="UnlinkBaseFleet"/> covers the ordinary removal path. This sweep is the backstop for
+    /// the ones that never reach it — a baseline that replaces the pool, a fleet removed while its
+    /// craft record was not bound, or a key imported from the host's factory data for a fleet that no
+    /// longer exists. It only ever drops a key that names nothing, and
+    /// <see cref="LinkOwnerModule"/> restores it from the next replicated state.
+    /// </para>
+    /// </remarks>
+    private static void ReconcileBaseFleets(PlanetFactory factory, WorldState registry)
+    {
+        var tick = GameMain.gameTick;
+        if (tick < registry.NextBaseFleetSweep) return;
+        registry.NextBaseFleetSweep = tick + BaseFleetSweepTicks;
+        var modules = factory.combatGroundSystem?.combatModules;
+        if (modules?.buffer == null) return;
+        for (var id = 1; id < modules.cursor && id < modules.buffer.Length; id++)
+        {
+            var module = modules.buffer[id];
+            // Only a battle base owns a module in the factory pool; a pilot's module is standalone.
+            if (module?.id != id || module.entityId <= 0 || module.moduleFleets == null) continue;
+            for (var index = 0; index < module.moduleFleets.Length; index++)
+            {
+                ref var slot = ref module.moduleFleets[index];
+                if (slot.fleetId <= 0 || FleetAlive(factory, slot.fleetId)) continue;
+                slot.OnFleetComponentRemoved();
+            }
+        }
+    }
+
+    // The same test FleetComponent.CheckOwnerExist applies: the pool slot is live and its craft is.
+    private static bool FleetAlive(PlanetFactory factory, int fleetId)
+    {
+        var fleets = factory.combatGroundSystem?.fleets;
+        if (fleets?.buffer == null || fleetId <= 0 || fleetId >= fleets.cursor || fleetId >= fleets.buffer.Length) return false;
+        ref var fleet = ref fleets.buffer[fleetId];
+        if (fleet.id != fleetId || fleet.craftId <= 0 || fleet.craftId >= factory.craftCursor ||
+            fleet.craftId >= factory.craftPool.Length) return false;
+        return factory.craftPool[fleet.craftId].id == fleet.craftId;
+    }
+
+    /// <summary>
+    /// Restores the module foreign key native code uses to find a fleet's owner.
+    /// </summary>
+    /// <remarks>
+    /// The native fleet loop calls <c>FleetComponent.CheckOwnerExist</c> before it steers anything,
+    /// and that check requires <c>combatModules[entity].moduleFleets[port].fleetId</c> to name the
+    /// fleet component. Vanilla only ever maintains that key for the pilot's own module, so a
+    /// battle-base fleet replicated to a client has none: the check fails, the fleet craft is never
+    /// steered, and its pose only moves on the sparse authoritative checkpoints while its drones
+    /// chase a formation around the stale anchor. A base's module is derived from the owner entity,
+    /// which the client already has, so the key can be rebuilt here each frame.
+    /// </remarks>
+    private static void LinkOwnerModule(object world, WorldState registry, Entry entry, ref CraftData craft, int planet, Mecha mecha)
+    {
+        if (craft.fleetId <= 0 || craft.port < 0) return;
+        if (entry.State.PlayerOwner != 0)
+        {
+            if (mecha == null || entry.State.PlayerOwner != Multiplayer.Session?.LocalPlayer?.Id ||
+                !MatchesModule(registry, entry, planet)) return;
+            var module = planet > 0 ? mecha.groundCombatModule : mecha.spaceCombatModule;
+            if (module == null || craft.port >= module.fleetCount) return;
+            ref var fleet = ref module.moduleFleets[craft.port];
+            fleet.fleetId = craft.fleetId; fleet.fleetAstroId = planet > 0 ? planet : craft.astroId;
+            if (registry.Fighters.TryGetValue(entry.HostId, out var children))
+                foreach (var child in children)
+                    if (child.State.Port >= 0 && child.State.Port < fleet.fighters.Length)
+                        fleet.fighters[child.State.Port].craftId = child.LocalId;
+            return;
+        }
+        // A base fleet names its battle-base entity, and that entity names the combat module that
+        // owns the port. Client combat modules are never replicated, so only this key is missing.
+        if (!LinkBaseFleet || planet <= 0 || world is not PlanetFactory factory || craft.owner <= 0 || craft.unitId > 0) return;
+        var entity = factory.entityPool;
+        var owner = craft.owner;
+        if (entity == null || owner >= entity.Length || owner >= factory.entityCursor || entity[owner].id != owner) return;
+        var modules = factory.combatGroundSystem?.combatModules;
+        var moduleId = entity[owner].combatModuleId;
+        if (modules?.buffer == null || moduleId <= 0 || moduleId >= modules.cursor) return;
+        var baseModule = modules.buffer[moduleId];
+        if (baseModule == null || baseModule.id != moduleId || craft.port >= baseModule.fleetCount ||
+            craft.port >= baseModule.moduleFleets.Length) return;
+        ref var slot = ref baseModule.moduleFleets[craft.port];
+        slot.fleetAstroId = planet;
+        slot.fleetId = craft.fleetId;
+    }
+
     private static bool LocalCraftId(int planet, int hostId, out int localId)
     {
         localId = 0;

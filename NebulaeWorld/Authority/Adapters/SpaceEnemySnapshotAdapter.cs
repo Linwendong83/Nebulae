@@ -34,7 +34,7 @@ namespace NebulaeWorld.Authority.Adapters;
 /// — so this adapter never reinterprets one pool's slot as another's.
 /// </para>
 /// </remarks>
-internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotWorldView, IHostIncrementalWorldView, IHostCaptureBatchWorldView
+internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotWorldView, IHostIncrementalWorldView, IHostCaptureBatchWorldView, IHostInterestWorldView
 {
     private readonly AuthorityEpoch epoch;
     private readonly SlotGenerationTracker tracker = new();
@@ -43,6 +43,49 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
     private readonly List<int> coresFirst = new(), rest = new();
     private readonly ReplicationCandidateIndex candidates = new();
     private readonly object gate = new();
+    private readonly Dictionary<int, ReplicationCandidateIndex> starCandidates = new();
+    private readonly Dictionary<int, int> candidateStars = new();
+    private readonly HashSet<int> interestedStars = new();
+    private readonly HashSet<int> globalTargets = new();
+    private readonly List<ObjectKey> ignoredRetired = new();
+
+    public void SetInterestedStars(IReadOnlyCollection<int> stars)
+    {
+        interestedStars.Clear();
+        foreach (var star in stars) if (star > 0) interestedStars.Add(star);
+    }
+
+    public void SetGlobalTargets(HashSet<int> targets)
+    {
+        if (globalTargets.SetEquals(targets)) return;
+        var changed = new HashSet<int>(globalTargets);
+        changed.SymmetricExceptWith(targets);
+        globalTargets.Clear(); globalTargets.UnionWith(targets);
+        foreach (var id in changed)
+        {
+            if (!TryGetEnemyKey(id, out var key)) continue;
+            IndexCandidate(key, true);
+            Multiplayer.Session?.AuthorityRuntime?.HostReplicator?.RefreshMemberInterest(key);
+        }
+    }
+
+    private void IndexCandidate(ObjectKey key, bool changed)
+    {
+        var interest = InterestFor(key).StarId;
+        if (candidateStars.TryGetValue(key.NativeId, out var previous) && previous != interest &&
+            starCandidates.TryGetValue(previous, out var old)) old.Remove(key);
+        candidateStars[key.NativeId] = interest;
+        if (!starCandidates.TryGetValue(interest, out var index))
+        {
+            index = new ReplicationCandidateIndex();
+            index.Rebuild(GameMain.spaceSector.enemyPool, GameMain.gameTick, System.Array.Empty<ObjectKey>());
+            starCandidates[interest] = index;
+        }
+        index.Add(key, changed);
+        var enemy = GameMain.spaceSector.enemyPool[key.NativeId];
+        index.SetCadence(key, enemy.dynamic && enemy.unitId == 0, enemy.dynamic && enemy.unitId > 0);
+    }
+
 
     private SpaceSector captureSector;
     private EnemyData[] capturePool;
@@ -145,6 +188,7 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
     public ReplicationInterest InterestFor(ObjectKey key)
     {
         if (key.Kind != PoolKind.SpaceEnemy) return default;
+        if (globalTargets.Contains(key.NativeId)) return default;
         var sector = GameMain.spaceSector;
         if (sector == null || key.NativeId <= 0 || key.NativeId >= sector.enemyCursor ||
             sector.enemyPool[key.NativeId].id != key.NativeId || tracker.GenerationOf(key.NativeId) != key.Generation)
@@ -196,20 +240,30 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
             if (relayReadings != null && key.NativeId < relayReadings.Length) relayReadings[key.NativeId] = null;
         }
         candidates.Rebuild(sector.enemyPool, GameMain.gameTick, members);
-        foreach (var key in members)
-        {
-            var enemy = sector.enemyPool[key.NativeId];
-            candidates.SetCadence(key, enemy.dynamic && enemy.unitId == 0, enemy.dynamic && enemy.unitId > 0);
-        }
+        starCandidates.Clear(); candidateStars.Clear();
+        foreach (var key in members) IndexCandidate(key, false);
         return true;
     }
 
-    public bool TryReadChanges(ScopeKey scope, long hostTick, List<ObjectKey> changed, List<ObjectKey> removed) =>
-        scope.Kind == PoolKind.SpaceEnemy && GameMain.spaceSector is { } sector &&
-        candidates.Read(sector.enemyPool, sector.enemyCount, hostTick, changed, removed);
+    public bool TryReadChanges(ScopeKey scope, long hostTick, List<ObjectKey> changed, List<ObjectKey> removed)
+    {
+        if (scope.Kind != PoolKind.SpaceEnemy || GameMain.spaceSector is not { } sector ||
+            !candidates.IsCurrent(sector.enemyPool, sector.enemyCount, hostTick)) return false;
+        ignoredRetired.Clear();
+        // The global index tracks membership only. Native state candidates come from watched buckets.
+        if (!candidates.ReadRetired(sector.enemyPool, sector.enemyCount, hostTick, removed)) return false;
+        if (starCandidates.TryGetValue(0, out var global) &&
+            !global.Read(sector.enemyPool, global.Count, hostTick, changed, ignoredRetired)) return false;
+        foreach (var star in interestedStars)
+            if (starCandidates.TryGetValue(star, out var index) &&
+                !index.Read(sector.enemyPool, index.Count, hostTick, changed, ignoredRetired)) return false;
+        return true;
+    }
     public void StateSampled(in ObjectKey key)
     {
-        if (key.Kind == PoolKind.SpaceEnemy) candidates.Sampled(key);
+        if (key.Kind != PoolKind.SpaceEnemy) return;
+        candidates.Sampled(key);
+        if (candidateStars.TryGetValue(key.NativeId, out var star) && starCandidates.TryGetValue(star, out var index)) index.Sampled(key);
     }
     public void Added(int id)
     {
@@ -217,19 +271,23 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
         {
             if (!TryGetEnemyKey(id, out var key)) return;
             candidates.Add(key);
-            var enemy = GameMain.spaceSector.enemyPool[id];
-            candidates.SetFast(key, enemy.dynamic && enemy.unitId == 0);
+            IndexCandidate(key, true);
         }
     }
     public void Removed(ObjectKey key)
     {
         lock (gate)
         {
+            if (candidateStars.TryGetValue(key.NativeId, out var star) && starCandidates.TryGetValue(star, out var index)) index.Remove(key);
+            candidateStars.Remove(key.NativeId);
             tracker.Retire(key.NativeId); candidates.Remove(key); published.Remove(key); turretExports.Remove(key);
             if (relayReadings != null && key.NativeId < relayReadings.Length) relayReadings[key.NativeId] = null;
         }
     }
-    public void MarkState(int id) => candidates.Changed(id);
+    public void MarkState(int id)
+    {
+        if (candidateStars.TryGetValue(id, out var star) && starCandidates.TryGetValue(star, out var index)) index.Changed(id);
+    }
 
     /// <summary>The authority identity of a living sector-enemy slot, as the replication scan would mint
     /// it.</summary>
@@ -267,7 +325,8 @@ internal sealed class SpaceEnemySnapshotAdapter : IHostWorldView, IHostSnapshotW
             return false;
         }
         var movingUnit = decoded.Kind == SpaceEnemyKind.SpaceUnit && decoded.IsDynamic;
-        candidates.SetCadence(key, decoded.IsDynamic && !movingUnit, movingUnit);
+        if (candidateStars.TryGetValue(key.NativeId, out var star) && starCandidates.TryGetValue(star, out var index))
+            index.SetCadence(key, decoded.IsDynamic && !movingUnit, movingUnit);
         // Same gate as the ground adapter: only an unchanged reading is answered from the cache. A
         // hive core's hitpoints, a node's manufacture progress and a turret's state are settled
         // facts — see EnemyStatePolicy.HasMoved.

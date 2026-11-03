@@ -31,6 +31,7 @@ internal static class Multiplayer
     public static bool IsInMultiplayerMenu { get; set; }
 
     public static bool IsDedicated { get; set; }
+    public static bool HeadlessClient { get; set; }
     public static bool ProtocolReady { get; set; }
 
     public static void HostGame(IServer server)

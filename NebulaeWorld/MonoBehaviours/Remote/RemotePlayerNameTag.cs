@@ -130,8 +130,7 @@ public sealed class RemotePlayerNameTag : MonoBehaviour
             return;
         }
 
-        var localData = Multiplayer.Session?.LocalPlayer?.Data;
-        if (localData == null || !IsInSameWorld(localData.LocalPlanetId, localData.LocalStarId))
+        if (playerModel.Movement == null || !playerModel.Movement.IsVisibleToLocalPlayer)
         {
             SetVisible(false);
             return;
@@ -263,13 +262,6 @@ public sealed class RemotePlayerNameTag : MonoBehaviour
         }
         smoothedTop = Mathf.Lerp(smoothedTop, top, 0.2f);
         return smoothedTop;
-    }
-
-    private bool IsInSameWorld(int localPlanetId, int localStarId)
-    {
-        var remotePlanetId = playerModel.Movement.localPlanetId;
-        if (localPlanetId > 0) return remotePlanetId == localPlanetId;
-        return remotePlanetId <= 0 && localStarId > 0 && playerModel.Movement.LocalStarId == localStarId;
     }
 
     private void SetVisible(bool visible)

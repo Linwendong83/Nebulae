@@ -49,6 +49,7 @@ internal static partial class PacketStateRegistry
         Add<NebulaeModel.Packets.Factory.BuildEntityRequest>(PacketSyncKind.Control);
         Add<NebulaeModel.Packets.Factory.BuildingDeathPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.PrebuildInstancePacket>(PacketSyncKind.Operation);
+        Add<NebulaeModel.Packets.Factory.PrebuildInstanceBatchPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.BuildTargetAssignmentPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.BuildTargetAssignmentReplyPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.BuildTargetBaseReleaseAckPacket>(PacketSyncKind.Operation);
@@ -67,8 +68,7 @@ internal static partial class PacketStateRegistry
         Add<NebulaeModel.Packets.Factory.Inserter.InserterFilterUpdatePacket>(PacketSyncKind.Operation);
         State<NebulaeModel.Packets.Factory.Inserter.InserterItemUpdatePacket>(new[] { 5, 0 });
         Add<NebulaeModel.Packets.Factory.Inserter.InserterOffsetCorrectionPacket>(PacketSyncKind.Operation);
-        Add<NebulaeModel.Packets.Factory.Inserter.NewSetInserterInsertTargetPacket>(PacketSyncKind.Operation);
-        Add<NebulaeModel.Packets.Factory.Inserter.NewSetInserterPickTargetPacket>(PacketSyncKind.Operation);
+        Add<NebulaeModel.Packets.Factory.Inserter.NewSetInserterTargetPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.Miner.MinerStoragePickupPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.Monitor.MonitorSettingUpdatePacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Factory.Monitor.SpeakerSettingUpdatePacket>(PacketSyncKind.Operation);
@@ -132,7 +132,7 @@ internal static partial class PacketStateRegistry
         Add<NebulaeModel.Packets.Logistics.ILSArriveStarPlanetResponse>(PacketSyncKind.Snapshot);
         Add<NebulaeModel.Packets.Logistics.ILSgStationPoolSync>(PacketSyncKind.Snapshot);
         Add<NebulaeModel.Packets.Logistics.ILSRemoveStationComponent>(PacketSyncKind.Operation);
-        Add<NebulaeModel.Packets.Logistics.ILSRequestgStationPoolSync>(PacketSyncKind.Control);
+        Add<NebulaeModel.Packets.Logistics.ILSRequestStationPoolSync>(PacketSyncKind.Control);
         Add<NebulaeModel.Packets.Logistics.ILSShipLifecyclePacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Logistics.ILSStorageCommitPacket>(PacketSyncKind.Operation);
         Add<NebulaeModel.Packets.Logistics.ILSUpdateRoute>(PacketSyncKind.Operation);

@@ -1,6 +1,7 @@
-﻿#region
+#region
 
 using NebulaeModel.Authority;
+using NebulaeModel.Logger;
 using NebulaeModel.Packets.Authority;
 
 #endregion
@@ -58,7 +59,18 @@ internal sealed class FactoryCombatReplicaPools : IFactoryCombatPools
 
     public void ReleaseCombatStat(int statId)
     {
-        GameMain.data.spaceSector.skillSystem.combatStats.Remove(statId);
+        // The binding can outlive the pool entry: a stat released twice, or after the pool was
+        // compacted by a flush, used to throw IndexOutOfRange here and abort the caller's whole
+        // removal with the factory half-mutated. Releasing an empty slot is a no-op, not a fault.
+        var stats = GameMain.data.spaceSector.skillSystem.combatStats;
+        if (statId <= 0 || stats.buffer == null) return;
+        if (statId >= stats.buffer.Length || stats.buffer[statId].ID != statId)
+        {
+            Diagnostics.Warn("factory:combat-stat-release:" + planetId,
+                () => $"[factory] combat stat {statId} is already released on planet {planetId}; skip");
+            return;
+        }
+        stats.Remove(statId);
     }
 
     public void WriteCombatStat(int statId, in FactoryCombatState state, int planetId, int entityId)
@@ -95,8 +107,16 @@ internal sealed class FactoryCombatReplicaPools : IFactoryCombatPools
     {
         // The pool's own Remove, not ConstructionSystem.RemoveConstructStat: that one also clears
         // module repair queues and warnings, which are rule-side effects the client must not run.
+        var constructStats = Factory?.constructionSystem.constructStats;
+        if (statId <= 0 || constructStats?.buffer == null) return;
+        if (statId >= constructStats.buffer.Length || constructStats.buffer[statId].ID != statId)
+        {
+            Diagnostics.Warn("factory:construct-stat-release:" + planetId,
+                () => $"[factory] construct stat {statId} is already released on planet {planetId}; skip");
+            return;
+        }
         NebulaeWorld.Factory.ConstructionRepairTargets.Invalidate(Factory, statId);
-        Factory.constructionSystem.constructStats.Remove(statId);
+        constructStats.Remove(statId);
     }
 
     public void WriteConstructStat(int statId, in FactoryCombatState state, int entityId)

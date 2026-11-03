@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using System;
 using System.Collections.Generic;
@@ -44,6 +44,12 @@ internal interface IHostIncrementalWorldView
 {
     bool TryReadChanges(ScopeKey scope, long hostTick, List<ObjectKey> candidates, List<ObjectKey> removed);
     void StateSampled(in ObjectKey key);
+}
+
+/// <summary>Limits candidate enumeration before native state reads.</summary>
+internal interface IHostInterestWorldView
+{
+    void SetInterestedStars(IReadOnlyCollection<int> stars);
 }
 
 internal interface IHostSnapshotWorldView
@@ -132,7 +138,7 @@ internal sealed class HostWorldReplicator
     /// <param name="logCapacity">Retained events per scope before a lagging subscriber needs a
     /// baseline.</param>
     public HostWorldReplicator(AuthorityEpoch epoch, IHostWorldView worldView, IReplicationSink sink,
-        int logCapacity = 4096, IHostDeathView deathView = null)
+        int logCapacity = 32768, IHostDeathView deathView = null)
     {
         if (!epoch.IsValid) throw new ArgumentException("HostWorldReplicator needs a valid epoch.", nameof(epoch));
         this.epoch = epoch;
@@ -188,13 +194,15 @@ internal sealed class HostWorldReplicator
 
     /// <summary>Host-accepted player location, latched for each space-enemy subscription.</summary>
     public Func<ushort, int> SubscriberStarProvider { get; set; }
+    public Func<ushort, int> SubscriberViewedStarProvider { get; set; }
     public Func<ObjectKey, ReplicationInterest> MemberInterestFor { get; set; }
 
     private bool Filters(ScopeKey scope) => scope.Kind == PoolKind.SpaceEnemy &&
         SubscriberStarProvider != null && MemberInterestFor != null;
 
     private bool CurrentInterest(ushort subscriber, SubscriberCursor cursor) =>
-        cursor.VisibleMembers == null || cursor.InterestStarId == SubscriberStarProvider(subscriber);
+        cursor.VisibleMembers == null || cursor.InterestStarId == SubscriberStarProvider(subscriber) &&
+        cursor.ViewedStarId == (SubscriberViewedStarProvider?.Invoke(subscriber) ?? 0);
 
     public int ScopeCount => scopes.Count;
 
@@ -271,7 +279,7 @@ internal sealed class HostWorldReplicator
         }
 
         if (Filters(scope) && state.TryGetSubscriber(subscriberId, out var previous) &&
-            (previous.InterestStarId != SubscriberStarProvider(subscriberId) || previous.RequestId != requestId))
+            (!CurrentInterest(subscriberId, previous) || previous.RequestId != requestId))
             Unsubscribe(subscriberId, scope);
 
         // Coalesce ordinary subscription retries while a baseline is in flight. A client that
@@ -302,13 +310,18 @@ internal sealed class HostWorldReplicator
         StartSnapshotSubscription(state, subscriberId, current, requestId);
     }
 
-    /// <summary>Counts the scopes a subscriber holds an active cursor for.</summary>
+    /// <summary>Counts the full subscriptions a subscriber holds an active cursor for.</summary>
+    /// <remarks>
+    /// A digest-only observation holds no baseline and receives no stream, so it must not consume
+    /// the full-subscription budget. Counting it made opening the star map evict the Hive scope
+    /// that combat actually needs.
+    /// </remarks>
     private int CountScopesFor(ushort subscriberId)
     {
         var count = 0;
         foreach (var state in scopes.Values)
         {
-            if (state.TryGetSubscriber(subscriberId, out var cursor) && cursor.Active) count++;
+            if (state.TryGetSubscriber(subscriberId, out var cursor) && cursor.Active && !cursor.DigestOnly) count++;
         }
         return count;
     }
@@ -451,12 +464,39 @@ internal sealed class HostWorldReplicator
     public void CaptureFrame(long hostTick)
     {
         lastCaptureTick = hostTick;
+        RefreshViews();
         foreach (var pair in scopes)
         {
             if (!HasActiveSubscriber(pair.Value)) continue;
             CaptureScope(pair.Value, hostTick);
             DeliverScope(pair.Value);
             TrimCoveredLog(pair.Value);
+        }
+    }
+
+    public void RefreshMemberInterest(ObjectKey key)
+    {
+        if (!scopes.TryGetValue(new ScopeKey(key.Kind, key.Scope), out var scope) ||
+            !scope.Members.TryGetValue(key, out var member)) return;
+        var interest = MemberInterestFor?.Invoke(key) ?? default;
+        if (interest.StarId == member.Interest.StarId) return;
+        member.Interest = interest;
+        foreach (var pair in scope.Subscribers)
+            if (pair.Value.Active && !pair.Value.DigestOnly) pair.Value.InterestChanged = true;
+    }
+
+    public void RefreshViews()
+    {
+        foreach (var scope in scopes.Values)
+        {
+            if (!Filters(scope.Scope)) continue;
+            recoveryScratch.Clear();
+            foreach (var pair in scope.Subscribers)
+                if (pair.Value.Active && !pair.Value.DigestOnly &&
+                    (pair.Value.InterestChanged || !CurrentInterest(pair.Key, pair.Value)))
+                    recoveryScratch.Add((pair.Key, pair.Value.RequestId));
+            foreach (var request in recoveryScratch.ToArray())
+                RequestResync(request.Player, scope.Scope, request.Request);
         }
     }
 
@@ -529,7 +569,8 @@ internal sealed class HostWorldReplicator
         // would silently replace the host cache and leave existing peers on the older value forever.
         var starId = Filters(scope.Scope) ? SubscriberStarProvider(subscriberId) : 0;
         if (!CaptureScope(scope, lastCaptureTick, current, seedOnly: !hasRecipients,
-                snapshotStarId: Filters(scope.Scope) ? starId : (int?)null))
+                snapshotStarId: Filters(scope.Scope) ? starId : (int?)null,
+                snapshotViewedStar: Filters(scope.Scope) ? SubscriberViewedStarProvider?.Invoke(subscriberId) ?? 0 : 0))
         {
             snapshotRefusedTotal++;
             Diagnostics.Warn("host:snapshot-read:" + scope.Scope, () => $"[authority] snapshot capture unavailable player={subscriberId} scope={scope.Scope} tick={lastCaptureTick}");
@@ -553,6 +594,7 @@ internal sealed class HostWorldReplicator
         cursor.BaselineId = baselineId;
         cursor.PendingBaselineId = baselineId;
         cursor.InterestStarId = starId;
+        cursor.ViewedStarId = Filters(scope.Scope) ? SubscriberViewedStarProvider?.Invoke(subscriberId) ?? 0 : 0;
         cursor.RequestId = requestId;
         if (Filters(scope.Scope)) cursor.VisibleMembers = new Dictionary<ObjectKey, HostMemberRecord>();
 
@@ -568,7 +610,7 @@ internal sealed class HostWorldReplicator
                 record = new HostMemberRecord(Revisions.Next(key), null);
                 scope.Members[key] = record;
             }
-            if (cursor.VisibleMembers != null && !record.Interest.Includes(starId)) continue;
+            if (cursor.VisibleMembers != null && !record.Interest.Includes(starId, cursor.ViewedStarId)) continue;
             members.Add(new SnapshotMemberRecord(key, record.Revision, record.State));
             cursor.DeltaStates[key] = new HostMemberRecord(record.Revision, record.State);
             if (cursor.VisibleMembers != null)
@@ -664,32 +706,37 @@ internal sealed class HostWorldReplicator
     }
 
     private bool CaptureScope(ScopeReplicationState scope, long hostTick, List<ObjectKey> fullMembers = null,
-        bool seedOnly = false, int? snapshotStarId = null)
+        bool seedOnly = false, int? snapshotStarId = null, int snapshotViewedStar = 0)
     {
         var batch = worldView as IHostCaptureBatchWorldView;
         try
         {
             batch?.BeginCapture(scope.Scope);
-            return CaptureScopeCore(scope, hostTick, fullMembers, seedOnly, snapshotStarId);
+            return CaptureScopeCore(scope, hostTick, fullMembers, seedOnly, snapshotStarId, snapshotViewedStar);
         }
         finally { batch?.EndCapture(); }
     }
 
     private bool CaptureScopeCore(ScopeReplicationState scope, long hostTick, List<ObjectKey> fullMembers,
-        bool seedOnly, int? snapshotStarId)
+        bool seedOnly, int? snapshotStarId, int snapshotViewedStar)
     {
         var filtered = Filters(scope.Scope);
         if (filtered)
         {
             interestedStars.Clear();
             if (snapshotStarId.HasValue) interestedStars.Add(snapshotStarId.Value);
+            if (snapshotStarId.HasValue && snapshotViewedStar > 0) interestedStars.Add(snapshotViewedStar);
             foreach (var pair in scope.Subscribers)
             {
                 var cursor = pair.Value;
                 if (cursor.Active && !cursor.DigestOnly && !cursor.NeedsResync && CurrentInterest(pair.Key, cursor))
+                {
                     interestedStars.Add(cursor.InterestStarId);
+                    if (cursor.ViewedStarId > 0) interestedStars.Add(cursor.ViewedStarId);
+                }
             }
         }
+        if (filtered && worldView is IHostInterestWorldView interestView) interestView.SetInterestedStars(interestedStars);
         var current = fullMembers;
         despawnScratch.Clear();
         var incremental = false;
@@ -890,7 +937,7 @@ internal sealed class HostWorldReplicator
             {
                 if (@event.Kind == ScopeEventKind.Spawn)
                 {
-                    if (!@event.Interest.Includes(cursor.InterestStarId)) continue;
+                    if (!@event.Interest.Includes(cursor.InterestStarId, cursor.ViewedStarId)) continue;
                     cursor.VisibleMembers[@event.Key] = new HostMemberRecord(@event.Revision, null, @event.Interest);
                 }
                 else

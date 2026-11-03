@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using NebulaeModel.Networking;
 using NebulaeWorld;
@@ -15,16 +15,7 @@ internal class LCPDispenserEntryUpdateProcessor : PacketProcessor<LCPDispenserEn
     {
         if (IsHost || !Multiplayer.Session.FacilityDirectory.AcceptRow(packet.Generation)) return;
 
-        var objectEntryPool = UIRoot.instance.uiGame.controlPanelWindow.objectEntryPool;
-        for (var i = 0; i < objectEntryPool.Count; i++)
-        {
-            if (objectEntryPool[i] != null && objectEntryPool[i].index == packet.Index && objectEntryPool[i].target.astroId == packet.AstroId && objectEntryPool[i].target.objId == packet.ObjId)
-            {
-                var entry = objectEntryPool[i] as UIControlPanelDispenserEntry;
-                UpdateEntry(entry, packet);
-                return;
-            }
-        }
+        UpdateEntry(ControlPanelEntryUpdate.Find<UIControlPanelDispenserEntry>(packet.Index, packet.AstroId, packet.ObjId), packet);
     }
 
     private static void UpdateEntry(UIControlPanelDispenserEntry entry, LCPDispenserEntryUpdate packet)
@@ -70,59 +61,10 @@ internal class LCPDispenserEntryUpdateProcessor : PacketProcessor<LCPDispenserEn
         entry.courierCountText.text = packet.IdleCourierCount.ToString() + "/" + (packet.IdleCourierCount + packet.WorkCourierCount).ToString();
 
         // Update power UI
-        var consumerRatio = (float)packet.ConsumerRatio;
-        int powerStatusCode;
-        if (consumerRatio >= 1f)
-        {
-            entry.powerCircleFg.fillAmount = 1f;
-            powerStatusCode = 1;
-        }
-        else
-        {
-            entry.powerCircleFg.fillAmount = consumerRatio;
-            powerStatusCode = ((consumerRatio >= 0.1f) ? 2 : 3);
-        }
-        StringBuilderUtility.WriteKMG1000(entry.sbw, 8, packet.RequirePower, true);
-        StringBuilderUtility.WriteKMG1000(entry.sbw2, 8, packet.WorkEnergyPerTick * 60L, true);
-        entry.powerText.text = entry.sbw.ToString();
-        entry.maxChargePowerValue.text = entry.sbw2.ToString();
-        entry.powerRoundFg.fillAmount = packet.PowerRound;
-        switch (powerStatusCode)
-        {
-
-            case 1:
-                entry.powerSignImage.color = entry.masterWindow.powerSignColor1;
-                entry.powerCircleBg.color = entry.masterWindow.powerCircleBgColor1;
-                entry.powerCircleFg.color = entry.masterWindow.powerCircleFgColor1;
-                entry.powerRoundFg.color = entry.masterWindow.powerRoundFgColor1;
-                entry.powerText.color = entry.masterWindow.powerTextColor1;
-                entry.maxChargePowerValue.color = entry.masterWindow.powerTextColor1;
-                break;
-            case 2:
-                entry.powerSignImage.color = entry.masterWindow.powerSignColor2;
-                entry.powerCircleBg.color = entry.masterWindow.powerCircleBgColor2;
-                entry.powerCircleFg.color = entry.masterWindow.powerCircleFgColor2;
-                entry.powerRoundFg.color = entry.masterWindow.powerRoundFgColor2;
-                entry.powerText.color = entry.masterWindow.powerTextColor2;
-                entry.maxChargePowerValue.color = entry.masterWindow.powerTextColor2;
-                break;
-            case 3:
-                entry.powerSignImage.color = entry.masterWindow.powerSignColor3;
-                entry.powerCircleBg.color = entry.masterWindow.powerCircleBgColor3;
-                entry.powerCircleFg.color = entry.masterWindow.powerCircleFgColor3;
-                entry.powerRoundFg.color = entry.masterWindow.powerRoundFgColor3;
-                entry.powerText.color = entry.masterWindow.powerTextColor3;
-                entry.maxChargePowerValue.color = entry.masterWindow.powerTextColor3;
-                break;
-            default:
-                entry.powerSignImage.color = entry.masterWindow.powerSignColor0;
-                entry.powerCircleBg.color = entry.masterWindow.powerCircleBgColor0;
-                entry.powerCircleFg.color = entry.masterWindow.powerCircleFgColor0;
-                entry.powerRoundFg.color = entry.masterWindow.powerRoundFgColor0;
-                entry.powerText.color = entry.masterWindow.powerTextColor0;
-                entry.maxChargePowerValue.color = entry.masterWindow.powerTextColor0;
-                break;
-        }
+        ControlPanelEntryUpdate.ApplyPower(entry,
+            new PowerReadout(entry.powerSignImage, entry.powerCircleBg, entry.powerCircleFg, entry.powerRoundFg,
+                entry.powerText, entry.maxChargePowerValue, entry.sbw, entry.sbw2),
+            packet.ConsumerRatio, packet.RequirePower, packet.WorkEnergyPerTick, packet.PowerRound);
         entry.warningItemCanvasGroup.alpha = packet.WarningFlag ? 1 : 0;
     }
 }

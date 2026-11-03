@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using NebulaeModel.Networking;
 using NebulaeModel.Logger;
@@ -16,7 +16,7 @@ internal class BuildEntityRequestProcessor : PacketProcessor<BuildEntityRequest>
     protected override void ProcessPacket(BuildEntityRequest packet, NebulaeConnection conn)
     {
         if (packet.CollectionBefore == null || packet.CollectionBefore.Length > NebulaeModel.DataStructures.VegetableCollectionState.MaxBytes) return;
-        if (!IsHost) Multiplayer.Session.Vegetation.InstallReplicaCollection(packet.AuthorId, packet.CollectionBefore);
+        if (!IsHost) Multiplayer.Session.Vegetation.InstallReplicaCollection(packet.AuthorId, packet.CollectionBefore, packet.CollectionRevision);
         if (IsHost)
         {
             var sender = Players.Get(conn);
@@ -62,21 +62,26 @@ internal class BuildEntityRequestProcessor : PacketProcessor<BuildEntityRequest>
                 return; // Do not construct under a different id and cascade the mismatch.
             }
 
-            if (planet.factoryLoaded)
+            using (Multiplayer.Session.Factories.RelayCollection(packet.CollectionBefore, packet.CollectionRevision))
             {
-                planet.factory.BuildFinally(GameMain.mainPlayer, packet.PrebuildId, true, true);
-            }
-            else
-            {
-                Multiplayer.Session.Factories.AddPlanetTimer(packet.PlanetId);
-                // setting specifyPlanet here to avoid accessing a null object (see GPUInstancingManager activePlanet getter)
-                var pData = GameMain.gpuiManager.specifyPlanet;
-                GameMain.gpuiManager.specifyPlanet = GameMain.galaxy.PlanetById(packet.PlanetId);
-                // Flatten the terrain for remote planet build by other players
-                planet.factory.BuildFinally(GameMain.mainPlayer, packet.PrebuildId, true, true);
-                GameMain.gpuiManager.specifyPlanet = pData;
+                if (planet.factoryLoaded)
+                {
+                    planet.factory.BuildFinally(GameMain.mainPlayer, packet.PrebuildId, true, true);
+                }
+                else
+                {
+                    Multiplayer.Session.Factories.AddPlanetTimer(packet.PlanetId);
+                    // setting specifyPlanet here to avoid accessing a null object (see GPUInstancingManager activePlanet getter)
+                    var pData = GameMain.gpuiManager.specifyPlanet;
+                    GameMain.gpuiManager.specifyPlanet = GameMain.galaxy.PlanetById(packet.PlanetId);
+                    // Flatten the terrain for remote planet build by other players
+                    planet.factory.BuildFinally(GameMain.mainPlayer, packet.PrebuildId, true, true);
+                    GameMain.gpuiManager.specifyPlanet = pData;
+                }
             }
 
+            // Building flattens terrain and can collect vegetation, so the remote collection must
+            // be persisted even when the request repeated an unchanged payload.
             if (IsHost && packet.AuthorId > 0 && packet.AuthorId <= ushort.MaxValue)
                 Multiplayer.Session.Vegetation.CaptureRemote((ushort)packet.AuthorId);
 

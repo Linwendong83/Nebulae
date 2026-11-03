@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using NebulaeModel.DataStructures;
 using NebulaeModel.Logger;
@@ -21,7 +21,33 @@ internal sealed class PlayerLifeManager : IDisposable
     private long requestedTicket, pendingTicket, nextTicket, acceptedTicket, exitTicket;
     private long requiredCombatRevision = -1;
     private bool exiting;
+    private long exitStarted;
     private Action afterExitCheckpoint;
+
+    /// <summary>
+    ///     How long a client exit waits for its final personal checkpoint before leaving anyway.
+    /// </summary>
+    /// <remarks>
+    ///     The checkpoint is a round trip to the host, and every reason the host can refuse or drop
+    ///     it (a combat ledger the client cannot advance, a recreated host actor, a lost receipt)
+    ///     used to hold the player in "Saving personal progress..." forever. Leaving with a stale
+    ///     personal image is recoverable; an unquittable game is not.
+    /// </remarks>
+    internal const double ExitTimeoutSeconds = 20;
+
+    /// <summary>
+    ///     How long an unanswered or unsendable personal checkpoint may hold the player.
+    /// </summary>
+    /// <remarks>
+    ///     A receipt that never arrives (a host answering another revision, a lost packet) or a send
+    ///     the gate never allows (inventory settlement that itself waits for the checkpoint) used to
+    ///     keep the player blocked indefinitely: 2026-11-03, requested=244 pending=244 accepted=243
+    ///     for more than five minutes with no receipt at all. Dropping the ticket and asking for a
+    ///     fresh snapshot is recoverable; a frozen inventory is not.
+    /// </remarks>
+    internal const double CheckpointStallSeconds = 20;
+
+    private long blockedSince;
     public bool BlocksInventory => requestedTicket != 0 || pending != null;
     public bool IsExiting => exiting;
     internal long AcceptedTicket => acceptedTicket;
@@ -34,10 +60,22 @@ internal sealed class PlayerLifeManager : IDisposable
         return requestedTicket;
     }
 
-    public bool EnsureInventoryCheckpoint(ref long ticket, bool allowExit = false)
+    public bool EnsureInventoryCheckpoint(ref long ticket, bool allowExit = false, double maxAgeSeconds = 0)
     {
         if (Multiplayer.Session.IsServer) return true;
         if (exiting && !allowExit) return false;
+        if (maxAgeSeconds > 0)
+        {
+            // The background checkpoint already runs on a fixed cadence. An operation that only
+            // needs "a recent baseline" can ride on it instead of forcing a full player snapshot and
+            // two round trips per action (manual building did exactly that, once per building).
+            var fresh = acceptedTicket > 0 && requestedTicket == 0 && pending == null &&
+                        DateTime.UtcNow.Ticks - lastCheckpoint <= (long)(TimeSpan.TicksPerSecond * maxAgeSeconds);
+            if (fresh) return true;
+            // An in-flight checkpoint will become that recent baseline; requesting another ticket
+            // now would only queue a second snapshot behind it.
+            if (pending != null && requestedTicket == 0) return false;
+        }
         if (ticket == 0) ticket = RequestCheckpoint();
         return acceptedTicket >= ticket && requestedTicket == 0 && pending == null;
     }
@@ -55,6 +93,7 @@ internal sealed class PlayerLifeManager : IDisposable
         var session = Multiplayer.Session;
         if (!session.IsGameLoaded || session.IsDedicated || session.JoinSync?.CanInteract == false) return;
         var now = DateTime.UtcNow.Ticks;
+        var bypass = ServiceStall(now);
         if (requestedTicket == 0 && pending == null && now - lastCheckpoint >= TimeSpan.TicksPerSecond * 5)
             RequestCheckpoint();
         if (pending != null)
@@ -62,8 +101,8 @@ internal sealed class PlayerLifeManager : IDisposable
             if (now - lastSend >= TimeSpan.TicksPerSecond * 2) Send();
             return;
         }
-        if (requestedTicket == 0 || now < retryAfter || session.IsClient && session.InventoryTransfers.Pending) return;
-        if (requiredCombatRevision >= 0 && session.CombatAuthority.LastAppliedRevision <= requiredCombatRevision) return;
+        if (requestedTicket == 0 || now < retryAfter || !bypass && session.IsClient && session.InventoryTransfers.Pending) return;
+        if (!bypass && requiredCombatRevision >= 0 && session.CombatAuthority.LastAppliedRevision <= requiredCombatRevision) return;
         requiredCombatRevision = -1;
         var bytes = MetadataTransactionManager.CapturePlayer();
         var data = (PlayerData)session.LocalPlayer.Data;
@@ -88,6 +127,40 @@ internal sealed class PlayerLifeManager : IDisposable
         Send();
     }
 
+    /// <summary>
+    ///     Breaks a checkpoint that has been waiting for a receipt or for its gate for too long.
+    /// </summary>
+    /// <returns><c>true</c> when this tick may ignore the settlement gates and publish now.</returns>
+    private bool ServiceStall(long now)
+    {
+        if (requestedTicket == 0 && pending == null)
+        {
+            blockedSince = 0;
+            return false;
+        }
+        if (blockedSince == 0)
+        {
+            blockedSince = now;
+            return false;
+        }
+        if (now - blockedSince < (long)(TimeSpan.TicksPerSecond * CheckpointStallSeconds)) return false;
+        var state = DiagnosticState;
+        blockedSince = now;
+        if (pending != null)
+        {
+            Diagnostics.Warn("checkpoint:stalled:receipt",
+                () => $"[checkpoint] no receipt for {CheckpointStallSeconds:F0}s; dropping the ticket and asking for a fresh snapshot {state}");
+            pending = null; pendingTicket = 0;
+            requestedTicket = ++nextTicket;
+            retryAfter = 0; consecutiveRetries = 0;
+            return false;
+        }
+        Diagnostics.Warn("checkpoint:stalled:send",
+            () => $"[checkpoint] the request stayed unsendable for {CheckpointStallSeconds:F0}s; publishing it anyway {state}");
+        retryAfter = 0;
+        return true;
+    }
+
     private void Send()
     {
         if (pending == null) return;
@@ -107,7 +180,15 @@ internal sealed class PlayerLifeManager : IDisposable
         var status = (CheckpointReceiptStatus)receipt.ReceiptStatus;
         if (status is CheckpointReceiptStatus.Accepted or CheckpointReceiptStatus.Duplicate)
         {
-            if (receipt.AcceptedRevision < pending.Life.Revision) return;
+            if (receipt.AcceptedRevision < pending.Life.Revision)
+            {
+                // The host accepted an older revision than the one this ticket carries, so the
+                // ticket stays pending and every resend is answered the same way. Report it: this
+                // is the shape a client-side exit stall takes when the host never advances.
+                Diagnostics.Warn("checkpoint:accepted-behind",
+                    () => $"[checkpoint] receipt acceptedRevision={receipt.AcceptedRevision} behind pending={pending.Life.Revision} {DiagnosticState}");
+                return;
+            }
             acceptedTicket = Math.Max(acceptedTicket, pendingTicket);
             pending = null; lastCheckpoint = DateTime.UtcNow.Ticks;
             retryAfter = 0; consecutiveRetries = 0;
@@ -132,7 +213,7 @@ internal sealed class PlayerLifeManager : IDisposable
 
     public void BeginExit(Action completed)
     {
-        exiting = true; afterExitCheckpoint = completed;
+        exiting = true; afterExitCheckpoint = completed; exitStarted = 0;
         Multiplayer.Session.Research.TakeBackAfterPending();
     }
 
@@ -142,15 +223,30 @@ internal sealed class PlayerLifeManager : IDisposable
         var action = GameMain.mainPlayer.controller.actionDeath;
         if (!GameMain.mainPlayer.isAlive && action.respawning && action.respawnStage != lastStage) RequestCheckpoint();
         ServiceCheckpoint();
-        if (exiting && !Multiplayer.Session.Research.HasUnsettled && !Multiplayer.Session.InventoryTransfers.Pending)
+        ServiceExit(DateTime.UtcNow.Ticks);
+    }
+
+    /// <summary>Runs the deferred exit once its final checkpoint settles, or once waiting for it has
+    /// demonstrably failed.</summary>
+    internal void ServiceExit(long now)
+    {
+        if (!exiting || afterExitCheckpoint == null) return;
+        if (exitStarted == 0) exitStarted = now;
+        if (!Multiplayer.Session.Research.HasUnsettled && !Multiplayer.Session.InventoryTransfers.Pending)
         {
             if (exitTicket == 0) exitTicket = RequestCheckpoint();
-            if (afterExitCheckpoint != null && acceptedTicket >= exitTicket && pending == null && requestedTicket == 0)
-            {
-                var completed = afterExitCheckpoint; afterExitCheckpoint = null;
-                NebulaeModel.Utils.UnityDispatchQueue.RunOnMainThread(completed);
-            }
+            if (acceptedTicket >= exitTicket && pending == null && requestedTicket == 0) { CompleteExit(); return; }
         }
+        if (now - exitStarted < (long)(TimeSpan.TicksPerSecond * ExitTimeoutSeconds)) return;
+        Diagnostics.Warn("checkpoint:exit-timeout",
+            () => $"[checkpoint] leaving without a settled personal checkpoint after {ExitTimeoutSeconds:F0}s {DiagnosticState}");
+        CompleteExit();
+    }
+
+    private void CompleteExit()
+    {
+        var completed = afterExitCheckpoint; afterExitCheckpoint = null;
+        if (completed != null) NebulaeModel.Utils.UnityDispatchQueue.RunOnMainThread(completed);
     }
 
     internal static CheckpointReceiptStatus StoreServerResult(PlayerData player, byte[] snapshot,
@@ -164,8 +260,10 @@ internal sealed class PlayerLifeManager : IDisposable
         if (checkpoint.Life.Revision <= player.Life.Revision) return CheckpointReceiptStatus.Duplicate;
         itemAcks ??= Array.Empty<int>(); debitAcks ??= Array.Empty<int>();
         if (Multiplayer.Session?.IsServer == true &&
-            !Multiplayer.Session.CombatAuthority.ValidateCheckpoint(player.PlayerId, commandAck, debitAck, itemAcks, debitAcks))
+            !Multiplayer.Session.CombatAuthority.ValidateCheckpoint(player.PlayerId, commandAck, debitAck, itemAcks, debitAcks,
+                out var acceptedCommandAck))
         { reason = CheckpointRejectReason.CombatLedger; return CheckpointReceiptStatus.Retry; }
+        else acceptedCommandAck = commandAck;
         var requestedRespawn = checkpoint.Life.IsAlive;
         var personalFight = checkpoint.Mecha.FightData;
         if (player.CombatAuthoritative && !Multiplayer.Session.CombatAuthority.ValidatePersonalStocks(player.PlayerId, combatRevision, personalFight))
@@ -175,7 +273,7 @@ internal sealed class PlayerLifeManager : IDisposable
         if (!player.TryApplyPersonalSnapshot(checkpoint))
         { reason = CheckpointRejectReason.InvalidSnapshot; return CheckpointReceiptStatus.Rejected; }
         if (Multiplayer.Session?.IsServer == true && player.CombatAuthoritative)
-            Multiplayer.Session.CombatAuthority.AcceptCheckpoint(player.PlayerId, player, checkpoint, commandAck, debitAck,
+            Multiplayer.Session.CombatAuthority.AcceptCheckpoint(player.PlayerId, player, checkpoint, acceptedCommandAck, debitAck,
                 itemAcks, debitAcks, requestedRespawn, personalFight, combatRevision);
         if (Multiplayer.Session?.IsServer == true) Multiplayer.Session.InventoryTransfers.Acknowledge(player.PlayerId, inventoryTransferSequence);
         return CheckpointReceiptStatus.Accepted;

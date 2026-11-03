@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
@@ -10,6 +10,7 @@ internal sealed class OrderedSendQueue
 {
     private const int PrefetchLimit = 2;
     private readonly Queue<(byte[] Bytes, Func<byte[]> Factory, Func<IEnumerable<byte[]>> Batch, bool Groupable)> packets = new();
+    private readonly Queue<byte[]> urgent = new();
     private readonly Queue<byte[]> ready = new();
     private IEnumerator<byte[]> batch;
     private readonly Func<byte[], byte[]> prepare;
@@ -24,7 +25,7 @@ internal sealed class OrderedSendQueue
     public string FailureDiagnostics { get; private set; }
     public string DiagnosticState
     {
-        get { lock (packets) return $"queued={packets.Count} ready={ready.Count} preparing={preparing} sending={sending} batch={batch != null} stopped={stopped} failed={failed} busyFor={(oldestQueuedAt == 0 ? 0 : Logger.Diagnostics.Now - oldestQueuedAt):F1}s"; }
+        get { lock (packets) return $"queued={packets.Count} urgent={urgent.Count} ready={ready.Count} preparing={preparing} sending={sending} batch={batch != null} stopped={stopped} failed={failed} busyFor={(oldestQueuedAt == 0 ? 0 : Logger.Diagnostics.Now - oldestQueuedAt):F1}s"; }
     }
     public bool DiagnosticBacklogged
     {
@@ -46,6 +47,30 @@ internal sealed class OrderedSendQueue
     }
 
     public void Enqueue(byte[] packet) => EnqueueCore((packet, null, null, canCombine?.Invoke(packet) == true));
+
+    /// <summary>
+    ///     Queues a control frame ahead of the replication backlog.
+    /// </summary>
+    /// <remarks>
+    ///     A state stream can hold tens of thousands of frames while one client catches up, and a
+    ///     quitting client waits on exactly one small receipt. Sending that receipt in order behind
+    ///     the backlog delayed it by minutes, which is what a stuck exit looked like from both ends.
+    ///     Urgent frames still go through preparation and the single socket send, so wire writes
+    ///     stay serialized; only their position in the queue changes.
+    /// </remarks>
+    public void EnqueueUrgent(byte[] packet)
+    {
+        if (packet == null) return;
+        bool start;
+        lock (packets)
+        {
+            if (stopped) return;
+            if (!preparing && !sending && packets.Count == 0 && ready.Count == 0 && urgent.Count == 0 && batch == null)
+                oldestQueuedAt = lastProgressAt = Logger.Diagnostics.Now;
+            urgent.Enqueue(packet); start = StartPreparation();
+        }
+        if (start) Schedule();
+    }
     public void Enqueue(Func<byte[]> factory, bool groupable = false) => EnqueueCore((null, factory, null, groupable));
     public void EnqueueBatch(byte[][] originals, Func<byte[][], IEnumerable<byte[]>> wrap) =>
         EnqueueCore((null, null, () => PrepareBatch(originals, wrap), false));
@@ -67,7 +92,7 @@ internal sealed class OrderedSendQueue
         lock (packets)
         {
             if (stopped) return;
-            if (!preparing && !sending && packets.Count == 0 && ready.Count == 0 && batch == null) oldestQueuedAt = lastProgressAt = Logger.Diagnostics.Now;
+            if (!preparing && !sending && packets.Count == 0 && ready.Count == 0 && urgent.Count == 0 && batch == null) oldestQueuedAt = lastProgressAt = Logger.Diagnostics.Now;
             packets.Enqueue(packet); start = StartPreparation();
         }
         if (start) Schedule();
@@ -76,7 +101,7 @@ internal sealed class OrderedSendQueue
     // Called under the queue lock. A socket completion never starts a second preparer.
     private bool StartPreparation()
     {
-        if (stopped || preparing || ready.Count >= PrefetchLimit || batch == null && packets.Count == 0) return false;
+        if (stopped || preparing || ready.Count >= PrefetchLimit || batch == null && packets.Count == 0 && urgent.Count == 0) return false;
         preparing = true; return true;
     }
 
@@ -96,16 +121,28 @@ internal sealed class OrderedSendQueue
             while (true)
             {
                 (byte[] Bytes, Func<byte[]> Factory, Func<IEnumerable<byte[]>> Batch, bool Groupable) pending = default;
-                IEnumerator<byte[]> current;
+                IEnumerator<byte[]> current = null;
+                byte[] control = null;
                 lock (packets)
                 {
-                    if (stopped || ready.Count >= PrefetchLimit || batch == null && packets.Count == 0)
+                    if (stopped || ready.Count >= PrefetchLimit || batch == null && packets.Count == 0 && urgent.Count == 0)
                     { preparing = false; Monitor.PulseAll(packets); return; }
-                    current = batch;
-                    if (current == null) pending = packets.Dequeue();
+                    // Acknowledgements leave before any queued or batched replication frame: the
+                    // peer is waiting on them, and the backlog behind them can be minutes deep.
+                    if (urgent.Count > 0) control = urgent.Dequeue();
+                    else
+                    {
+                        current = batch;
+                        if (current == null) pending = packets.Dequeue();
+                    }
                 }
                 byte[] framed;
-                if (current != null)
+                if (control != null)
+                {
+                    stage = "urgent-encode";
+                    framed = Prepare(control);
+                }
+                else if (current != null)
                 {
                     stage = "snapshot-batch";
                     if (!current.MoveNext())
@@ -186,14 +223,20 @@ internal sealed class OrderedSendQueue
 
     private void Complete(bool success)
     {
-        if (!success) { Fail(new System.IO.IOException("Websocket send failed")); return; }
+        if (!success)
+        {
+            var error = new System.IO.IOException("Websocket send failed");
+            error.Data["Nebulae.SendStage"] = "socket-send";
+            Fail(error);
+            return;
+        }
         bool start; byte[] next;
         lock (packets)
         {
             if (stopped) return;
             sending = false; next = TakeReady(); start = StartPreparation();
             lastProgressAt = Logger.Diagnostics.Now;
-            if (!preparing && !sending && packets.Count == 0 && ready.Count == 0 && batch == null) oldestQueuedAt = 0;
+            if (!preparing && !sending && packets.Count == 0 && ready.Count == 0 && urgent.Count == 0 && batch == null) oldestQueuedAt = 0;
             Monitor.PulseAll(packets);
         }
         if (next != null) SendReady(next);
@@ -205,7 +248,7 @@ internal sealed class OrderedSendQueue
         lock (packets)
         {
             stopped = true; failed |= failure; preparing = false; sending = false;
-            packets.Clear(); ready.Clear();
+            packets.Clear(); urgent.Clear(); ready.Clear();
             // Iterators own managed arrays only. The active preparer owns any current MoveNext.
             batch = null; Monitor.PulseAll(packets);
         }
@@ -222,7 +265,7 @@ internal sealed class OrderedSendQueue
         var start = Stopwatch.GetTimestamp();
         lock (packets)
         {
-            while (preparing || sending || packets.Count > 0 || ready.Count > 0 || batch != null)
+            while (preparing || sending || packets.Count > 0 || urgent.Count > 0 || ready.Count > 0 || batch != null)
             {
                 var remaining = timeoutMilliseconds - (int)((Stopwatch.GetTimestamp() - start) * 1000 / Stopwatch.Frequency);
                 if (remaining <= 0 || !Monitor.Wait(packets, remaining)) return false;

@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using NebulaeWorld.MonoBehaviours.Local.Chat;
 using UnityEngine;
@@ -19,7 +19,6 @@ internal class NavigateChatLinkHandler : IChatLinkHandler
             case 2: // PlayerId
                 if (!ushort.TryParse(substrings[0], out var playerId)) return;
                 Multiplayer.Session.Gizmos.SetIndicatorPlayerId(playerId);
-                ChatManager.Instance.SendChatMessage("Navigate to ".Translate() + substrings[1]);
                 break;
 
             case 3: // AstroId
@@ -52,7 +51,6 @@ internal class NavigateChatLinkHandler : IChatLinkHandler
                     return;
                 }
                 gizmoManager.ObservingPlayerId = playerId;
-                ChatManager.Instance.SendChatMessage("Tracking mode (ESC or click again to exit)".Translate());
                 break;
 
             case 3: // AstroId
@@ -100,7 +98,6 @@ internal class NavigateChatLinkHandler : IChatLinkHandler
                     toRotate = Quaternion.LookRotation(Vector3.Cross(normalized, vector), vector);
                     GameCamera.instance.planetPoser.rotationWanted = toRotate;
                 }
-                ChatManager.Instance.SendChatMessage("Tracking mode (ESC or click again to exit)".Translate());
                 break;
         }
     }
@@ -152,11 +149,6 @@ internal class NavigateChatLinkHandler : IChatLinkHandler
         }
     }
 
-    public static string FormatNavigateString(string data)
-    {
-        var substrings = data.Split(SplitSeparator);
-        return $"<link=\"navigate {data}\"><color=\"white\"><u>{substrings[substrings.Length - 1]}</u></color></link>";
-    }
 
     public static string FormatNavigateToAstro(int astroId, string displayString)
     {
@@ -171,6 +163,11 @@ internal class NavigateChatLinkHandler : IChatLinkHandler
             + pos.x + SplitSeparator.ToString() + pos.y + SplitSeparator.ToString() + pos.z + SplitSeparator.ToString()
             + displayString;
         return FormatNavigateString(data);
+    }
+    public static string FormatNavigateString(string data)
+    {
+        var substrings = data.Split(SplitSeparator);
+        return $"<link=\"navigate {data}\"><color=\"white\"><u>{substrings[substrings.Length - 1]}</u></color></link>";
     }
 
     private static bool TryParsePlanetPos(string[] substrings, out int planetId, out Vector3 pos)

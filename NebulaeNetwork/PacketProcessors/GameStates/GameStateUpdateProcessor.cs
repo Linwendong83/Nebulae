@@ -16,6 +16,6 @@ internal class GameStateUpdateProcessor : PacketProcessor<GameStateUpdate>
         if (IsHost) return;
         Multiplayer.Session.State.ProcessGameStateUpdatePacket(packet.SentTime, packet.GameTick,
             packet.UnitsPerSecond, packet.SimSpeed,
-            NebulaeModel.Networking.Serialization.NebulaeNetPacketProcessor.CurrentPacketQueueSeconds);
+            NebulaeModel.Networking.Serialization.NebulaeNetPacketProcessor.CurrentPacketQueueSeconds, packet.Paused, packet.PauseLimit);
     }
 }

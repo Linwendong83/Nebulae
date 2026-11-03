@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using System;
 using NebulaeModel.Networking;
@@ -18,7 +18,7 @@ internal class DestructEntityRequestProcessor : PacketProcessor<DestructEntityRe
     protected override void ProcessPacket(DestructEntityRequest packet, NebulaeConnection conn)
     {
         if (packet.CollectionBefore == null || packet.CollectionBefore.Length > NebulaeModel.DataStructures.VegetableCollectionState.MaxBytes) return;
-        if (!IsHost) Multiplayer.Session.Vegetation.InstallReplicaCollection(packet.AuthorId, packet.CollectionBefore);
+        if (!IsHost) Multiplayer.Session.Vegetation.InstallReplicaCollection(packet.AuthorId, packet.CollectionBefore, packet.CollectionRevision);
         if (IsHost)
         {
             var sender = Players.Get(conn, EConnectionStatus.Connected);
@@ -72,8 +72,13 @@ internal class DestructEntityRequestProcessor : PacketProcessor<DestructEntityRe
             var pData = GameMain.gpuiManager.specifyPlanet;
 
             GameMain.gpuiManager.specifyPlanet = planet;
-            pab.DoDismantleObject(packet.ObjId);
-            if (IsHost && packet.AuthorId > 0 && packet.AuthorId <= ushort.MaxValue)
+            using (Multiplayer.Session.Factories.RelayCollection(packet.CollectionBefore, packet.CollectionRevision))
+            {
+                pab.DoDismantleObject(packet.ObjId);
+            }
+            // An empty payload means the author repeated a revision the host already persisted;
+            // only a changed collection needs the remote copy re-serialized.
+            if (IsHost && packet.AuthorId > 0 && packet.AuthorId <= ushort.MaxValue && packet.CollectionBefore is { Length: > 0 })
                 Multiplayer.Session.Vegetation.CaptureRemote((ushort)packet.AuthorId);
             GameMain.gpuiManager.specifyPlanet = pData;
 

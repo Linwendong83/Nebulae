@@ -95,13 +95,28 @@ internal static class NativeCraftEnergy_Patch
     private static Budget GetBudget(BattleBaseComponent b)
     {
         var budget = budgets.GetValue(b, _ => new Budget { Baseline = b.energy, Value = b.energy, Tick = GameMain.gameTick });
-        if (budget.Baseline != b.energy) { budget.Baseline = budget.Value = b.energy; budget.Tick = GameMain.gameTick; }
+        // The base's own native update re-derives its energy every tick, but a powered base settles
+        // on the same joule for long stretches (the required power equals the idle drain). Treating
+        // "the value changed" as the liveness signal therefore let a healthy base look stale after
+        // two seconds, and every drone of it force-recycled — it stopped engaging, stopped firing
+        // and flipped against the replicated formation state every checkpoint. Re-anchor once per
+        // tick instead: the client spends against the current tick's energy, and only a base whose
+        // simulation really stopped still expires.
+        if (budget.Tick != GameMain.gameTick || budget.Baseline != b.energy)
+        {
+            budget.Baseline = budget.Value = b.energy;
+            budget.Tick = GameMain.gameTick;
+        }
         return budget;
     }
-    internal static long BaseEnergy(BattleBaseComponent b) => !WorldSimulation.IsClient ? b.energy :
+    // The native engage loops read "defenseSystem.battleBases.buffer[owner.battleBaseId].energy"
+    // without a null check. A replicated fleet can outlive its base component on a client, so the
+    // slot really is null there. ConditionalWeakTable rejects a null key, which would turn that
+    // native dereference into an ArgumentNullException("key") instead of a base with no power.
+    internal static long BaseEnergy(BattleBaseComponent b) => b == null ? 0 : !WorldSimulation.IsClient ? b.energy :
         GameMain.gameTick - GetBudget(b).Tick > 120 ? 0 : GetBudget(b).Value;
     internal static void SetBaseEnergy(BattleBaseComponent b, long value)
-    { if (!WorldSimulation.IsClient) b.energy = value; else GetBudget(b).Value = System.Math.Max(0, value); }
+    { if (b == null) return; if (!WorldSimulation.IsClient) b.energy = value; else GetBudget(b).Value = System.Math.Max(0, value); }
 }
 
 [HarmonyPatch]

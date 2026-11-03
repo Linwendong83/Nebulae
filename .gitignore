@@ -1,9 +1,8 @@
 # Nebulae (Dyson Sphere Program multiplayer mod) — project-specific ignores
 
 .gitignore
-# Preserve the existing tracked test project/samples; other tests remain local.
-# 忽略掉tests和gitignore主要是减少这个项目的ai味 GPT特别喜欢写测试 这都有一千多个测试了
-NebulaeTests/
+# The MSTest project is part of the repository: a failing test must be visible in review.
+# (bin/obj are covered by the generic build-output rules above.)
 
 # Local dev environment: Steam/DSP install paths (template: DevEnv.targets.example)
 DevEnv.targets
@@ -15,6 +14,10 @@ DevEnv.targets
 tools/
 dist/
 *.binlog
+
+# Syncthing local-only files: folder marker and per-machine ignore rules
+.stfolder/
+.stignore
 
 # Local scratch output from ad-hoc commands: `nul` is what a stray `> nul` redirect creates on
 # Windows, and test_out.txt is a captured console log. Neither belongs in history.

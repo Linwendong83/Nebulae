@@ -1,4 +1,4 @@
-﻿namespace NebulaeModel.Packets.Factory;
+namespace NebulaeModel.Packets.Factory;
 
 [NebulaeModel.Networking.PacketId(15220517484467970874UL)]
 internal class BuildEntityRequest : NebulaeModel.Networking.IVegetationOperation
@@ -27,4 +27,7 @@ internal class BuildEntityRequest : NebulaeModel.Networking.IVegetationOperation
     public long CommandSequence { get; set; }
     [NebulaeModel.Networking.WireOrder(6)]
     public long InstanceGeneration { get; set; }
+    /// <summary>Author collection version; repeated payloads in one burst share it.</summary>
+    [NebulaeModel.Networking.WireOrder(7)]
+    public long CollectionRevision { get; set; }
 }

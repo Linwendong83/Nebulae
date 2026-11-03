@@ -16,7 +16,7 @@ internal class GameStateRequestProcessor : PacketProcessor<GameStateRequest>
         {
             conn.SendPacket(
                 new GameStateUpdate(packet.SentTimestamp, GameStatesManager.RealGameTick, GameStatesManager.RealUPS,
-                    (float)FPSController.SimulateSpeed));
+                    (float)FPSController.SimulateSpeed, GameStatesManager.HostWorldPaused, GameStatesManager.HostPauseLimit));
         }
         else
         {

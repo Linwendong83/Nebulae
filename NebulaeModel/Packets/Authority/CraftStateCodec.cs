@@ -40,73 +40,44 @@ namespace NebulaeModel.Packets.Authority;
 /// static records do not pay for unused motion fields.
 /// </para>
 /// </remarks>
-internal readonly struct CraftState
+internal readonly struct CraftState(
+    bool hasCombatStat, bool isDynamic, bool isSpace,
+    short protoId, short modelIndex, short port, byte prototype, byte stateFlags,
+    int astroId, int owner,
+    double posX, double posY, double posZ,
+    float rotX, float rotY, float rotZ, float rotW,
+    float velX, float velY, float velZ,
+    int hp, int hpMax, int hpRecover, int hpIncoming, long sampleTick = 0,
+    ushort playerOwner = 0, byte[] nativeFleet = null, byte[] nativeUnit = null)
 {
-    public CraftState(bool hasCombatStat, bool isDynamic, bool isSpace,
-        short protoId, short modelIndex, short port, byte prototype, byte stateFlags,
-        int astroId, int owner,
-        double posX, double posY, double posZ,
-        float rotX, float rotY, float rotZ, float rotW,
-        float velX, float velY, float velZ,
-        int hp, int hpMax, int hpRecover, int hpIncoming, long sampleTick = 0,
-        ushort playerOwner = 0, byte[] nativeFleet = null, byte[] nativeUnit = null)
-    {
-        HasCombatStat = hasCombatStat;
-        IsDynamic = isDynamic;
-        IsSpace = isSpace;
-        ProtoId = protoId;
-        ModelIndex = modelIndex;
-        Port = port;
-        Prototype = prototype;
-        StateFlags = stateFlags;
-        AstroId = astroId;
-        Owner = owner;
-        PosX = posX;
-        PosY = posY;
-        PosZ = posZ;
-        RotX = rotX;
-        RotY = rotY;
-        RotZ = rotZ;
-        RotW = rotW;
-        VelX = velX;
-        VelY = velY;
-        VelZ = velZ;
-        Hp = hp;
-        HpMax = hpMax;
-        HpRecover = hpRecover;
-        HpIncoming = hpIncoming;
-        SampleTick = sampleTick;
-        PlayerOwner = playerOwner; NativeFleet = nativeFleet; NativeUnit = nativeUnit;
-    }
-
-    public bool HasCombatStat { get; }
-    public bool IsDynamic { get; }
-    public bool IsSpace { get; }
-    public short ProtoId { get; }
-    public short ModelIndex { get; }
-    public short Port { get; }
-    public byte Prototype { get; }
-    public byte StateFlags { get; }
-    public int AstroId { get; }
-    public int Owner { get; }
-    public double PosX { get; }
-    public double PosY { get; }
-    public double PosZ { get; }
-    public float RotX { get; }
-    public float RotY { get; }
-    public float RotZ { get; }
-    public float RotW { get; }
-    public float VelX { get; }
-    public float VelY { get; }
-    public float VelZ { get; }
-    public int Hp { get; }
-    public int HpMax { get; }
-    public int HpRecover { get; }
-    public int HpIncoming { get; }
-    public long SampleTick { get; }
-    public ushort PlayerOwner { get; }
-    public byte[] NativeFleet { get; }
-    public byte[] NativeUnit { get; }
+    public bool HasCombatStat { get; } = hasCombatStat;
+    public bool IsDynamic { get; } = isDynamic;
+    public bool IsSpace { get; } = isSpace;
+    public short ProtoId { get; } = protoId;
+    public short ModelIndex { get; } = modelIndex;
+    public short Port { get; } = port;
+    public byte Prototype { get; } = prototype;
+    public byte StateFlags { get; } = stateFlags;
+    public int AstroId { get; } = astroId;
+    public int Owner { get; } = owner;
+    public double PosX { get; } = posX;
+    public double PosY { get; } = posY;
+    public double PosZ { get; } = posZ;
+    public float RotX { get; } = rotX;
+    public float RotY { get; } = rotY;
+    public float RotZ { get; } = rotZ;
+    public float RotW { get; } = rotW;
+    public float VelX { get; } = velX;
+    public float VelY { get; } = velY;
+    public float VelZ { get; } = velZ;
+    public int Hp { get; } = hp;
+    public int HpMax { get; } = hpMax;
+    public int HpRecover { get; } = hpRecover;
+    public int HpIncoming { get; } = hpIncoming;
+    public long SampleTick { get; } = sampleTick;
+    public ushort PlayerOwner { get; } = playerOwner;
+    public byte[] NativeFleet { get; } = nativeFleet;
+    public byte[] NativeUnit { get; } = nativeUnit;
 }
 
 /// <summary>Encoding of <see cref="CraftState"/> into one bounded state blob.</summary>

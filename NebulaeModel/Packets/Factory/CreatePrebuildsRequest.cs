@@ -23,13 +23,37 @@ internal class CreatePrebuildsRequest
         using (var writer = new BinaryUtils.Writer())
         {
             writer.BinaryWriter.Write(buildPreviews.Count);
+            // A blueprint request carries one preview per pasted building, and every preview names
+            // its neighbours through <see cref="BuildPreview.output"/> and <see cref="BuildPreview.input"/>.
+            // Resolving those with List.IndexOf inside the loop compared the whole list once per
+            // preview, so a large paste spent quadratic time here before a single byte was sent.
+            // Index the list once; the wire format is unchanged.
+            var indices = BuildPreviewIndices(buildPreviews);
             foreach (var t in buildPreviews)
             {
-                SerializeBuildPreview(t, buildPreviews, writer.BinaryWriter);
+                SerializeBuildPreview(t, indices, writer.BinaryWriter);
             }
             BuildPreviewData = writer.CloseAndGetBytes();
         }
         PrebuildId = prebuildId;
+    }
+
+    /// <summary>Wraps an already encoded preview payload (the host relaying a client request).</summary>
+    /// <remarks>
+    /// The bytes describe exactly the previews the host is about to create, so forwarding them keeps
+    /// the blueprint off the encoder a second time. Nothing may mutate this array afterwards; the
+    /// receiver only ever reads it.
+    /// </remarks>
+    public static CreatePrebuildsRequest FromEncodedPayload(int planetId, byte[] buildPreviewData,
+        int playerId, string buildToolType, int prebuildId)
+    {
+        var request = new CreatePrebuildsRequest();
+        request.PlanetId = planetId;
+        request.BuildPreviewData = buildPreviewData;
+        request.AuthorId = playerId;
+        request.BuildToolType = buildToolType;
+        request.PrebuildId = prebuildId;
+        return request;
     }
 
     [NebulaeModel.Networking.WireOrder(0)]
@@ -137,10 +161,36 @@ internal class CreatePrebuildsRequest
         buildPreview.condition = (EBuildCondition)br.ReadInt32();
     }
 
-    public static void SerializeBuildPreview(BuildPreview buildPreview, IList<BuildPreview> list, BinaryWriter bw)
+    public static void SerializeBuildPreview(BuildPreview buildPreview, IList<BuildPreview> list, BinaryWriter bw) =>
+        SerializeBuildPreview(buildPreview, BuildPreviewIndices(list), bw);
+
+    /// <summary>Maps a preview to its position the way <c>IList.IndexOf</c> would, in one pass.</summary>
+    private static Dictionary<BuildPreview, int> BuildPreviewIndices(IList<BuildPreview> list)
     {
-        bw.Write(list.IndexOf(buildPreview.output));
-        bw.Write(list.IndexOf(buildPreview.input));
+        // BuildPreview does not override Equals, so identity is the reference. The comparer is still
+        // explicit: a game update that adds value equality must not silently reindex the links.
+        var indices = new Dictionary<BuildPreview, int>(list.Count, ReferenceComparer.Instance);
+        for (var i = 0; i < list.Count; i++)
+            // First occurrence wins, matching IndexOf for the (unlikely) duplicated reference.
+            if (list[i] != null && !indices.ContainsKey(list[i])) indices.Add(list[i], i);
+        return indices;
+    }
+
+    private static int IndexOf(Dictionary<BuildPreview, int> indices, BuildPreview preview) =>
+        preview != null && indices.TryGetValue(preview, out var index) ? index : -1;
+
+    private sealed class ReferenceComparer : IEqualityComparer<BuildPreview>
+    {
+        internal static readonly ReferenceComparer Instance = new();
+        public bool Equals(BuildPreview x, BuildPreview y) => ReferenceEquals(x, y);
+        public int GetHashCode(BuildPreview obj) => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+    }
+
+    public static void SerializeBuildPreview(BuildPreview buildPreview, Dictionary<BuildPreview, int> indices,
+        BinaryWriter bw)
+    {
+        bw.Write(IndexOf(indices, buildPreview.output));
+        bw.Write(IndexOf(indices, buildPreview.input));
         bw.Write(buildPreview.objId);
         var num = buildPreview.nearestPowerObjId?.Length ?? 0;
         bw.Write(num);

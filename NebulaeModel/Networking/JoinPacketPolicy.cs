@@ -14,6 +14,7 @@ internal sealed class JoinPacketPolicy
     public const int Ignore = int.MinValue;
     private const int Envelope = int.MaxValue;
     private readonly Dictionary<ulong, Func<object, int>> policies = new();
+    private readonly Dictionary<ulong, Func<object, string>> coalescers = new();
     private readonly NebulaeNetPacketProcessor decoder = new();
     private readonly List<JoinSyncBuffer.Change> changes = new();
     private int depth;
@@ -43,11 +44,16 @@ internal sealed class JoinPacketPolicy
         Register<NebulaeModel.Packets.Combat.CombatTruceUpdatePacket>(_ => 0);
         Register<NebulaeModel.Packets.Combat.Mecha.PlayerLifePacket>(null);
         Register<NebulaeModel.Packets.Combat.PlayerWeaponPacket>(null);
-        Register<NebulaeModel.Packets.Factory.Assembler.FactoryProductPacket>(p => p.Key?.Length == AuthorityLimits.ObjectKeyBytes ? ObjectKeyCodec.ReadRaw(p.Key, 0).Scope : Ignore);
-        Register<NebulaeModel.Packets.Factory.BattleBase.BattleBaseSettingUpdatePacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.Assembler.FactoryProductPacket>(
+            p => p.Key?.Length == AuthorityLimits.ObjectKeyBytes ? ObjectKeyCodec.ReadRaw(p.Key, 0).Scope : Ignore,
+            CoalesceFactoryProduct);
+        Register<NebulaeModel.Packets.Factory.BattleBase.BattleBaseSettingUpdatePacket>(p => p.PlanetId,
+            p => FieldKey("bbs", p.PlanetId, p.BattleBaseId, (int)p.Event));
         Register<NebulaeModel.Packets.Factory.Belt.BeltReverseRequestPacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Belt.BeltSignalIconPacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Belt.BeltSignalNumberPacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.Belt.BeltSignalIconPacket>(p => p.PlanetId,
+            p => ObjectKey("bsi", p.PlanetId, p.EntityId));
+        Register<NebulaeModel.Packets.Factory.Belt.BeltSignalNumberPacket>(p => p.PlanetId,
+            p => ObjectKey("bsn", p.PlanetId, p.EntityId));
         Register<NebulaeModel.Packets.Factory.Belt.BeltUpdatePickupItemsPacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.Belt.BeltUpdatePutItemOnPacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.Belt.BeltUpdatePutItemsPacket>(p => p.PlanetId);
@@ -64,51 +70,77 @@ internal sealed class JoinPacketPolicy
         Register<NebulaeModel.Packets.Factory.RepairDroneStatePacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.BuildEntityRequest>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.BuildingDeathPacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.PrebuildInstancePacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.BuildTargetAssignmentPacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.PrebuildInstancePacket>(p => p.PlanetId,
+            p => ObjectKey("pbi", p.PlanetId, p.PrebuildId));
+        // Batches are replayed in order and resolved by the monotonic per-slot map, so they need no
+        // coalescing key of their own.
+        Register<NebulaeModel.Packets.Factory.PrebuildInstanceBatchPacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.BuildTargetAssignmentPacket>(p => p.PlanetId,
+            p => ObjectKey("bta", p.PlanetId, p.PrebuildId));
         Register<NebulaeModel.Packets.Factory.BuildTargetAssignmentReplyPacket>(null);
         Register<NebulaeModel.Packets.Factory.BuildTargetBaseReleaseAckPacket>(null);
         Register<NebulaeModel.Packets.Factory.BuildTargetReadyPacket>(null);
         Register<NebulaeModel.Packets.Factory.CreatePrebuildsRequest>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.DestructEntityRequest>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Ejector.EjectorAutoOrbitUpdatePacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Ejector.EjectorOrbitUpdatePacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.EntityBoostSwitchPacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.EntityWarningSwitchPacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.ExtraInfoUpdatePacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.Ejector.EjectorAutoOrbitUpdatePacket>(p => p.PlanetId,
+            p => ObjectKey("eao", p.PlanetId, p.EjectorIndex));
+        Register<NebulaeModel.Packets.Factory.Ejector.EjectorOrbitUpdatePacket>(p => p.PlanetId,
+            p => ObjectKey("eor", p.PlanetId, p.EjectorIndex));
+        Register<NebulaeModel.Packets.Factory.EntityBoostSwitchPacket>(p => p.PlanetId,
+            p => FieldKey("ebs", p.PlanetId, p.Id, (int)p.EntityType));
+        Register<NebulaeModel.Packets.Factory.EntityWarningSwitchPacket>(p => p.PlanetId,
+            p => ObjectKey("ews", p.PlanetId, p.EntityId));
+        Register<NebulaeModel.Packets.Factory.ExtraInfoUpdatePacket>(p => p.PlanetId,
+            p => ObjectKey("eiu", p.PlanetId, p.ObjId));
         Register<NebulaeModel.Packets.Factory.Foundation.FoundationBlueprintPastePacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.Foundation.FoundationBuildUpdatePacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.Foundation.PlanetReformPacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.Foundation.VeinPosUpdatePacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Inserter.InserterFilterUpdatePacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Inserter.InserterItemUpdatePacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.Inserter.InserterFilterUpdatePacket>(p => p.PlanetId,
+            p => ObjectKey("ifu", p.PlanetId, p.InserterIndex));
+        Register<NebulaeModel.Packets.Factory.Inserter.InserterItemUpdatePacket>(p => p.PlanetId,
+            p => ObjectKey("iiu", p.PlanetId, p.InserterIndex));
         Register<NebulaeModel.Packets.Factory.Inserter.InserterOffsetCorrectionPacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Inserter.NewSetInserterInsertTargetPacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Inserter.NewSetInserterPickTargetPacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.Inserter.NewSetInserterTargetPacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.Miner.MinerStoragePickupPacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Monitor.MonitorSettingUpdatePacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Monitor.SpeakerSettingUpdatePacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.Monitor.MonitorSettingUpdatePacket>(p => p.PlanetId,
+            p => FieldKey("mon", p.PlanetId, p.MonitorId, (int)p.Event));
+        Register<NebulaeModel.Packets.Factory.Monitor.SpeakerSettingUpdatePacket>(p => p.PlanetId,
+            p => FieldKey("spk", p.PlanetId, p.SpeakerId, (int)p.Event));
         Register<NebulaeModel.Packets.Factory.PasteBuildingSettingUpdate>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.PowerExchanger.PowerExchangerChangeModePacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.PowerExchanger.PowerExchangerStorageUpdatePacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.PowerGenerator.PowerGeneratorFuelUpdatePacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.PowerGenerator.PowerGeneratorProductUpdatePacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.PowerExchanger.PowerExchangerChangeModePacket>(p => p.PlanetId,
+            p => ObjectKey("pxm", p.PlanetId, p.PowerExchangerIndex));
+        Register<NebulaeModel.Packets.Factory.PowerExchanger.PowerExchangerStorageUpdatePacket>(p => p.PlanetId,
+            p => ObjectKey("pxs", p.PlanetId, p.PowerExchangerIndex));
+        Register<NebulaeModel.Packets.Factory.PowerGenerator.PowerGeneratorFuelUpdatePacket>(p => p.PlanetId,
+            p => ObjectKey("pgf", p.PlanetId, p.PowerGeneratorIndex));
+        Register<NebulaeModel.Packets.Factory.PowerGenerator.PowerGeneratorProductUpdatePacket>(p => p.PlanetId,
+            p => ObjectKey("pgp", p.PlanetId, p.PowerGeneratorIndex));
         Register<NebulaeModel.Packets.Factory.PowerTower.PowerTowerChargerUpdate>(null);
         Register<NebulaeModel.Packets.Factory.PrebuildItemRequiredUpdate>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.PrebuildReconstructPacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.RayReceiver.RayReceiverChangeLensPacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.RayReceiver.RayReceiverChangeModePacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Splitter.SplitterFilterChangePacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Splitter.SplitterPriorityChangePacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.RayReceiver.RayReceiverChangeLensPacket>(p => p.PlanetId,
+            p => ObjectKey("rrl", p.PlanetId, p.GeneratorId));
+        Register<NebulaeModel.Packets.Factory.RayReceiver.RayReceiverChangeModePacket>(p => p.PlanetId,
+            p => ObjectKey("rrm", p.PlanetId, p.GeneratorId));
+        Register<NebulaeModel.Packets.Factory.Splitter.SplitterFilterChangePacket>(p => p.PlanetId,
+            p => ObjectKey("spf", p.PlanetId, p.SplitterIndex));
+        Register<NebulaeModel.Packets.Factory.Splitter.SplitterPriorityChangePacket>(p => p.PlanetId,
+            p => FieldKey("spp", p.PlanetId, p.SplitterIndex, p.Slot));
         Register<NebulaeModel.Packets.Factory.Storage.StorageSyncRealtimeChangePacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Factory.Storage.StorageSyncRequestPacket>(null);
         Register<NebulaeModel.Packets.Factory.Storage.StorageSyncResponsePacket>(null);
-        Register<NebulaeModel.Packets.Factory.Storage.StorageSyncSetBansPacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Storage.StorageSyncSetFilterPacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.Storage.StorageSyncSetBansPacket>(p => p.PlanetId,
+            p => ObjectKey("ssb", p.PlanetId, p.StorageIndex));
+        Register<NebulaeModel.Packets.Factory.Storage.StorageSyncSetFilterPacket>(p => p.PlanetId,
+            p => "ssf:" + p.PlanetId + ":" + p.StorageIndex + ":" + p.GridIndex + ":" + (int)p.StorageType);
         Register<NebulaeModel.Packets.Factory.Storage.StorageSyncSortPacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Tank.SprayerStorageUpdatePacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Tank.TankInputOutputSwitchPacket>(p => p.PlanetId);
-        Register<NebulaeModel.Packets.Factory.Tank.TankStorageUpdatePacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Factory.Tank.SprayerStorageUpdatePacket>(p => p.PlanetId,
+            p => ObjectKey("sps", p.PlanetId, p.SprayerIndex));
+        Register<NebulaeModel.Packets.Factory.Tank.TankInputOutputSwitchPacket>(p => p.PlanetId,
+            p => ObjectKey("tio", p.PlanetId, p.TankIndex));
+        Register<NebulaeModel.Packets.Factory.Tank.TankStorageUpdatePacket>(p => p.PlanetId,
+            p => ObjectKey("tst", p.PlanetId, p.TankIndex));
         Register<NebulaeModel.Packets.Factory.UpgradeEntityRequest>(p => p.PlanetId);
         Register<NebulaeModel.Packets.GameHistory.GameHistoryEnqueueTechPacket>(_ => 0);
         Register<NebulaeModel.Packets.GameHistory.GameHistoryFeatureKeyPacket>(null);
@@ -142,14 +174,15 @@ internal sealed class JoinPacketPolicy
         Register<NebulaeModel.Packets.Logistics.ControlPanel.LCPStationRouteResultsPacket>(null);
         Register<NebulaeModel.Packets.Logistics.DispenserAddTakePacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Logistics.DispenserCourierPacket>(null);
-        Register<NebulaeModel.Packets.Logistics.DispenserSettingPacket>(p => p.PlanetId);
+        Register<NebulaeModel.Packets.Logistics.DispenserSettingPacket>(p => p.PlanetId,
+            p => FieldKey("dsp", p.PlanetId, p.DispenserId, (int)p.Event));
         Register<NebulaeModel.Packets.Logistics.DispenserStorePacket>(p => p.PlanetId);
         Register<NebulaeModel.Packets.Logistics.ILSAddStationComponent>(p => -p.PlanetId);
         Register<NebulaeModel.Packets.Logistics.ILSArriveStarPlanetRequest>(null);
         Register<NebulaeModel.Packets.Logistics.ILSArriveStarPlanetResponse>(null);
         Register<NebulaeModel.Packets.Logistics.ILSgStationPoolSync>(null);
         Register<NebulaeModel.Packets.Logistics.ILSRemoveStationComponent>(p => -p.PlanetId);
-        Register<NebulaeModel.Packets.Logistics.ILSRequestgStationPoolSync>(null);
+        Register<NebulaeModel.Packets.Logistics.ILSRequestStationPoolSync>(null);
         Register<NebulaeModel.Packets.Logistics.ILSShipLifecyclePacket>(p => -p.PlanetId);
         Register<NebulaeModel.Packets.Logistics.ILSStorageCommitPacket>(p => -p.PlanetId);
         Register<NebulaeModel.Packets.Logistics.ILSUpdateRoute>(_ => 0);
@@ -252,11 +285,29 @@ internal sealed class JoinPacketPolicy
 
     public bool Contains(Type type) => policies.ContainsKey(WireContract.PacketId(type));
 
-    private void Register<T>(Func<T, int> policy) where T : class, new()
+    private void Register<T>(Func<T, int> policy, Func<T, string> coalesce = null) where T : class, new()
     {
-        policies.Add(WireContract.PacketId(typeof(T)), policy == null ? null : p => policy((T)p));
+        var id = WireContract.PacketId(typeof(T));
+        policies.Add(id, policy == null ? null : p => policy((T)p));
+        if (coalesce != null) coalescers.Add(id, p => coalesce((T)p));
         if (policy != null)
             decoder.Subscribe<T>(packet => Describe(packet, currentBytes), () => new T());
+    }
+
+    // Absolute state of one object or one setting: only its latest value has to be replayed.
+    // Operations that carry an event (items on a belt, construction, destruction, ...) stay
+    // append-only, so they pass null here.
+    private static string ObjectKey(string kind, int planet, int id) => kind + ":" + planet + ":" + id;
+    private static string FieldKey(string kind, int planet, int id, int field) =>
+        kind + ":" + planet + ":" + id + ":" + field;
+
+    private static string CoalesceFactoryProduct(NebulaeModel.Packets.Factory.Assembler.FactoryProductPacket packet)
+    {
+        if (packet.Key == null) return null;
+        var message = (NebulaeModel.Packets.Factory.Assembler.FactoryProductMessage)packet.Message;
+        if (message is not (NebulaeModel.Packets.Factory.Assembler.FactoryProductMessage.Snapshot or
+            NebulaeModel.Packets.Factory.Assembler.FactoryProductMessage.FighterPortsSnapshot)) return null;
+        return "fpp:" + packet.Message + ":" + Convert.ToBase64String(packet.Key);
     }
 
     public JoinSyncBuffer.Change[] Describe<T>(T packet, byte[] bytes) where T : class
@@ -267,7 +318,8 @@ internal sealed class JoinPacketPolicy
             if (++depth > 8) { depth--; throw new InvalidOperationException("Nested join envelope is too deep."); }
             try
             {
-                if (!policies.TryGetValue(WireContract.PacketId(packet.GetType()), out var policy))
+                var id = WireContract.PacketId(packet.GetType());
+                if (!policies.TryGetValue(id, out var policy))
                     throw new InvalidOperationException("Missing join policy for " + packet.GetType());
                 var scope = policy?.Invoke(packet) ?? Ignore;
                 if (scope == Envelope)
@@ -276,7 +328,9 @@ internal sealed class JoinPacketPolicy
                     if (inner == null || inner.Length > JoinSyncBuffer.BatchCount) throw new InvalidOperationException("Invalid join envelope.");
                     foreach (var raw in inner) Decode(raw);
                 }
-                else if (scope != Ignore) changes.Add(new JoinSyncBuffer.Change(scope, bytes));
+                else if (scope != Ignore)
+                    changes.Add(new JoinSyncBuffer.Change(scope, bytes,
+                        coalescers.TryGetValue(id, out var coalesce) ? coalesce(packet) : null));
                 return depth == 1 ? changes.ToArray() : Array.Empty<JoinSyncBuffer.Change>();
             }
             finally { depth--; }

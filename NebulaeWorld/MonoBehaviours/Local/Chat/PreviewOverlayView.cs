@@ -449,10 +449,11 @@ public sealed class PreviewOverlayView : MonoBehaviour
 
     private void OnMessageAdded(RawChatMessage message)
     {
-        if (message.MessageType != ChatMessageType.PlayerMessage) return;
+        // System and battle messages have no author; they are shown as plain lines so death and
+        // battle notices are not silently dropped by the player-chat path.
         AddEntry(new OverlayEntry
         {
-            Name = message.UserName ?? string.Empty,
+            Name = message.MessageType == ChatMessageType.PlayerMessage ? message.UserName ?? string.Empty : string.Empty,
             Text = message.MessageText ?? string.Empty,
             ReceivedAt = Time.unscaledTime,
             Source = message

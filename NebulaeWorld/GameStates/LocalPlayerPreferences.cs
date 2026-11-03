@@ -12,6 +12,9 @@ internal static class LocalPlayerPreferences
     private static string dashboardPath;
     private static byte[] dashboardBytes;
     private static string restoredDashboardPath;
+    private static bool sandboxReplicatorKnown;
+    private static bool sandboxIsDirectlyObtain;
+    private static bool sandboxDirectlyObtainIsStack;
     private static string PathFor(string kind) => Path.Combine(LegacyDataMigration.DataDirectory(GameConfig.propertyFolder),
         AtomicFile.IdentityFileName(MetadataManager.LocalIdentity), SaveManager.WorldId + "." + kind);
 
@@ -133,6 +136,84 @@ internal static class LocalPlayerPreferences
             }
             catch (Exception e) { Log.Warn($"Could not restore personal pick filters path={candidate.Path}: {e}"); }
         }
+    }
+
+    // Vanilla keeps both sandbox replicator switches in GamePrefsData, which only the native world
+    // save persists. A client never writes the host's world, so its personal choice is kept beside
+    // the other personal state, keyed by the same world id, and reapplied once the world is loaded.
+    public static void SaveSandboxReplicatorPreferences(bool directlyObtain, bool stack)
+    {
+        if (!Multiplayer.IsActive || !Multiplayer.Session.IsGameLoaded || Multiplayer.IsDedicated ||
+            Multiplayer.Session.LocalPlayer.IsHost || !sandboxReplicatorKnown) return;
+        if (directlyObtain == sandboxIsDirectlyObtain && stack == sandboxDirectlyObtainIsStack) return;
+        string path = null;
+        try
+        {
+            using var ms = new MemoryStream();
+            using (var writer = new BinaryWriter(ms, System.Text.Encoding.UTF8, true))
+            {
+                writer.Write(1);
+                writer.Write(directlyObtain);
+                writer.Write(stack);
+            }
+            path = PathFor("sandbox-replicator");
+            AtomicFile.Write(path, ms.ToArray());
+            sandboxIsDirectlyObtain = directlyObtain;
+            sandboxDirectlyObtainIsStack = stack;
+        }
+        catch (Exception e) { Log.Warn($"Could not save personal sandbox replicator preferences path={path}: {e}"); }
+    }
+
+    public static void RestoreSandboxReplicatorPreferences()
+    {
+        if (!Multiplayer.IsActive || !Multiplayer.Session.IsGameLoaded || Multiplayer.IsDedicated ||
+            Multiplayer.Session.LocalPlayer.IsHost) return;
+        var preferences = GameMain.data?.preferences;
+        if (preferences == null) return;
+
+        foreach (var candidate in ReadCandidates("sandbox-replicator"))
+        {
+            try
+            {
+                using var reader = new BinaryReader(new MemoryStream(candidate.Bytes));
+                if (reader.ReadInt32() != 1)
+                    throw new InvalidDataException("Unsupported personal sandbox replicator version");
+                var directlyObtain = reader.ReadBoolean();
+                var stack = reader.ReadBoolean();
+                if (reader.BaseStream.Position != reader.BaseStream.Length)
+                    throw new InvalidDataException("Invalid personal sandbox replicator data");
+
+                // The replicator window has already read the native defaults during UI init.
+                preferences.sandboxIsDirectlyObtain = directlyObtain;
+                preferences.sandboxDirectlyObtainIsStack = stack;
+                ApplySandboxReplicatorSwitches(directlyObtain, stack);
+                sandboxIsDirectlyObtain = directlyObtain;
+                sandboxDirectlyObtainIsStack = stack;
+                sandboxReplicatorKnown = true;
+                return;
+            }
+            catch (Exception e)
+            {
+                Log.Warn($"Could not restore personal sandbox replicator preferences path={candidate.Path}: {e}");
+            }
+        }
+
+        // No personal choice stored yet: adopt whatever this world's load left in place.
+        sandboxIsDirectlyObtain = preferences.sandboxIsDirectlyObtain;
+        sandboxDirectlyObtainIsStack = preferences.sandboxDirectlyObtainIsStack;
+        sandboxReplicatorKnown = true;
+    }
+
+    private static void ApplySandboxReplicatorSwitches(bool directlyObtain, bool stack)
+    {
+        var replicator = UIRoot.instance?.uiGame?.replicator;
+        if (replicator == null) return;
+        replicator.isInstantItem = directlyObtain;
+        replicator.isBatch = stack;
+        if (replicator.instantItemSwitch != null) replicator.instantItemSwitch.SetToggleNoEvent(directlyObtain);
+        if (replicator.batchSwitch == null) return;
+        replicator.batchSwitch.gameObject.SetActive(GameMain.sandboxToolsEnabled && directlyObtain);
+        replicator.batchSwitch.SetToggleNoEvent(stack);
     }
 
     public static bool HasDashboard => restoredDashboardPath == PathFor("dashboard");

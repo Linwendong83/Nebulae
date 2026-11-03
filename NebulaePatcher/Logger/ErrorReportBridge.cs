@@ -73,7 +73,8 @@ internal sealed class ErrorReportBridge : MonoBehaviour, ILogListener
         if (!ReferenceEquals(eventArgs.Source, source) || reporter == null) return;
         try
         {
-            var message = eventArgs.Data?.ToString() ?? "";
+            // The sink stamps every line; the report ring writes its own ISO time.
+            var message = LogTimestamp.Strip(eventArgs.Data?.ToString()) ?? "";
             if (message.StartsWith("[error-reporter]", StringComparison.Ordinal)) return;
             var isError = (eventArgs.Level & (LogLevel.Error | LogLevel.Fatal)) != 0;
             // Debug logging is often per tick and does not belong in the context ring.

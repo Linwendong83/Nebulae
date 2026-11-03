@@ -1,4 +1,4 @@
-﻿using NebulaeModel.Networking;
+using NebulaeModel.Networking;
 #region
 
 using System;
@@ -71,6 +71,11 @@ internal class BuildToolManager : IDisposable
 
         var incomingBlueprintEvent = packet.BuildToolType == typeof(BuildTool_BlueprintPaste).ToString();
         var pos = Vector3.zero;
+        // A blueprint payload is the largest thing this handler touches. Decode it once and reuse the
+        // previews for the host's connection test and for the creation call below; decoding twice
+        // allocated every preview and parameter array twice per paste.
+        List<BuildPreview> blueprintPreviews = null;
+        if (incomingBlueprintEvent && !packet.TryGetBuildPreviews(out blueprintPreviews)) blueprintPreviews = null;
 
         //Create Prebuilds from incoming packet and prepare new position
         var tmpList = new List<BuildPreview>();
@@ -110,7 +115,7 @@ internal class BuildToolManager : IDisposable
                 planet.factory.prebuildPool);
             if (canBuild)
             {
-                var previews = incomingBlueprintEvent && packet.TryGetBuildPreviews(out var blueprintPreviews)
+                var previews = incomingBlueprintEvent && blueprintPreviews != null
                     ? blueprintPreviews : buildTool.buildPreviews;
                 canBuild = GeothermalPlacement.Validate(planet.factory, previews);
             }
@@ -167,12 +172,12 @@ internal class BuildToolManager : IDisposable
                     var previousPool = bpTool.bpPool;
 
                     // Perform the requested CreatePrebuilds();
-                    if (packet.TryGetBuildPreviews(out var incomingPreviews))
+                    if (blueprintPreviews != null)
                     {
-                        bpTool.bpCursor = incomingPreviews.Count;
-                        bpTool.bpPool = incomingPreviews.ToArray();
+                        bpTool.bpCursor = blueprintPreviews.Count;
+                        bpTool.bpPool = blueprintPreviews.ToArray();
                         bpTool.CreatePrebuilds();
-                        pos = incomingPreviews[0].lpos;
+                        pos = blueprintPreviews[0].lpos;
                     }
 
                     // Revert to previous data
@@ -213,6 +218,11 @@ internal class BuildToolManager : IDisposable
 
     private static void CheckAndFixConnections(BuildTool buildTool, PlanetData planet)
     {
+        // A re-pasted blueprint names the prebuild each covered preview replaces. The finished
+        // entity that took that slot is found by position, and scanning the whole entity pool for
+        // every such preview was quadratic (large blueprint on a full planet). Index the occupied
+        // slots once per request instead; the three-cell search covers the 0.1 squared tolerance.
+        Dictionary<(int X, int Y, int Z), List<int>> index = null;
         foreach (var preview in buildTool.buildPreviews)
         {
             //Check only, if buildPreview has some connection to another prebuild
@@ -221,10 +231,12 @@ internal class BuildToolManager : IDisposable
                 continue;
             }
             var tmpVector = preview.lpos;
-            if (planet.factory.prebuildPool[-preview.coverObjId].id != 0)
+            var prebuildId = -preview.coverObjId;
+            var prebuildPool = planet.factory.prebuildPool;
+            if (prebuildId > 0 && prebuildId < prebuildPool.Length && prebuildPool[prebuildId].id != 0)
             {
                 //Prebuild exists, check if it is same prebuild that client wants by comparing prebuild positions
-                if (tmpVector == planet.factory.prebuildPool[-preview.coverObjId].pos)
+                if (tmpVector == prebuildPool[prebuildId].pos)
                 {
                     //Position of prebuilds are same, everything is OK.
                     continue;
@@ -233,17 +245,59 @@ internal class BuildToolManager : IDisposable
             // Prebuild does not exists, check what is the new ID of the finished building that was constructed from prebuild
             // or
             // Positions of prebuilds are different, which means this is different prebuild and we need to find ID of contructed building
-            foreach (var entity in planet.factory.entityPool)
+            index ??= BuildEntityPositionIndex(planet.factory);
+            var cx = Mathf.FloorToInt(tmpVector.x);
+            var cy = Mathf.FloorToInt(tmpVector.y);
+            var cz = Mathf.FloorToInt(tmpVector.z);
+            for (var dx = -1; dx <= 1 && preview.coverObjId < 0; dx++)
             {
-                // `entity.pos == tmpVector` does not work in every cases (rounding errors?).
-                if (!((entity.pos - tmpVector).sqrMagnitude < 0.1f))
+                for (var dy = -1; dy <= 1 && preview.coverObjId < 0; dy++)
                 {
-                    continue;
+                    for (var dz = -1; dz <= 1; dz++)
+                    {
+                        if (!index.TryGetValue((cx + dx, cy + dy, cz + dz), out var ids))
+                        {
+                            continue;
+                        }
+                        foreach (var id in ids)
+                        {
+                            // `entity.pos == tmpVector` does not work in every cases (rounding errors?).
+                            if (!((planet.factory.entityPool[id].pos - tmpVector).sqrMagnitude < 0.1f))
+                            {
+                                continue;
+                            }
+                            preview.coverObjId = id;
+                            break;
+                        }
+                        if (preview.coverObjId >= 0)
+                        {
+                            break;
+                        }
+                    }
                 }
-                preview.coverObjId = entity.id;
-                break;
             }
         }
+    }
+
+    /// <summary>Buckets every live entity by its integer planet-local position cell.</summary>
+    private static Dictionary<(int X, int Y, int Z), List<int>> BuildEntityPositionIndex(PlanetFactory factory)
+    {
+        var index = new Dictionary<(int X, int Y, int Z), List<int>>(factory.entityCursor);
+        var pool = factory.entityPool;
+        for (var id = 1; id < factory.entityCursor && id < pool.Length; id++)
+        {
+            if (pool[id].id != id)
+            {
+                continue;
+            }
+            var cell = (Mathf.FloorToInt(pool[id].pos.x), Mathf.FloorToInt(pool[id].pos.y), Mathf.FloorToInt(pool[id].pos.z));
+            if (!index.TryGetValue(cell, out var ids))
+            {
+                index[cell] = ids = new List<int>(1);
+            }
+            ids.Add(id);
+        }
+        return index;
     }
 
     private static bool CheckBuildingConnections(List<BuildPreview> buildPreviews, IList<EntityData> entityPool,

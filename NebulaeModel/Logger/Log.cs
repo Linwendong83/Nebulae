@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using System;
 using System.Text.RegularExpressions;
@@ -72,7 +72,12 @@ internal static class Log
                 });
                 return;
             }
+            // Same contract as the threaded branch: the window displays the message, the game's own
+            // error state is not ours to set. Leaving it raised made the exit autosave treat a
+            // mod-side error as a game crash and write to the errored slot.
+            var tmp = GameMain.errored;
             UIFatalErrorTip.instance.ShowError("[Nebulae Error] " + message, "");
+            GameMain.errored = tmp;
         }
     }
 
@@ -103,13 +108,14 @@ internal static class Log
         log = Regex.Replace(log, Ipv4Regex, "(IPv4 Address)");
         log = Regex.Replace(log, Ipv6Regex, "(IPv6 Address)");
 
-        if (data.Level >= LogLevel.Error)
+        if (data.Level >= LogLevel.Error && !SocketLogPolicy.IsTransportFailure(data.Caller?.GetMethod()))
         {
-            Diagnostics.Error("socket:" + data.Level + ":" + data.Message, () => log);
+            Diagnostics.Error("socket:error:" + data.Level + ":" + data.Message, () => log);
         }
-        else if (data.Level == LogLevel.Warn)
+        else if (data.Level >= LogLevel.Warn)
         {
-            Diagnostics.Warn("socket:" + data.Message, () => log);
+            // A transport warning must not throttle a callback error with the same text.
+            Diagnostics.Warn("socket:warning:" + data.Level + ":" + data.Message, () => log);
         }
         else Debug(log);
     }

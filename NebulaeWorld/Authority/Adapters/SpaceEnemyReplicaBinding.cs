@@ -116,6 +116,13 @@ internal sealed class SpaceEnemyReplicaBinding : IReplicaMirrorObserver, IReplic
             BindingDiagnostics.OutsideWindow(nameof(SpaceEnemyReplicaBinding), scope);
             return;
         }
+        var enemies = GameMain.spaceSector?.enemyPool;
+        if (enemies != null && key.NativeId > 0 && key.NativeId < enemies.Length && enemies[key.NativeId].id == key.NativeId)
+        {
+            var hive = enemies[key.NativeId].originAstroId;
+            var facts = Multiplayer.Session?.AuthorityRuntime?.DarkFogReplica;
+            if (facts?.HiveRoots.TryGetValue(hive, out var root) == true && root == key.NativeId) facts.HiveRoots[hive] = 0;
+        }
         core?.PlayDeath(key);
     }
 

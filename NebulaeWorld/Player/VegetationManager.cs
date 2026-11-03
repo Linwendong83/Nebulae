@@ -21,7 +21,19 @@ internal sealed class VegetationManager : IDisposable
     private readonly VegetationCollectionJournal journal = new();
     private readonly Dictionary<ushort, long> receiptRevisions = new();
     private readonly Dictionary<ushort, long> commandSequences = new();
+    private readonly Dictionary<VegetableCollection, CollectionCache> collectionCaches = new();
+    private readonly object collectionCacheGate = new();
+    private readonly Dictionary<ushort, long> installedReplicaRevisions = new();
+    private long localVersion = 1;
     private long nextCommandSequence;
+
+    private sealed class CollectionCache
+    {
+        public long Version = -1;
+        public byte[] Bytes;
+        public long LastSentVersion = -1;
+        public long LastSentTick = long.MinValue;
+    }
     public long NextCommandSequence() => System.Threading.Interlocked.Increment(ref nextCommandSequence);
     public bool AcceptCommand(ushort player, long sequence)
     {
@@ -56,20 +68,63 @@ internal sealed class VegetationManager : IDisposable
 
     public void EndReplay() => ReplayCollection = replayStack.Count > 0 ? replayStack.Pop() : null;
 
-    private bool IsLocalCollection(VegetableCollection collection) => !restoring && ReplayCollection == null &&
-        Multiplayer.IsActive && Multiplayer.Session.IsGameLoaded && Multiplayer.Session.LocalPlayer.IsClient &&
+    private bool IsLocalPlayerCollection(VegetableCollection collection) => !restoring && ReplayCollection == null &&
         collection == VegetationAccess.LocalCollection(GameMain.mainPlayer);
+
+    private bool IsLocalCollection(VegetableCollection collection) => IsLocalPlayerCollection(collection) &&
+        Multiplayer.IsActive && Multiplayer.Session.IsGameLoaded && Multiplayer.Session.LocalPlayer.IsClient;
 
     public void BeforeLocalChange(VegetableCollection collection)
     {
-        if (IsLocalCollection(collection)) journal.ObserveBefore(VegetableCollectionState.Capture(collection));
+        // The capture cache serves the host and clients alike, so the version follows the native
+        // mutation even where the journal (client-only) does not.
+        if (IsLocalPlayerCollection(collection)) System.Threading.Interlocked.Increment(ref localVersion);
+        if (!IsLocalCollection(collection)) return;
+        journal.ObserveBefore(VegetableCollectionState.Capture(collection));
     }
 
     public void MarkLocalDirty(VegetableCollection collection)
     {
+        if (IsLocalPlayerCollection(collection)) System.Threading.Interlocked.Increment(ref localVersion);
         if (!IsLocalCollection(collection)) return;
         journal.ObserveAfter(VegetableCollectionState.Capture(collection));
         localDirty = true;
+    }
+
+    /// <summary>
+    ///     Serializes the collection that an operation's replay needs on the receiving peers.
+    /// </summary>
+    /// <remarks>
+    ///     Every building of an area dismantle used to serialize the player's whole collection again,
+    ///     and every peer restored it again. The bytes only depend on the collection, so they are
+    ///     captured once per version; a burst that repeats the same version in one tick sends the
+    ///     full payload once and empty payloads afterwards, which receivers treat as "unchanged".
+    ///     A collection that is not the local player's (the host relaying another author) is not
+    ///     cached, because native replay mutates it in place.
+    /// </remarks>
+    public (byte[] Bytes, long Revision) CaptureRequest(VegetableCollection collection)
+    {
+        if (collection == null) return (Array.Empty<byte>(), 0);
+        if (collection != VegetationAccess.LocalCollection(GameMain.mainPlayer))
+            return (VegetableCollectionState.Capture(collection), 0);
+        // Drones finish on simulation workers, so several builds can ask for the same collection at
+        // once; the cache and its bookkeeping are guarded like the native pools they mirror.
+        lock (collectionCacheGate)
+        {
+            var version = localVersion;
+            if (!collectionCaches.TryGetValue(collection, out var cache))
+                collectionCaches[collection] = cache = new CollectionCache();
+            if (cache.Bytes == null || cache.Version != version)
+            {
+                cache.Bytes = VegetableCollectionState.Capture(collection);
+                cache.Version = version;
+            }
+            if (cache.LastSentVersion == version && cache.LastSentTick == GameMain.gameTick)
+                return (Array.Empty<byte>(), version);
+            cache.LastSentVersion = version;
+            cache.LastSentTick = GameMain.gameTick;
+            return (cache.Bytes, version);
+        }
     }
 
     public void Tick()
@@ -115,6 +170,8 @@ internal sealed class VegetationManager : IDisposable
             VegetableCollectionState.Restore(replacement, data);
             GameMain.mainPlayer.SetHiddenProperty(nameof(global::Player.vegetableCollection), replacement);
             replacement.onPlayerVegeChanged?.Invoke();
+            System.Threading.Interlocked.Increment(ref localVersion);
+            lock (collectionCacheGate) collectionCaches.Clear();
             localDirty = false;
         }
         finally { restoring = previousRestoring; }
@@ -137,11 +194,16 @@ internal sealed class VegetationManager : IDisposable
         return collection;
     }
 
-    public void InstallReplicaCollection(int author, byte[] before)
+    public void InstallReplicaCollection(int author, byte[] before, long revision = 0)
     {
         if (!Multiplayer.Session.IsClient || author <= 0 || author > ushort.MaxValue || author == Multiplayer.Session.LocalPlayer.Id) return;
+        // Empty payload means the sender is repeating the revision this receiver already has (or the
+        // author has no vegetation yet), so the existing replica is still correct.
+        if (before == null || before.Length == 0) return;
+        if (revision > 0 && installedReplicaRevisions.TryGetValue((ushort)author, out var current) && current == revision) return;
         var collection = new VegetableCollection(); VegetableCollectionState.Restore(collection, before);
         replicaCollections[(ushort)author] = collection;
+        if (revision > 0) installedReplicaRevisions[(ushort)author] = revision;
     }
 
     public byte[] VerifySnapshot(ushort playerId, byte[] bytes)
@@ -174,7 +236,15 @@ internal sealed class VegetationManager : IDisposable
         return data;
     }
 
-    public void ForgetRemote(ushort playerId) { remoteCollections.Remove(playerId); replicaCollections.Remove(playerId); receiptRevisions.Remove(playerId); commandSequences.Remove(playerId); }
+    public void ForgetRemote(ushort playerId)
+    {
+        remoteCollections.Remove(playerId); replicaCollections.Remove(playerId); receiptRevisions.Remove(playerId);
+        commandSequences.Remove(playerId); installedReplicaRevisions.Remove(playerId);
+    }
 
-    public void Dispose() { remoteCollections.Clear(); replicaCollections.Clear(); replayStack.Clear(); commandSequences.Clear(); receiptRevisions.Clear(); }
+    public void Dispose()
+    {
+        remoteCollections.Clear(); replicaCollections.Clear(); replayStack.Clear(); commandSequences.Clear();
+        receiptRevisions.Clear(); collectionCaches.Clear(); installedReplicaRevisions.Clear();
+    }
 }

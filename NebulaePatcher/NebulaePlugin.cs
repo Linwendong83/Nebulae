@@ -9,7 +9,6 @@ using NebulaeNetwork;
 using NebulaePatcher.Logger;
 using NebulaePatcher.MonoBehaviours;
 using NebulaePatcher.Patches.Authority;
-using NebulaePatcher.Patches.Dynamic;
 using NebulaePatcher.Patches.Misc;
 using NebulaeWorld;
 using UnityEngine;
@@ -54,6 +53,7 @@ public class NebulaePlugin : BaseUnityPlugin
             Application.Quit();
         }
         Multiplayer.IsDedicated = NebulaeModel.Config.CommandLineOptions.IsDedicatedServer;
+        Multiplayer.HeadlessClient = NebulaeModel.Config.CommandLineOptions.HeadlessClient;
         errorReports?.RefreshEnvironment();
 
         try

@@ -93,7 +93,7 @@ internal class SyncCompleteProcessor : PacketProcessor<SyncComplete>
         // Import the latest transport revisions after the join tail, so neither a newer
         // eager loading response nor an old lifecycle delta can overwrite the other.
         Multiplayer.Session.Ships.FlushLifecycle();
-        Logistics.ILSgStationPoolSyncRequestProcessor.SendSnapshot(0, conn);
+        Logistics.ILSRequestStationPoolSyncProcessor.SendSnapshot(0, conn);
         if (player.Data.LocalStarId > 0)
             Logistics.ILSArriveStarPlanetRequestProcessor.SendSnapshot(player.Data.LocalStarId, 0, conn);
         // Event-driven visuals do not resend every live object periodically. A joining client

@@ -19,11 +19,12 @@ internal class PlayerMapPosition
 {
     public PlayerMapPosition() { }
 
-    public PlayerMapPosition(ushort playerId, int localPlanetId, Double3 uPosition)
+    public PlayerMapPosition(ushort playerId, int localPlanetId, Double3 uPosition, int localStarId = -1)
     {
         PlayerId = playerId;
         LocalPlanetId = localPlanetId;
         UPosition = uPosition;
+        LocalStarId = localStarId;
     }
 
     [NebulaeModel.Networking.WireOrder(0)]
@@ -34,4 +35,8 @@ internal class PlayerMapPosition
 
     [NebulaeModel.Networking.WireOrder(2)]
     public Double3 UPosition { get; set; }
+
+    /// <summary>The containing star, or -1 in interstellar space. Planet ids alone cannot name a space position.</summary>
+    [NebulaeModel.Networking.WireOrder(3)]
+    public int LocalStarId { get; set; } = -1;
 }

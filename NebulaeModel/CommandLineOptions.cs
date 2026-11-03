@@ -11,6 +11,7 @@ namespace NebulaeModel;
 internal class CommandLineOptions
 {
     public bool IsDedicatedServer { get; set; }
+    public bool HeadlessClient { get; set; }
     public bool IsBatchMode { get; set; }
     public string SaveName { get; set; } = string.Empty;
     public GameDesc NewGameDesc { get; set; }
@@ -32,6 +33,11 @@ internal class CommandLineOptions
                 case "-nebulae-server":
                     IsDedicatedServer = true;
                     Log.Info(">> Initializing dedicated server");
+                    break;
+
+                case "-nebulae-headless-client":
+                    HeadlessClient = true;
+                    Log.Info(">> Initializing headless client");
                     break;
 
                 case "-batchmode":

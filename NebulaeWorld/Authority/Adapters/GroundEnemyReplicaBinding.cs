@@ -52,10 +52,15 @@ internal sealed class GroundEnemyReplicaBinding : IReplicaMirrorObserver, IRepli
     {
         frameOpen = false;
         Exception failure = null;
-        foreach (var pair in scopes)
-            if (pair.Value.Pools?.BatchOpen == true)
-                try { apply(new ScopeKey(PoolKind.GroundEnemy, pair.Key), pair.Value.Pools.EndBatch); }
-                catch (Exception error) { failure ??= error; }
+        var flushStart = AuthorityProfile.Begin();
+        try
+        {
+            foreach (var pair in scopes)
+                if (pair.Value.Pools?.BatchOpen == true)
+                    try { apply(new ScopeKey(PoolKind.GroundEnemy, pair.Key), pair.Value.Pools.EndBatch); }
+                    catch (Exception error) { failure ??= error; }
+        }
+        finally { AuthorityProfile.End(AuthorityProfile.Flush, flushStart); }
         if (failure != null) throw failure;
     }
 
@@ -82,12 +87,15 @@ internal sealed class GroundEnemyReplicaBinding : IReplicaMirrorObserver, IRepli
         }
         var binding = BindingFor(scope);
         if (binding.Factory == null || binding.Core == null) return;
-        binding.Core.ApplyState(key, state);
+        var applyStart = AuthorityProfile.Begin();
+        try { binding.Core.ApplyState(key, state); }
+        finally { AuthorityProfile.End(AuthorityProfile.GroundApply, applyStart); }
     }
 
     public void OnBaselineInstalled(ScopeKey scope, IReadOnlyList<SnapshotMemberRecord> members)
     {
         if (scope.Kind != PoolKind.GroundEnemy) return;
+        AuthorityProfile.BaselineInstalled();
         if (!applyWindowOpen())
         {
             RefusalsOutsideApplyWindow++;

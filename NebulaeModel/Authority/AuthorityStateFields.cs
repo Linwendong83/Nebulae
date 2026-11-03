@@ -159,6 +159,7 @@ internal static class AuthorityStateFields
                 PoolKind.Base => ReadBase(state),
                 PoolKind.Ruin => ReadRuin(state),
                 PoolKind.HiveSummary => ReadHive(state),
+                PoolKind.Hive => ReadFormation(state),
                 _ => false
             };
             var fields = known?.Fields;
@@ -180,6 +181,14 @@ internal static class AuthorityStateFields
     private static bool ReadBase(byte[] state) { GroundBaseStateCodec.Decode(state); return true; }
     private static bool ReadRuin(byte[] state) { RuinStateCodec.Decode(state); return true; }
 
+    private static bool ReadFormation(byte[] state)
+    {
+        using var stream = new MemoryStream(state, false);
+        using var reader = new AuthorityFieldReader(stream, state);
+        for (var form = 0; form < 3; form++) HiveFormationStateCodec.Read(reader, form);
+        return stream.Position == stream.Length;
+    }
+
     private static bool ReadHive(byte[] state)
     {
         using var stream = new MemoryStream(state, false);
@@ -194,7 +203,7 @@ internal static class AuthorityStateFields
         reader.ReadDouble(); reader.ReadSingle();
         for (var i = 0; i < 4; i++) reader.ReadSingle();
         for (var i = 0; i < 4; i++) reader.ReadDouble();
-        for (var form = 0; form < 3; form++) HiveFormationStateCodec.Read(reader, form);
+        reader.ReadBoolean(); reader.ReadBoolean();
         return stream.Position == stream.Length;
     }
 }

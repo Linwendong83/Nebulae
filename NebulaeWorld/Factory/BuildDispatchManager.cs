@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using NebulaeModel.DataStructures;
@@ -27,6 +27,7 @@ internal sealed partial class BuildDispatchManager : IDisposable
     public void OnFactoriesUnloaded()
     {
         Instances.Clear(); claims.Clear(); seededFactories.Clear(); offers.Clear(); offerSequences.Clear();
+        PrebuildAssignmentSweep.Reset();
         awaitingLaunch.Clear(); revoking.Clear(); renderedRemoteLaunches.Clear(); lastOfferTick.Clear();
         // Offer/supply sequence numbers live for the connection, across factory unload/reload.
         // Material receipts must also settle after the player leaves the supplying planet.
@@ -56,15 +57,10 @@ internal sealed partial class BuildDispatchManager : IDisposable
         factory.prebuildPool[id].id == id && factory.prebuildPool[id].itemRequired == 0 &&
         !factory.prebuildPool[id].isDestroyed && !factory.prebuildPool[id].builderLaunched;
 
-    public void BeginLaunchFrame(PlanetFactory factory)
-    {
-        for (var id = 1; id < factory.prebuildCursor; id++)
-        {
-            ref var site = ref factory.prebuildPool[id];
-            if (site.id != id || site.builderLaunched) continue;
-            site.builderModuleId = 0; site.builderValue = 0f;
-        }
-    }
+    public void BeginLaunchFrame(PlanetFactory factory) =>
+        // Only the host runs the native target search, so only the host can clear just what that
+        // search assigned. A client keeps the full sweep to suppress assignments it imported.
+        PrebuildAssignmentSweep.BeginFrame(factory, Multiplayer.Session?.IsServer == true);
     public void OfferLocalFlight(PlanetFactory factory, ConstructionModuleComponent module)
     {
         if (Multiplayer.Session.IsServer || module.entityId != 0 || module.droneIdleCount <= 0 || GameMain.mainPlayer.mecha.coreEnergy <= 0 ||
@@ -94,7 +90,9 @@ internal sealed partial class BuildDispatchManager : IDisposable
     }
     public void PrepareLaunches(PlanetFactory factory)
     {
-        if (!Multiplayer.Session.IsServer) { BeginLaunchFrame(factory); return; }
+        // Every frame already runs BeginLaunchFrame for every loaded factory before the native
+        // construction tick; calling it again here walked the prebuild pool twice per frame.
+        if (!Multiplayer.Session.IsServer) return;
         var candidates = new List<(ushort Player, ConstructionLaunchOfferPacket Offer, float Score)>();
         foreach (var entry in offers.ToArray())
         {
@@ -235,6 +233,9 @@ internal sealed partial class BuildDispatchManager : IDisposable
     {
         if (!Multiplayer.Session.IsGameLoaded || GameMain.data == null) return;
         if (!Multiplayer.Session.IsServer) { FlushConstructionStorage(); return; }
+        // Identity sends are collected per frame by the native build path; one packet per pasted
+        // blueprint chunk instead of one per entity.
+        Instances.Flush();
         InitializeLoadedFactories();
         if (GameMain.gameTick % 30 != 0) return;
         diagnosticWaits.Observe("build-flight", awaitingLaunch.Count != 0 || revoking.Count != 0,

@@ -87,119 +87,86 @@ internal static class GroundEnemyKinds
 /// pose, hitpoints. No reflection over names, no per-record framing beyond the flags byte.
 /// </para>
 /// </remarks>
-internal readonly struct GroundEnemyState
+internal readonly struct GroundEnemyState(
+    GroundEnemyKind kind, bool hasCombatStat, bool isDynamic,
+    short protoId, short modelIndex, short owner, short port, byte stateFlags,
+    int astroId, int originAstroId, int baseId, int builderIndex, int level,
+    float posX, float posY, float posZ,
+    float rotX, float rotY, float rotZ, float rotW,
+    float velX, float velY, float velZ,
+    int hp, int hpMax, int hpRecover, int hpIncoming,
+    float animationTime = 0, float prepareLength = 0, float workingLength = 0, uint animationState = 0, float animationPower = 0,
+    float unitAnimation = 0, float unitDisturb = 0, float unitSteering = 0, float unitSpeed = 0,
+    int builderSp = 0, int builderSpMax = 0, int matter = 0, int matterMax = 0,
+    int energy = 0, int energyMax = 0, int matterChange = 0, int energyChange = 0,
+    int productSp = 0, int productSpMax = 0, byte unitBehavior = 0,
+    byte turretState = 0, bool turretTargetInShootRange = false, long sampleTick = 0, int unitStateTick = 0,
+    byte[] nativeUnit = null, int builderState = 0, byte[] nativeTurret = null, bool turretCounterAttack = false,
+    EnemyUnitComponent? decodedNativeUnit = null)
 {
-    public GroundEnemyState(GroundEnemyKind kind, bool hasCombatStat, bool isDynamic,
-        short protoId, short modelIndex, short owner, short port, byte stateFlags,
-        int astroId, int originAstroId, int baseId, int builderIndex, int level,
-        float posX, float posY, float posZ,
-        float rotX, float rotY, float rotZ, float rotW,
-        float velX, float velY, float velZ,
-        int hp, int hpMax, int hpRecover, int hpIncoming,
-        float animationTime = 0, float prepareLength = 0, float workingLength = 0, uint animationState = 0, float animationPower = 0,
-        float unitAnimation = 0, float unitDisturb = 0, float unitSteering = 0, float unitSpeed = 0,
-        int builderSp = 0, int builderSpMax = 0, int matter = 0, int matterMax = 0,
-        int energy = 0, int energyMax = 0, int matterChange = 0, int energyChange = 0,
-        int productSp = 0, int productSpMax = 0, byte unitBehavior = 0,
-        byte turretState = 0, bool turretTargetInShootRange = false, long sampleTick = 0, int unitStateTick = 0,
-        byte[] nativeUnit = null, int builderState = 0, byte[] nativeTurret = null, bool turretCounterAttack = false,
-        EnemyUnitComponent? decodedNativeUnit = null)
-    {
-        Kind = kind;
-        HasCombatStat = hasCombatStat;
-        IsDynamic = isDynamic;
-        ProtoId = protoId;
-        ModelIndex = modelIndex;
-        Owner = owner;
-        Port = port;
-        StateFlags = stateFlags;
-        AstroId = astroId;
-        OriginAstroId = originAstroId;
-        BaseId = baseId;
-        BuilderIndex = builderIndex;
-        Level = level;
-        PosX = posX;
-        PosY = posY;
-        PosZ = posZ;
-        RotX = rotX;
-        RotY = rotY;
-        RotZ = rotZ;
-        RotW = rotW;
-        VelX = velX;
-        VelY = velY;
-        VelZ = velZ;
-        Hp = hp;
-        HpMax = hpMax;
-        HpRecover = hpRecover;
-        HpIncoming = hpIncoming;
-        AnimationTime = animationTime; PrepareLength = prepareLength; WorkingLength = workingLength;
-        AnimationState = animationState; AnimationPower = animationPower;
-        UnitAnimation = unitAnimation; UnitDisturb = unitDisturb; UnitSteering = unitSteering; UnitSpeed = unitSpeed;
-        BuilderSp = builderSp; BuilderSpMax = builderSpMax; Matter = matter; MatterMax = matterMax;
-        Energy = energy; EnergyMax = energyMax; MatterChange = matterChange; EnergyChange = energyChange;
-        ProductSp = productSp; ProductSpMax = productSpMax;
-        UnitBehavior = unitBehavior;
-        TurretState = turretState;
-        TurretTargetInShootRange = turretTargetInShootRange;
-        TurretCounterAttack = turretCounterAttack;
-        SampleTick = sampleTick;
-        UnitStateTick = unitStateTick;
-        NativeUnit = nativeUnit;
-        DecodedNativeUnit = decodedNativeUnit;
-        BuilderState = builderState; NativeTurret = nativeTurret;
-    }
+
 
     internal GroundEnemyState(in GroundEnemyState source, byte[] nativeUnit, in EnemyUnitComponent unit)
+    : this(
+        source.Kind, source.HasCombatStat, source.IsDynamic, source.ProtoId, source.ModelIndex, source.Owner,
+        source.Port, source.StateFlags, source.AstroId, source.OriginAstroId, source.BaseId, source.BuilderIndex,
+        source.Level, source.PosX, source.PosY, source.PosZ, source.RotX, source.RotY, source.RotZ, source.RotW,
+        source.VelX, source.VelY, source.VelZ, source.Hp, source.HpMax, source.HpRecover, source.HpIncoming,
+        source.AnimationTime, source.PrepareLength, source.WorkingLength, source.AnimationState,
+        source.AnimationPower, source.UnitAnimation, source.UnitDisturb, source.UnitSteering, source.UnitSpeed,
+        source.BuilderSp, source.BuilderSpMax, source.Matter, source.MatterMax, source.Energy, source.EnergyMax,
+        source.MatterChange, source.EnergyChange, source.ProductSp, source.ProductSpMax, source.UnitBehavior,
+        source.TurretState, source.TurretTargetInShootRange, source.SampleTick, source.UnitStateTick, nativeUnit,
+        source.BuilderState, source.NativeTurret, source.TurretCounterAttack, unit)
     {
-        this = source; NativeUnit = nativeUnit; DecodedNativeUnit = unit;
     }
 
-    public GroundEnemyKind Kind { get; }
-    public bool HasCombatStat { get; }
-    public bool IsDynamic { get; }
-    public short ProtoId { get; }
-    public short ModelIndex { get; }
-    public short Owner { get; }
-    public short Port { get; }
-    public byte StateFlags { get; }
-    public int AstroId { get; }
-    public int OriginAstroId { get; }
-    public int BaseId { get; }
-    public int BuilderIndex { get; }
-    public int Level { get; }
-    public float PosX { get; }
-    public float PosY { get; }
-    public float PosZ { get; }
-    public float RotX { get; }
-    public float RotY { get; }
-    public float RotZ { get; }
-    public float RotW { get; }
-    public float VelX { get; }
-    public float VelY { get; }
-    public float VelZ { get; }
-    public int Hp { get; }
-    public int HpMax { get; }
-    public int HpRecover { get; }
-    public int HpIncoming { get; }
-    public float AnimationTime { get; }
-    public float PrepareLength { get; }
-    public float WorkingLength { get; }
-    public uint AnimationState { get; }
-    public float AnimationPower { get; }
-    public float UnitAnimation { get; }
-    public float UnitDisturb { get; }
-    public float UnitSteering { get; }
-    public float UnitSpeed { get; }
-    public int BuilderSp { get; }
-    public int BuilderSpMax { get; }
-    public int Matter { get; }
-    public int MatterMax { get; }
-    public int Energy { get; }
-    public int EnergyMax { get; }
-    public int MatterChange { get; }
-    public int EnergyChange { get; }
-    public int ProductSp { get; }
-    public int ProductSpMax { get; }
+    public GroundEnemyKind Kind { get; } = kind;
+    public bool HasCombatStat { get; } = hasCombatStat;
+    public bool IsDynamic { get; } = isDynamic;
+    public short ProtoId { get; } = protoId;
+    public short ModelIndex { get; } = modelIndex;
+    public short Owner { get; } = owner;
+    public short Port { get; } = port;
+    public byte StateFlags { get; } = stateFlags;
+    public int AstroId { get; } = astroId;
+    public int OriginAstroId { get; } = originAstroId;
+    public int BaseId { get; } = baseId;
+    public int BuilderIndex { get; } = builderIndex;
+    public int Level { get; } = level;
+    public float PosX { get; } = posX;
+    public float PosY { get; } = posY;
+    public float PosZ { get; } = posZ;
+    public float RotX { get; } = rotX;
+    public float RotY { get; } = rotY;
+    public float RotZ { get; } = rotZ;
+    public float RotW { get; } = rotW;
+    public float VelX { get; } = velX;
+    public float VelY { get; } = velY;
+    public float VelZ { get; } = velZ;
+    public int Hp { get; } = hp;
+    public int HpMax { get; } = hpMax;
+    public int HpRecover { get; } = hpRecover;
+    public int HpIncoming { get; } = hpIncoming;
+    public float AnimationTime { get; } = animationTime;
+    public float PrepareLength { get; } = prepareLength;
+    public float WorkingLength { get; } = workingLength;
+    public uint AnimationState { get; } = animationState;
+    public float AnimationPower { get; } = animationPower;
+    public float UnitAnimation { get; } = unitAnimation;
+    public float UnitDisturb { get; } = unitDisturb;
+    public float UnitSteering { get; } = unitSteering;
+    public float UnitSpeed { get; } = unitSpeed;
+    public int BuilderSp { get; } = builderSp;
+    public int BuilderSpMax { get; } = builderSpMax;
+    public int Matter { get; } = matter;
+    public int MatterMax { get; } = matterMax;
+    public int Energy { get; } = energy;
+    public int EnergyMax { get; } = energyMax;
+    public int MatterChange { get; } = matterChange;
+    public int EnergyChange { get; } = energyChange;
+    public int ProductSp { get; } = productSp;
+    public int ProductSpMax { get; } = productSpMax;
 
     /// <summary>
     /// The unit's vanilla <c>EnemyUnitComponent.behavior</c> (the <c>EEnemyBehavior</c> value), so the
@@ -207,7 +174,7 @@ internal readonly struct GroundEnemyState
     /// default. Zero for every non-unit enemy. The byte is part of the current wire format, so a record
     /// without it is refused rather than silently defaulted. Native motion consumes the same behavior.
     /// </summary>
-    public byte UnitBehavior { get; }
+    public byte UnitBehavior { get; } = unitBehavior;
 
     /// <summary>
     /// The turret's vanilla <c>DFGTurretComponent.state</c> (the <c>EDFTurretState</c> value) and
@@ -215,15 +182,15 @@ internal readonly struct GroundEnemyState
     /// instead of the default "警戒中" a component-less shell would show. Zero/false for every
     /// non-turret enemy; the in-range flag rides in the flags byte.
     /// </summary>
-    public byte TurretState { get; }
-    public bool TurretTargetInShootRange { get; }
-    public bool TurretCounterAttack { get; }
-    public long SampleTick { get; }
-    public int UnitStateTick { get; }
-    public byte[] NativeUnit { get; }
-    public EnemyUnitComponent? DecodedNativeUnit { get; }
-    public int BuilderState { get; }
-    public byte[] NativeTurret { get; }
+    public byte TurretState { get; } = turretState;
+    public bool TurretTargetInShootRange { get; } = turretTargetInShootRange;
+    public bool TurretCounterAttack { get; } = turretCounterAttack;
+    public long SampleTick { get; } = sampleTick;
+    public int UnitStateTick { get; } = unitStateTick;
+    public byte[] NativeUnit { get; } = nativeUnit;
+    public EnemyUnitComponent? DecodedNativeUnit { get; } = decodedNativeUnit;
+    public int BuilderState { get; } = builderState;
+    public byte[] NativeTurret { get; } = nativeTurret;
 }
 
 /// <summary>Encoding of <see cref="GroundEnemyState"/> into one bounded state blob.</summary>

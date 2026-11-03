@@ -38,14 +38,16 @@ internal class PlayerLifeProcessor : PacketProcessor<PlayerLifePacket>
                 var receipt = PlayerLifePacket.CreateReceipt(playerId, requestedRevision, status, data.Life.Revision, reason);
                 receipt.EpochHigh = identity.Epoch.High; receipt.EpochLow = identity.Epoch.Low;
                 receipt.ConnectionEpoch = connection.Value;
-                conn.SendPacket(receipt);
+                // The sender waits on this receipt to finish its personal checkpoint - and a quitting
+                // client waits on it to leave at all - so it must not queue behind the state backlog.
+                conn.SendUrgentPacket(receipt);
             }, packet.CombatRevision, packet.InventoryTransferSequence);
             if (!queued)
             {
                 var receipt = PlayerLifePacket.CreateReceipt(playerId, requestedRevision, CheckpointReceiptStatus.Retry,
                     data.Life.Revision, CheckpointRejectReason.Busy);
                 receipt.EpochHigh = identity.Epoch.High; receipt.EpochLow = identity.Epoch.Low; receipt.ConnectionEpoch = connection.Value;
-                conn.SendPacket(receipt);
+                conn.SendUrgentPacket(receipt);
             }
         }
         else if (packet.Acknowledgement)

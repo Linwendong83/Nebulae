@@ -26,18 +26,21 @@ internal class Dedicated_Server_Patches
         // Repeated Begin calls indicate overlapping menu-demo and server loaders.
         if (Interlocked.Increment(ref gameMainBeginCount) > 1)
             Log.Warn("[headless] GameMain.Begin was called more than once; loaders are overlapping");
-        // Server.Start() could not restore the saved player data because the world did not exist yet.
-        SaveManager.EnsureServerDataLoaded();
+        if (Multiplayer.IsDedicated)
+        {
+            // Server.Start() could not restore the saved player data because the world did not exist yet.
+            SaveManager.EnsureServerDataLoaded();
+        }
         if (!Multiplayer.IsActive)
         {
             return;
         }
-        if (Config.Options.AutoPauseEnabled)
+        if (Multiplayer.IsDedicated && Config.Options.AutoPauseEnabled)
         {
             GameMain.Pause();
         }
 
-        if (GameMain.mainPlayer != null)
+        if (Multiplayer.IsDedicated && GameMain.mainPlayer != null)
         {
             // Don't let the player of dedicated server to interact with enemies
             GameMain.mainPlayer.isAlive = false;
