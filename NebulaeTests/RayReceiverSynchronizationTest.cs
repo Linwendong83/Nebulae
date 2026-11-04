@@ -5,7 +5,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class RayReceiverSynchronizationTest
 {
     private sealed class Receiver : RayReceiverChangeLensProcessor

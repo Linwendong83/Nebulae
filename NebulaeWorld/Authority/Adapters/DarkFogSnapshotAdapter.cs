@@ -55,10 +55,16 @@ internal sealed class DarkFogSnapshotAdapter : IHostWorldView, IHostIncrementalW
         }
         else
         {
-            var bases = GameMain.galaxy?.PlanetById(scope.Scope)?.factory?.enemySystem?.bases;
+            var system = GameMain.galaxy?.PlanetById(scope.Scope)?.factory?.enemySystem;
+            var bases = system?.bases;
             if (bases?.buffer == null) return false;
+            // A pit cannot deploy or re-absorb the formations of the base it used to be, and the
+            // native cleanup for that only runs on the locally loaded planet — which a dedicated
+            // server never has. Release those tags once per capture so the flags below, and every
+            // native check that reads them on the host, describe a pit that really is empty.
+            DarkFogBasePitCleanup.Prune(system);
             baseRemovalFlags.TryGetValue(scope.Scope, out var flags);
-            baseRemovalFlags[scope.Scope] = SampleRemovalFlags(GameMain.galaxy.PlanetById(scope.Scope).factory.enemySystem, flags);
+            baseRemovalFlags[scope.Scope] = SampleRemovalFlags(system, flags);
             for (var id = 1; id < bases.cursor; id++)
                 if (bases.buffer[id]?.id == id) members.Add(ObjectKey.Create(epoch, scope.Kind, scope.Scope, id, tracker.ObserveOccupied(id)));
         }

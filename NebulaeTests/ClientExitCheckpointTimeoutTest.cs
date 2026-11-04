@@ -13,7 +13,7 @@ namespace NebulaeTests;
 ///     inventory. That wait is a round trip the host can refuse or never answer, and it used to have
 ///     no bound: the reported symptom was a game that could not be quit.
 /// </summary>
-[TestClass, DoNotParallelize]
+[TestClass]
 public class ClientExitCheckpointTimeoutTest
 {
     private MultiplayerSession previous = null!;

@@ -8,7 +8,7 @@ namespace NebulaeTests;
 ///     a quitting client waits on a single small acknowledgement. Those acknowledgements therefore
 ///     have their own lane ahead of the backlog, while bulk frames keep their order.
 /// </summary>
-[TestClass, DoNotParallelize]
+[TestClass]
 public class UrgentSendLaneTest
 {
     private readonly Queue<Action> work = new();

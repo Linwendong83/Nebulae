@@ -1,7 +1,8 @@
 using NebulaeModel.Networking;
 #region
 
-using System.Linq;
+using System;
+using System.Collections.Generic;
 using HarmonyLib;
 using NebulaeModel.Packets.Factory;
 using NebulaeWorld;
@@ -26,12 +27,6 @@ internal class BuildTool_Common_Patch
             return true;
         }
 
-        var previews = __instance switch
-        {
-            BuildTool_BlueprintPaste bpInstance => bpInstance.bpPool.Take(bpInstance.bpCursor).ToList(),
-            _ => __instance.buildPreviews
-        };
-
         // Host will just broadcast event to other players
         if (Multiplayer.Session.LocalPlayer.IsHost)
         {
@@ -49,7 +44,7 @@ internal class BuildTool_Common_Patch
             var request = relayed != null && relayed.PlanetId == planetId && relayed.BuildToolType == toolType &&
                 relayed.BuildPreviewData is { Length: > 0 } payload
                 ? CreatePrebuildsRequest.FromEncodedPayload(planetId, payload, authorId, toolType, prebuildId)
-                : new CreatePrebuildsRequest(planetId, previews, authorId, toolType, prebuildId);
+                : new CreatePrebuildsRequest(planetId, PreviewRange(__instance), authorId, toolType, prebuildId);
             Multiplayer.Session.Network.SendPacketToStar(request,
                 GameMain.galaxy.PlanetById(planetId).star.id);
         }
@@ -60,6 +55,7 @@ internal class BuildTool_Common_Patch
             return true;
         }
         {
+            var previews = PreviewRange(__instance);
             if (!Multiplayer.Session.BuildTools.InitialCheck(previews[0].lpos))
             {
                 return false;
@@ -72,6 +68,12 @@ internal class BuildTool_Common_Patch
             return false;
         }
     }
+
+    // Blueprint pools retain inactive capacity. Serialize the active range directly, and do
+    // not materialize it at all when applying a host event or forwarding encoded previews.
+    internal static IList<BuildPreview> PreviewRange(BuildTool tool) => tool is BuildTool_BlueprintPaste blueprint
+        ? new ArraySegment<BuildPreview>(blueprint.bpPool, 0, blueprint.bpCursor)
+        : tool.buildPreviews;
 
     [HarmonyPrefix]
     [HarmonyPatch(typeof(BuildTool_Click), nameof(BuildTool_Click.CheckBuildConditions))]

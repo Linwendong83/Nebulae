@@ -6,7 +6,6 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 namespace NebulaeTests;
 
 [TestClass]
-[DoNotParallelize]
 public class HeadlessTickRateTest
 {
     private readonly Harmony harmony = new("nebulae.tests.headless-tick-rate");

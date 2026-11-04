@@ -13,7 +13,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class WeaponSelectionRegressionTest
 {
     private GameData oldGame = null!;

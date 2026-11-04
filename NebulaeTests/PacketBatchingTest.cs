@@ -18,7 +18,6 @@ namespace NebulaeTests;
 /// self-check, and the envelope that lets one client message carry several inner packets.
 /// </summary>
 [TestClass]
-[DoNotParallelize]
 internal class PacketBatchingTest
 {
     private static NebulaeNetPacketProcessor NewProcessor()

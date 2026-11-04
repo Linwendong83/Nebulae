@@ -14,7 +14,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class JoinSyncRoutingTest
 {
     private MultiplayerSession previous = null!;

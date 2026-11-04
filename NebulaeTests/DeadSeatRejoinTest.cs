@@ -14,7 +14,7 @@ namespace NebulaeTests;
 ///     re-anchored on the returning seat; otherwise the first tick drags the player to the save
 ///     writer's position, which is the middle of a star when that seat was sitting at one.
 /// </summary>
-[TestClass, DoNotParallelize]
+[TestClass]
 public class DeadSeatRejoinTest
 {
     private const string HarmonyId = "nebulae.tests.dead-seat-rejoin";

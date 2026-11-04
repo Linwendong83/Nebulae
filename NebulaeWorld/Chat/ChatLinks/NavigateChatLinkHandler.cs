@@ -102,73 +102,9 @@ internal class NavigateChatLinkHandler : IChatLinkHandler
         }
     }
 
-    public void OnHover(string data, ChatLinkTrigger trigger, ref MonoBehaviour tipObject)
-    {
-        if (!string.IsNullOrEmpty(data))
-        {
-            UpdateTip(trigger, ref tipObject);
-        }
-        else if (tipObject is UIButtonTip)
-        {
-            Object.Destroy(tipObject.gameObject);
-        }
-    }
-
-
-    private static void UpdateTip(ChatLinkTrigger trigger, ref MonoBehaviour tipObject)
-    {
-        var rect = (RectTransform)trigger.transform;
-
-        RectTransformUtility.ScreenPointToLocalPointInRectangle(rect, Input.mousePosition, trigger.camera, out var offset);
-        offset -= new Vector2(rect.sizeDelta.x / 2, 3f);
-
-        var buttonTip = tipObject as UIButtonTip;
-        if (buttonTip == null)
-        {
-            buttonTip = UIButtonTip.Create(false, "Navigate".Translate(),
-                "Left click to create a navigate line to the target.\nRight click to track the target.".Translate(), 2, offset, 0, rect, "", "");
-            if (tipObject != null)
-            {
-                Object.Destroy(tipObject.gameObject);
-            }
-
-            tipObject = buttonTip;
-        }
-
-        if (!buttonTip.gameObject.activeSelf)
-        {
-            buttonTip.gameObject.SetActive(true);
-            buttonTip.SetTip(false, "Navigate".Translate(), "Left click to create a navigate line to the target.\nRight click to track the target.".Translate(), 2,
-                offset, 0, rect, "", "");
-        }
-
-        if (buttonTip.isActiveAndEnabled && !buttonTip.titleComp.text.Equals("Navigate"))
-        {
-            buttonTip.SetTip(false, "Navigate".Translate(), "Left click to create a navigate line to the target.\nRight click to track the target.".Translate(), 2,
-                offset, 0, rect, "", "");
-        }
-    }
-
-
-    public static string FormatNavigateToAstro(int astroId, string displayString)
-    {
-        var data = astroId + SplitSeparator.ToString()
-            + "astroId" + SplitSeparator.ToString() + displayString;
-        return FormatNavigateString(data);
-    }
-
-    public static string FormatNavigateToPlanetPos(int planetId, Vector3 pos, string displayString)
-    {
-        var data = planetId + SplitSeparator.ToString()
-            + pos.x + SplitSeparator.ToString() + pos.y + SplitSeparator.ToString() + pos.z + SplitSeparator.ToString()
-            + displayString;
-        return FormatNavigateString(data);
-    }
-    public static string FormatNavigateString(string data)
-    {
-        var substrings = data.Split(SplitSeparator);
-        return $"<link=\"navigate {data}\"><color=\"white\"><u>{substrings[substrings.Length - 1]}</u></color></link>";
-    }
+    public void OnHover(string data, ChatLinkTrigger trigger, ref MonoBehaviour tipObject) =>
+        ChatLinkTooltip.Show(data, trigger, ref tipObject, "Navigate",
+            "Left click to create a navigate line to the target.\nRight click to track the target.");
 
     private static bool TryParsePlanetPos(string[] substrings, out int planetId, out Vector3 pos)
     {

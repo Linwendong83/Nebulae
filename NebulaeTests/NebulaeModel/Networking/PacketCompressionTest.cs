@@ -12,7 +12,6 @@ namespace NebulaeTests.NebulaeModel.Networking;
 /// Frames contain one complete packet, raw or compressed, with a mandatory signature and length.
 /// </summary>
 [TestClass]
-[DoNotParallelize]
 internal class PacketCompressionTest
 {
     [TestMethod]

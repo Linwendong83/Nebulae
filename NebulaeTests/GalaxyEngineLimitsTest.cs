@@ -6,7 +6,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class GalaxyEngineLimitsTest
 {
     private readonly Harmony harmony = new("nebulae.tests.galaxy-engine-limits");

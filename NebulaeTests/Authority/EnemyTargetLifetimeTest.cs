@@ -8,7 +8,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class EnemyTargetLifetimeTest
 {
     [TestMethod]
@@ -34,6 +34,7 @@ public class EnemyTargetLifetimeTest
             var target = new SkillTarget { id = 1, astroId = 101, type = ETargetType.Enemy };
             var turret = new TurretComponent { entityId = 3, target = target, isAiming = true, isLockingTarget = true };
             var skills = Uninitialized<SkillSystem>();
+            skills.astroFactories = new PlanetFactory[200]; skills.astroFactories[101] = factory;
             skills.turretMissiles = new DataPool<GeneralMissile>(); skills.turretMissiles.Reset();
             skills.mechaMissiles = new DataPool<GeneralMissile>(); skills.mechaMissiles.Reset();
             var missile = new GeneralMissile { id = 1, target = target, life = 100 };
@@ -66,6 +67,4 @@ public class EnemyTargetLifetimeTest
         TestAssert.IsFalse(EnemyTargetIdentity.TryResolve(new SkillTarget { id = 1, astroId = 101, type = ETargetType.None }, out _));
         TestAssert.IsFalse(EnemyTargetIdentity.TryResolve(new SkillTarget { id = -1, astroId = 0, type = ETargetType.Enemy }, out _));
     }
-
-    private static T Uninitialized<T>() => (T)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(T));
 }

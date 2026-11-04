@@ -30,12 +30,6 @@ public class GroundEnemyReplicationTest
         101, 101, baseId, 0, 1, 10f, 0f, 20f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, hp, 900, 2, 0,
         unitBehavior: unitBehavior);
 
-    private static byte[] Encoded(GroundEnemyState state)
-    {
-        TestAssert.IsTrue(GroundEnemyStateCodec.TryEncode(state, out var data));
-        return data;
-    }
-
     private sealed class FakeHostEnemies : IHostWorldView
     {
         public readonly List<ObjectKey> Members = [];

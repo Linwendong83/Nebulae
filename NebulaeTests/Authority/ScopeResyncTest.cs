@@ -1,4 +1,4 @@
-﻿
+
 using NebulaeModel.Authority;
 using NebulaeModel.Packets.Authority;
 using NebulaeWorld.Authority;
@@ -503,16 +503,21 @@ public class ScopeResyncTest
         session.OnFrameBoundary(100);
 
         TestAssert.AreEqual(1, session.ScopeControlHandled);
-        TestAssert.AreEqual(1, session.ScopeControlRefused);
+        TestAssert.AreEqual(0, session.ScopeControlRefused,
+            "A planet scope that arrives before its location update is retried, not refused.");
         TestAssert.HasCount(1, sink.Of<AuthoritySnapshotBeginPacket>(),
             "The allowed subscription received its baseline conversation.");
         TestAssert.AreEqual(1, session.HostReplicator.ScopeCount,
-            "The refused request never created a replication state.");
+            "The retried request never created a replication state.");
+
+        // The retry is bounded: a planet the player never occupies is refused visibly.
+        for (var frame = 101; frame < 240; frame++) session.OnFrameBoundary(frame);
+        TestAssert.AreEqual(1, session.ScopeControlRefused);
 
         // Unsubscribe stops the stream; the host keeps simulating the scope regardless.
         TestAssert.IsTrue(session.TryEnqueueScopeControl(1, ScopeControlOp.Unsubscribe, Scope,
             ScopeRecoveryReason.None, digestOnly: false, subscriptionEpoch: 0, lastAppliedSequence: 0));
-        session.OnFrameBoundary(101);
+        session.OnFrameBoundary(241);
         TestAssert.AreEqual(2, session.ScopeControlHandled);
         session.OnFrameComplete(101);
     }
@@ -576,5 +581,130 @@ public class ScopeResyncTest
         summary.DeclaredStreamSequence = 1;
         summary.MemberCount = -1;
         TestAssert.IsFalse(summary.HasValidBookkeeping());
+    }
+
+    private sealed class RepairingVerifier : IReplicaRuntimeVerifier
+    {
+        public bool CanRepair = true;
+        public readonly HashSet<ObjectKey> Broken = [];
+        public int Repairs;
+        public bool Repair(ObjectKey key, byte[] _)
+        {
+            Repairs++;
+            if (!CanRepair) return false;
+            Broken.Remove(key);
+            return true;
+        }
+        public RuntimeObjectIntegrity VerifyObject(ObjectKey key, byte[] _) =>
+            Broken.Contains(key) ? RuntimeObjectIntegrity.Drift : RuntimeObjectIntegrity.Matches;
+    }
+
+    [TestMethod]
+    public void ADriftedObjectIsRepairedFromItsCanonicalRecordBeforeItsScopeIsRebuilt()
+    {
+        var world = new FakeWorld();
+        for (var id = 1; id <= 4; id++) world.Add(id, 1, [80]);
+        var sink = new RecordingSink();
+        var replica = new ClientWorldReplica(Epoch);
+        var host = new HostWorldReplicator(Epoch, world, sink);
+        var control = new RecordingScopeControlSink(); replica.ScopeControlSink = control;
+        SubscribeAndGoLive(sink, replica, 1, host);
+
+        var verifier = new RepairingVerifier();
+        foreach (var key in replica.Mirrors.Keys) verifier.Broken.Add(key);
+        replica.RuntimeRepair = verifier.Repair;
+        replica.AuditRuntimeObjects(1000, verifier);
+        TestAssert.AreEqual(4L, replica.RuntimeRepairedTotal, "Every stranded object is rewritten from its own record.");
+        TestAssert.AreEqual(0, control.Sent.Count(x => x.Op == ScopeControlOp.Resync),
+            "A repair that lands must not rebuild a whole scope.");
+
+        // A repair that cannot land still ends in recovery, so drift is never silently tolerated.
+        verifier.Broken.Clear(); verifier.CanRepair = false;
+        verifier.Broken.Add(replica.Mirrors.Keys.First());
+        replica.AuditRuntimeObjects(1001, verifier);
+        TestAssert.AreEqual(1, control.Sent.Count(x => x.Op == ScopeControlOp.Resync && x.Reason == ScopeRecoveryReason.RuntimeDrift));
+    }
+
+    [TestMethod]
+    public void AChunkWhoseBaselineNeverStartedAsksForAFreshOneInsteadOfWaiting()
+    {
+        var world = new FakeWorld(); world.Add(1, 1, [80]);
+        var sink = new RecordingSink();
+        var replica = new ClientWorldReplica(Epoch);
+        var host = new HostWorldReplicator(Epoch, world, sink);
+        var control = new RecordingScopeControlSink(); replica.ScopeControlSink = control;
+        SubscribeAndGoLive(sink, replica, 1, host);
+        TestAssert.IsTrue(replica.Versions.TryGetScope(Scope, out var state));
+
+        // No staging for this conversation: its Begin was lost, or the staging was abandoned while
+        // the host was already streaming the image. The chunk can never become a baseline.
+        TestAssert.IsFalse(replica.ReceiveSnapshotChunk(Scope, state.SubscriptionEpoch, state.BaselineId + 1, 0, new byte[16]));
+        TestAssert.AreEqual(1, control.Sent.Count(x => x.Op == ScopeControlOp.Resync && x.Reason == ScopeRecoveryReason.BaselineRefused));
+        TestAssert.AreEqual(SubscriptionPhase.Resyncing, state.Phase);
+
+        // A straggler from a baseline this replica already replaced is old news, not a rebuild.
+        var quiet = new RecordingScopeControlSink();
+        var after = new ClientWorldReplica(Epoch);
+        var afterSink = new RecordingSink();
+        var afterHost = new HostWorldReplicator(Epoch, world, afterSink);
+        after.ScopeControlSink = quiet;
+        SubscribeAndGoLive(afterSink, after, 1, afterHost);
+        TestAssert.IsTrue(after.Versions.TryGetScope(Scope, out var afterState));
+        TestAssert.IsFalse(after.ReceiveSnapshotChunk(Scope, afterState.SubscriptionEpoch, afterState.BaselineId - 1, 0, new byte[16]));
+        TestAssert.AreEqual(0, quiet.Sent.Count(x => x.Op == ScopeControlOp.Resync));
+    }
+
+    [TestMethod]
+    public void ATailFromTheReplacedConversationIsDroppedDuringAnInstallNotFlagged()
+    {
+        var world = new FakeWorld(); world.Add(1, 1, [80]);
+        var sink = new RecordingSink();
+        var replica = new ClientWorldReplica(Epoch);
+        var host = new HostWorldReplicator(Epoch, world, sink);
+        SubscribeAndGoLive(sink, replica, 1, host);
+        TestAssert.IsTrue(replica.Versions.TryGetScope(Scope, out var state));
+        var oldEpoch = state.SubscriptionEpoch;
+        var oldBaseline = state.BaselineId;
+
+        // The host opens the conversation that replaces this one, and the client starts staging it.
+        replica.RequestResync(Scope, ScopeRecoveryReason.StreamGap);
+        var snapshot = new FrozenScopeSnapshot(Scope, oldBaseline + 1, oldEpoch + 1, 0, 0,
+            new List<SnapshotMemberRecord>());
+        TestAssert.IsTrue(AuthoritySnapshotCodec.TryEncode(snapshot, out var image));
+        TestAssert.IsTrue(replica.BeginSnapshot(Scope, oldEpoch + 1, oldBaseline + 1,
+            AuthoritySnapshotCodec.ChunkCountFor(image.Length), image.Length, AuthoritySnapshotCodec.Hash(image)));
+        TestAssert.AreEqual(SubscriptionPhase.Snapshotting, state.Phase);
+
+        // The replaced conversation's tail arrives behind the install. It is old news, not a host that
+        // streamed before the ack — counting it as one restarts recovery on every re-baseline.
+        TestAssert.IsFalse(replica.ApplyWorldState(Scope, oldEpoch, oldBaseline + 1, oldBaseline, []));
+        TestAssert.AreEqual(0L, replica.StreamBeforeBaselineTotal);
+        TestAssert.AreEqual(1L, replica.SequenceDroppedTotal);
+        TestAssert.AreEqual(SubscriptionPhase.Snapshotting, state.Phase, "The install must not be interrupted.");
+    }
+
+    [TestMethod]
+    public void APlanetSubscribeRetriedAfterItsLocationArrivesSucceeds()
+    {
+        var world = new FakeWorld();
+        var sink = new RecordingSink();
+        var session = NewHostSession();
+        TestAssert.IsTrue(session.RegisterHostReplication(world, sink));
+        var registered = 101;
+        session.SubscriptionPlanetProvider = id => id == 1 ? registered : (int?)null;
+
+        TestAssert.IsTrue(session.TryEnqueueScopeControl(1, ScopeControlOp.Subscribe, OtherScope,
+            ScopeRecoveryReason.None, digestOnly: false, subscriptionEpoch: 0, lastAppliedSequence: 0));
+        session.OnFrameBoundary(100);
+        TestAssert.AreEqual(0, session.ScopeControlRefused);
+        TestAssert.AreEqual(0, session.HostReplicator.ScopeCount);
+
+        // The location packet lands: the standing request is served on the next drain.
+        registered = 102;
+        session.OnFrameBoundary(101);
+        TestAssert.AreEqual(1, session.ScopeControlHandled);
+        TestAssert.AreEqual(1, session.HostReplicator.ScopeCount,
+            "A planet scope must not be lost to a location race.");
+        session.OnFrameComplete(101);
     }
 }

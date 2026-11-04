@@ -5,7 +5,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class SpaceSectorBootstrapTest
 {
     private static int subsystemInitializations;
@@ -58,7 +58,6 @@ public class SpaceSectorBootstrapTest
         finally { harmony.UnpatchSelf(); Multiplayer.Session = previous; }
     }
 
-    private static T Uninitialized<T>() => (T)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(T));
     private static DataPool<T> Pool<T>() where T : struct, IPoolElement
     { var pool = new DataPool<T>(); pool.Reset(); return pool; }
 

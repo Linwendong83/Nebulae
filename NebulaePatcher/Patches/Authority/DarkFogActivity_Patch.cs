@@ -38,7 +38,25 @@ internal static class DarkFogActivity_Patch
     internal static bool CanRemove(EnemyDFGroundSystem __instance, int baseId, ref int __result)
     {
         if (!Multiplayer.IsActive || !Multiplayer.Session.IsClient) return true;
-        __result = Multiplayer.Session.AuthorityRuntime.DarkFogReplica.BaseRemovalFlags.TryGetValue((__instance.factory.planetId, baseId), out var flags) ? flags : 1;
+        var replica = Multiplayer.Session.AuthorityRuntime.DarkFogReplica;
+        var identity = (__instance.factory.planetId, baseId);
+        __result = replica.BaseRemovalFlags.TryGetValue(identity, out var flags) ? flags : 1;
+        // A pit holds no garrison. The host releases those formation tags while it samples the scope
+        // (DarkFogBasePitCleanup); a client still holding the older record must not keep a verdict
+        // that nothing on this peer can clear, or the pit stays unremovable and a geothermal station
+        // aimed at it keeps reporting the generic collision. Only the units bit is derived here —
+        // the core and building bits stay host facts.
+        if ((__result & 4) != 0 && (!replica.BaseAlive.TryGetValue(identity, out var alive) || !alive))
+            __result = HasLiveUnits(__instance.factory, baseId) ? __result | 4 : __result & ~4;
+        return false;
+    }
+
+    /// <summary>True while the base still has a unit on the field that a player can actually kill.</summary>
+    private static bool HasLiveUnits(PlanetFactory factory, int baseId)
+    {
+        var pool = factory.enemyPool;
+        for (var id = 1; id < factory.enemyCursor && id < pool.Length; id++)
+            if (pool[id].id == id && pool[id].owner == baseId && (pool[id].unitId > 0 || pool[id].dynamic)) return true;
         return false;
     }
 

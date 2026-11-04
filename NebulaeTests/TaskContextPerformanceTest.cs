@@ -3,7 +3,7 @@ using Check = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class TaskContextPerformanceTest
 {
     private readonly Harmony harmony = new("nebulae.tests.task-context-performance");

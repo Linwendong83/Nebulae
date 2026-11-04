@@ -47,51 +47,33 @@ public class AuthorityIdentityTest
     }
 
     [TestMethod]
-    public void DifferentPlanetsWithTheSameEnemyIdAreDifferentObjects()
+    [DataRow(PoolKind.GroundEnemy)]
+    [DataRow(PoolKind.Entity)]
+    public void DifferentPlanetsWithTheSameNativeIdAreDifferentObjects(object poolKind)
     {
-        var onOnePlanet = ObjectKey.Create(Epoch, PoolKind.GroundEnemy, 101, 7, 5);
-        var onAnother = ObjectKey.Create(Epoch, PoolKind.GroundEnemy, 102, 7, 5);
+        var kind = (PoolKind)poolKind;
+        var onOnePlanet = ObjectKey.Create(Epoch, kind, 101, 7, 5);
+        var onAnother = ObjectKey.Create(Epoch, kind, 102, 7, 5);
         TestAssert.AreNotEqual(onOnePlanet, onAnother);
     }
 
     [TestMethod]
-    public void SpaceObjectKeepsItsIdentityWhenItsHiveAstroChanges()
+    [DataRow(PoolKind.SpaceEnemy)]
+    [DataRow(PoolKind.SpaceCraft)]
+    public void SpaceObjectKeepsItsIdentityWhenItsHiveAstroChanges(object poolKind)
     {
-        // A hive's astro slot is an attribute of the object, not part of its identity: the sector
-        // pool is shared, so a hive moving between slots must not read as a new object.
-        var before = ObjectKey.Create(Epoch, PoolKind.SpaceEnemy, 1000001, 7, 5);
-        var after = ObjectKey.Create(Epoch, PoolKind.SpaceEnemy, 1000009, 7, 5);
+        var kind = (PoolKind)poolKind;
+        // Sector pools share their identity across astros; moving between stars must not
+        // turn a relay or fleet craft into a despawn followed by a spawn.
+        var before = ObjectKey.Create(Epoch, kind, 1000001, 7, 5);
+        var after = ObjectKey.Create(Epoch, kind, 1000009, 7, 5);
         TestAssert.AreEqual(before, after);
-
-        var hiveBefore = ObjectKey.Create(Epoch, PoolKind.Hive, 1000001, 3, 5);
-        var hiveAfter = ObjectKey.Create(Epoch, PoolKind.Hive, 1000001, 3, 5);
-        TestAssert.AreEqual(hiveBefore, hiveAfter);
-    }
-
-    [TestMethod]
-    public void AnObjectKeepsItsIdentityWhenItMigratesAcrossTheGalaxy()
-    {
-        // the owning star/hive and the current astro are attributes of an object, not
-        // relocation identity. Vanilla moves objects this way: a dark fog relay carries a mutable
-        // DFRelayComponent.targetAstroId while it flies to another planet, and a fleet craft crosses
-        // stars. The key must be derived from the pool the object lives in, not from where it
-        // currently is, or every migration would look like a despawn plus a spawn.
-        var sectorCraft = ObjectKey.Create(Epoch, PoolKind.SpaceCraft, 1000003, 42, 1);
-        // The same craft later orbits a different star's hive; only its attributes changed.
-        var sameCraft = ObjectKey.Create(Epoch, PoolKind.SpaceCraft, 1000007, 42, 1);
-        TestAssert.AreEqual(sectorCraft, sameCraft);
-
-        // The planet a ground object sits on is *not* an attribute: ground pools are per planet, so
-        // the same native id on another planet is genuinely another object.
-        var onFirstPlanet = ObjectKey.Create(Epoch, PoolKind.Entity, 101, 42, 1);
-        var onSecondPlanet = ObjectKey.Create(Epoch, PoolKind.Entity, 202, 42, 1);
-        TestAssert.AreNotEqual(onFirstPlanet, onSecondPlanet);
     }
 
     [TestMethod]
     public void AMigratingObjectCanBeUpdatedInItsOriginalScopeAfterItMoves()
     {
-        // The practical consequence of the previous test: a state update addressed by the key stays
+        // A state update addressed by the key stays
         // valid even though the object's current astro changed, because the key never mentioned it.
         var replica = new ReplicaVersionState(Epoch);
         var scope = replica.GetOrCreateScope(new ScopeKey(PoolKind.SpaceCraft, AuthorityScope.Sector));

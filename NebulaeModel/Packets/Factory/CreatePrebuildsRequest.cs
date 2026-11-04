@@ -14,7 +14,7 @@ internal class CreatePrebuildsRequest
 {
     public CreatePrebuildsRequest() { }
 
-    public CreatePrebuildsRequest(int planetId, List<BuildPreview> buildPreviews, int playerId, string buildToolType,
+    public CreatePrebuildsRequest(int planetId, IList<BuildPreview> buildPreviews, int playerId, string buildToolType,
         int prebuildId)
     {
         AuthorId = playerId;
@@ -29,9 +29,9 @@ internal class CreatePrebuildsRequest
             // preview, so a large paste spent quadratic time here before a single byte was sent.
             // Index the list once; the wire format is unchanged.
             var indices = BuildPreviewIndices(buildPreviews);
-            foreach (var t in buildPreviews)
+            for (var i = 0; i < buildPreviews.Count; i++)
             {
-                SerializeBuildPreview(t, indices, writer.BinaryWriter);
+                SerializeBuildPreview(buildPreviews[i], indices, writer.BinaryWriter);
             }
             BuildPreviewData = writer.CloseAndGetBytes();
         }

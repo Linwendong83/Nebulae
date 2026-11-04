@@ -7,7 +7,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class TurretInstallSearchTest
 {
     private static int refreshes;
@@ -59,6 +59,4 @@ public class TurretInstallSearchTest
         }
         finally { harmony.UnpatchSelf(); GameMain.data = previousGame; Multiplayer.Session = previousSession; }
     }
-
-    private static T Uninitialized<T>() => (T)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(T));
 }

@@ -108,27 +108,7 @@ internal class LobbyRequestProcessor : PacketProcessor<LobbyRequest>
         // configuring a new game keeps players in the lobby as a waiting room.
         if (Multiplayer.Session.IsGameLoaded)
         {
-            Multiplayer.Session.Server.Players.TryUpgrade(player, EConnectionStatus.Syncing);
-
-            if (isNewUser)
-            {
-                // A first-time player carries no spawn data yet: assign the host's birth
-                // planet before the data is sent.
-                NebulaeWorld.Player.SpawnManager.SetBirthPoint((PlayerData)player.Data);
-            }
-
-            Multiplayer.Session.World.OnPlayerJoining(player.Data.Username);
-            Multiplayer.Session.Planets.HostPreparation.Prepare(
-                GameMain.galaxy.PlanetById(player.Data.LocalPlanetId), conn);
-
-            // Make sure that each player that is currently in the game receives that a new player as join so they can create its RemotePlayerCharacter
-            var pdata = new PlayerJoining((PlayerData)player.Data.CreateCopyWithoutMechaData(),
-                Multiplayer.Session.NumPlayers); // Remove inventory from mecha data
-
-            Server.SendPacket(pdata);
-
-            //Add current tech bonuses to the connecting player based on the Host's mecha
-            ((MechaData)player.Data.Mecha).TechBonuses = new PlayerTechBonuses(GameMain.mainPlayer.mecha);
+            BeginPlayerJoin(player, conn, setBirthPoint: isNewUser);
 
             var gameDesc = GameMain.data.gameDesc;
             byte[] combatSettingsData;
@@ -156,6 +136,27 @@ internal class LobbyRequestProcessor : PacketProcessor<LobbyRequest>
             // Send overriden Planet and Star names
             player.SendPacket(new NameInputPacket(UIRoot.instance.galaxySelect.starmap.galaxyData));
         }
+    }
+
+    internal static void BeginPlayerJoin(INebulaePlayer player, NebulaeConnection conn, bool setBirthPoint)
+    {
+        Multiplayer.Session.Server.Players.TryUpgrade(player, EConnectionStatus.Syncing);
+        if (setBirthPoint)
+        {
+            // Assign the birth planet before publishing the player's data.
+            NebulaeWorld.Player.SpawnManager.SetBirthPoint((PlayerData)player.Data);
+        }
+
+        Multiplayer.Session.World.OnPlayerJoining(player.Data.Username);
+        Multiplayer.Session.Planets.HostPreparation.Prepare(
+            GameMain.galaxy.PlanetById(player.Data.LocalPlanetId), conn);
+
+        // Existing peers need the avatar data, without the player's inventory.
+        var joining = new PlayerJoining((PlayerData)player.Data.CreateCopyWithoutMechaData(),
+            Multiplayer.Session.NumPlayers);
+        Multiplayer.Session.Server.SendPacket(joining);
+
+        ((MechaData)player.Data.Mecha).TechBonuses = new PlayerTechBonuses(GameMain.mainPlayer.mecha);
     }
 
     internal static void SendAuthorityWelcome(INebulaePlayer player)

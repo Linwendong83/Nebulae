@@ -72,21 +72,8 @@ internal class UIStationStorage_Patch
     [HarmonyPostfix]
     [HarmonyPatch(nameof(UIStationStorage.OnItemIconMouseDown))]
     [HarmonyPriority(Priority.Last)]
-    public static void OnItemIconMouseDown_Postfix(UIStationStorage __instance, (int, int) __state)
-    {
-        if (!Multiplayer.IsActive || Multiplayer.Session.Ships.PatchLockILS)
-        {
-            return;
-        }
-        var stationStore = __instance.station.storage[__instance.index];
-        if (__state.Item1 == stationStore.count && __state.Item2 == stationStore.inc)
-        {
-            return;
-        }
-        var packet = new StorageUI(__instance.stationWindow.factory.planet.id, __instance.station.id,
-            __instance.station.gid, __instance.index, stationStore.count, stationStore.inc);
-        Multiplayer.Session.Network.SendPacket(packet);
-    }
+    public static void OnItemIconMouseDown_Postfix(UIStationStorage __instance, (int, int) __state) =>
+        SendItemChange(__instance, __state);
 
     /*
      * host behaves normally and sends update to clients which then apply the changes
@@ -103,14 +90,16 @@ internal class UIStationStorage_Patch
     [HarmonyPostfix]
     [HarmonyPatch(nameof(UIStationStorage.OnItemIconMouseUp))]
     [HarmonyPriority(Priority.Last)]
-    public static void OnItemIconMouseUp_Postfix(UIStationStorage __instance, (int, int) __state)
+    public static void OnItemIconMouseUp_Postfix(UIStationStorage __instance, (int, int) __state) =>
+        SendItemChange(__instance, __state);
+
+    private static void SendItemChange(UIStationStorage __instance, (int, int) __state)
     {
         if (!Multiplayer.IsActive || Multiplayer.Session.Ships.PatchLockILS)
         {
             return;
         }
         var stationStore = __instance.station.storage[__instance.index];
-
         if (__state.Item1 == stationStore.count && __state.Item2 == stationStore.inc)
         {
             return;

@@ -8,7 +8,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class AuthoritySystemRepairTest
 {
     [TestMethod]
@@ -202,7 +202,7 @@ public class AuthoritySystemRepairTest
             "Dynamic.Combat.EnemyDFHiveSystem_Patch", "Authority.FleetCombatAuthority_Patch", "Authority.FleetGroundPoseAuthority_Patch",
             "Authority.UnitCombatAuthority_Patch", "Authority.FleetRemovalAuthority_Patch", "Authority.FleetTickContext",
             "Authority.ProjectilePlayerIdentity_Patch", "Authority.FleetLaunchStar_Patch", "Dynamic.Combat.SkillSystem_Common_Patch", "Authority.HiveDecisionLoop_Patch",
-            "Authority.PlayerSkillTarget_Patch" };
+            "Authority.PlayerSkillTarget_Patch", "Authority.SkillReferencesGuard_Patch" };
         try
         {
             foreach (var name in names)

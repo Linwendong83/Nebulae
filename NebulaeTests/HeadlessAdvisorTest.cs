@@ -4,7 +4,6 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 namespace NebulaeTests;
 
 [TestClass]
-[DoNotParallelize]
 public class HeadlessAdvisorTest
 {
     [TestMethod]

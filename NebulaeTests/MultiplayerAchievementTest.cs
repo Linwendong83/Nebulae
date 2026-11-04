@@ -10,7 +10,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class MultiplayerAchievementTest
 {
     private readonly Harmony harmony = new("nebulae.tests.multiplayer-achievements");

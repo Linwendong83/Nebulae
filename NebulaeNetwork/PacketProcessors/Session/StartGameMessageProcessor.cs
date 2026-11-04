@@ -12,10 +12,6 @@ using NebulaeWorld;
 namespace NebulaeNetwork.PacketProcessors.Session;
 internal class StartGameMessageProcessor : PacketProcessor<StartGameMessage>
 {
-    public StartGameMessageProcessor()
-    {
-    }
-
     protected override void ProcessPacket(StartGameMessage packet, NebulaeConnection conn)
     {
         if (IsHost)
@@ -30,21 +26,7 @@ internal class StartGameMessageProcessor : PacketProcessor<StartGameMessage>
                     return;
                 }
 
-                Multiplayer.Session.Server.Players.TryUpgrade(player, EConnectionStatus.Syncing);
-                NebulaeWorld.Player.SpawnManager.SetBirthPoint((PlayerData)player.Data);
-
-                Multiplayer.Session.World.OnPlayerJoining(player.Data.Username);
-                Multiplayer.Session.Planets.HostPreparation.Prepare(
-                    GameMain.galaxy.PlanetById(player.Data.LocalPlanetId), conn);
-
-                // Make sure that each player that is currently in the game receives that a new player as join so they can create its RemotePlayerCharacter
-                var pdata = new PlayerJoining((PlayerData)player.Data.CreateCopyWithoutMechaData(),
-                    Multiplayer.Session.NumPlayers); // Remove inventory from mecha data
-
-                Server.SendPacket(pdata);
-
-                //Add current tech bonuses to the connecting player based on the Host's mecha
-                ((MechaData)player.Data.Mecha).TechBonuses = new PlayerTechBonuses(GameMain.mainPlayer.mecha);
+                LobbyRequestProcessor.BeginPlayerJoin(player, conn, setBirthPoint: true);
 
                 var identity = ((PlayerData)player.Data).PersistentId;
                 var isNewPlayer = !SaveManager.PlayerSaves.TryGetValue(identity, out var savedData) ||

@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using System;
 using System.Collections.Generic;
@@ -126,6 +126,9 @@ internal sealed class AuthoritySession : IDisposable
     internal Func<double> RecoveryTime { get; set; } = () => Diagnostics.Now;
     private readonly Queue<PendingSnapshotAck> snapshotAcks = new();
     private readonly Queue<PendingScopeControl> scopeControl = new();
+    private readonly List<PendingScopeControl> deferredScopeControl = new();
+    private readonly Dictionary<(ushort Player, ScopeKey Scope), int> deferredSubscribeAttempts = new();
+    private const int DeferredSubscribeAttempts = 120;
     private readonly Queue<Action> lifecycle = new();
     private bool applyingPausedJoin;
 
@@ -476,6 +479,25 @@ internal sealed class AuthoritySession : IDisposable
             RuinReplica = new RuinReplicaBinding();
             WorldReplica.MirrorObserver = new CompositeMirrorObserver(factoryBinding, groundBinding, spaceBinding, craftBinding, DarkFogReplica, TurretReplica, RuinReplica)
             { EnforceReadiness = RequireGamePools };
+            // A drifted object is repaired from the canonical record that proved the drift, inside
+            // the same apply window a stream apply would use. Only a repair that does not take hands
+            // the whole scope to recovery: rebuilding 8000 members to fix one recycled slot is how a
+            // benign local divergence becomes a resync loop.
+            WorldReplica.RuntimeRepair = (key, state) =>
+            {
+                if (state == null || !WorldReplica.Mirrors.TryGetValue(key, out var mirror)) return false;
+                try
+                {
+                    ApplyContext.Run(new ApplyScope(mirror.Scope), () =>
+                        WorldReplica.MirrorObserver?.OnStateApplied(mirror.Scope, key, mirror.Revision, state));
+                    return true;
+                }
+                catch (Exception error)
+                {
+                    Diagnostics.Warn("authority:repair:" + key, () => $"[authority] object repair failed key={key} scope={mirror.Scope}", error);
+                    return false;
+                }
+            };
             ReplicaPoolIdentity = scope => scope.Kind switch
             {
                 PoolKind.GroundEnemy => GameMain.galaxy?.PlanetById(scope.Scope)?.factory?.enemyPool,
@@ -916,6 +938,15 @@ internal sealed class AuthoritySession : IDisposable
     /// </remarks>
     private void DrainScopeControl()
     {
+        // A planet-scope subscribe can reach the host before the location update it depends on.
+        // Retrying it on the next frame closes that race; refusing it outright left the client with
+        // no pools for the planet it was standing on until it happened to change planet again.
+        if (deferredScopeControl.Count > 0)
+        {
+            lock (gate)
+                foreach (var deferred in deferredScopeControl) scopeControl.Enqueue(deferred);
+            deferredScopeControl.Clear();
+        }
         while (true)
         {
             PendingScopeControl request;
@@ -945,15 +976,33 @@ internal sealed class AuthoritySession : IDisposable
                     if (ScopeSubscriptionPolicy.MaySubscribe(request.Scope, location.HasValue, planetId)
                             != ScopeSubscriptionDecision.Allowed)
                     {
+                        // Planet scopes are refused when the host has not registered the player on that
+                        // planet *yet*. That is a race with the location packet, not a refusal the
+                        // client can see: keep the request for a bounded number of frames.
+                        var identity = (request.PlayerId, request.Scope);
+                        if (location.HasValue && AuthorityScope.TryGetScopeKind(request.Scope.Kind, out var scopeKind) &&
+                            scopeKind == PoolScopeKind.Planet)
+                        {
+                            deferredSubscribeAttempts.TryGetValue(identity, out var attempts);
+                            if (attempts < DeferredSubscribeAttempts)
+                            {
+                                deferredSubscribeAttempts[identity] = attempts + 1;
+                                deferredScopeControl.Add(request);
+                                continue;
+                            }
+                            deferredSubscribeAttempts.Remove(identity);
+                        }
                         System.Threading.Interlocked.Increment(ref scopeControlRefused);
                         Log.Warn($"[authority] scope subscribe refused for player {request.PlayerId}: " +
                                  $"{request.Scope} (registered planet {planetId})");
                         continue;
                     }
+                    deferredSubscribeAttempts.Remove((request.PlayerId, request.Scope));
                     HostReplicator.Subscribe(request.PlayerId, request.Scope, request.DigestOnly, request.RequestId);
                     System.Threading.Interlocked.Increment(ref scopeControlHandled);
                     break;
                 case ScopeControlOp.Unsubscribe:
+                    deferredSubscribeAttempts.Remove((request.PlayerId, request.Scope));
                     HostReplicator.Unsubscribe(request.PlayerId, request.Scope);
                     System.Threading.Interlocked.Increment(ref scopeControlHandled);
                     break;

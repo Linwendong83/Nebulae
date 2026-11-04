@@ -11,7 +11,6 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 namespace NebulaeTests.Authority;
 
 [TestClass]
-[DoNotParallelize]
 public class FactoryProductTest
 {
     private int[]? previousStacks;
@@ -276,7 +275,6 @@ public class FactoryProductTest
     }
 
     [TestMethod]
-    [DoNotParallelize]
     public void NativeRefundPlanIncludesTheRunningBatchAndDoesNotResetTheRecipe()
     {
         var machine = Machine(3); machine.recipeExecuteData = new RecipeExecuteData([1001], [2], [1201], [1], 60, 60, false);

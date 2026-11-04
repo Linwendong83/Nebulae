@@ -6,13 +6,8 @@ namespace NebulaeWorld.Combat;
 
 internal static class EnemyTargetIdentity
 {
-    private sealed class Targets
-    {
-        public readonly ConcurrentDictionary<int, (SkillTarget Target, ObjectKey Key)> Turrets = new();
-        public readonly ConcurrentDictionary<int, (SkillTarget Target, ObjectKey Key, int Life)> Missiles = new();
-    }
-    private static readonly ConditionalWeakTable<PlanetFactory, Targets> turrets = new();
-    private static readonly ConditionalWeakTable<DataPool<GeneralMissile>, Targets> missiles = new();
+    private static readonly ConditionalWeakTable<PlanetFactory, ConcurrentDictionary<int, (SkillTarget Target, ObjectKey Key)>> turrets = new();
+    private static readonly ConditionalWeakTable<DataPool<GeneralMissile>, ConcurrentDictionary<int, (SkillTarget Target, ObjectKey Key, int Life)>> missiles = new();
 
     public static bool TryResolve(SkillTarget target, out ObjectKey key)
     {
@@ -37,7 +32,7 @@ internal static class EnemyTargetIdentity
 
     public static void Observe(PlanetFactory factory, in TurretComponent turret, long expectedGeneration = 0)
     {
-        var targets = turrets.GetOrCreateValue(factory).Turrets;
+        var targets = turrets.GetOrCreateValue(factory);
         if (turret.target.id == 0) { targets.TryRemove(turret.entityId, out _); return; }
         if (TryResolve(turret.target, out var key) && (expectedGeneration == 0 || key.Generation == expectedGeneration))
             targets[turret.entityId] = (turret.target, key);
@@ -49,7 +44,7 @@ internal static class EnemyTargetIdentity
         // even while the target is empty; default(SkillTarget) would mean a building.
         turret.target.type = ETargetType.Enemy;
         if (turret.target.id == 0) return true;
-        var targets = turrets.GetOrCreateValue(factory).Turrets;
+        var targets = turrets.GetOrCreateValue(factory);
         var valid = TryResolve(turret.target, out var key);
         if (targets.TryGetValue(turret.entityId, out var previous) && SameTarget(previous.Target, turret.target))
             valid &= previous.Key == key;
@@ -64,23 +59,44 @@ internal static class EnemyTargetIdentity
     public static bool ValidateMissile(SkillSystem skills, ref GeneralMissile missile)
     {
         if (missile.caster.type == ETargetType.None) missile.target.type = ETargetType.Enemy;
-        if (missile.target.id == 0 || missile.target.type != ETargetType.Enemy) return true;
+        if (missile.target.type != ETargetType.Enemy) return true;
+        // Vanilla can clear just id when a target disappears. Its collision pass still follows
+        // astroId even with id == 0, so that leftover planet must be retired as well.
+        if (missile.target.id <= 0)
+        {
+            var clean = missile.target.astroId == 0 && missile.targetCombatStatId == 0;
+            missile.target = new SkillTarget { type = ETargetType.Enemy };
+            missile.targetCombatStatId = 0;
+            return clean;
+        }
         var pool = missile.caster.type == ETargetType.Player ? skills.mechaMissiles : skills.turretMissiles;
         if (pool == null) return false;
-        var targets = missiles.GetOrCreateValue(pool).Missiles;
+        var targets = missiles.GetOrCreateValue(pool);
         var valid = TryResolve(missile.target, out var key);
+        // PlanetData retains cached factories after a client leaves a star. Native skills read
+        // astroFactories instead; a valid replicated identity alone cannot make that view usable.
+        if (SpaceSector.IsPlanetAstro(missile.target.astroId))
+        {
+            var astro = missile.target.astroId;
+            var factory = skills.astroFactories != null && astro < skills.astroFactories.Length ? skills.astroFactories[astro] : null;
+            valid &= factory?.enemyPool != null && missile.target.id < factory.enemyCursor &&
+                missile.target.id < factory.enemyPool.Length && factory.enemyPool[missile.target.id].id == missile.target.id;
+        }
         // GeneralMissile.life is an increasing age, unlike local projectile countdowns.
         if (targets.TryGetValue(missile.id, out var previous) && missile.life >= previous.Life && SameTarget(previous.Target, missile.target))
             valid &= previous.Key == key;
         if (valid) { targets[missile.id] = (missile.target, key, missile.life); return true; }
         // Keep native flight/expiry, but never home onto an unrelated recycled slot.
-        missile.target.id = 0; missile.targetCombatStatId = 0;
+        // The astro is part of the identity: native expiry clears the target's base references
+        // through target.astroId, and a planet this peer has unloaded has no factory to clear.
+        missile.target = new SkillTarget { type = ETargetType.Enemy };
+        missile.targetCombatStatId = 0;
         targets.TryRemove(missile.id, out _); return false;
     }
 
     public static void ForgetMissile(DataPool<GeneralMissile> pool, int id)
     {
-        if (missiles.TryGetValue(pool, out var targets)) targets.Missiles.TryRemove(id, out _);
+        if (missiles.TryGetValue(pool, out var targets)) targets.TryRemove(id, out _);
     }
 
     public static void RemoveGroundReferences(PlanetFactory factory, int enemyId)
@@ -97,7 +113,7 @@ internal static class EnemyTargetIdentity
             if (turret.projectileId > 0) turret.StopContinuousSkill(factory.skillSystem, false);
             turret.target = new SkillTarget { type = ETargetType.Enemy }; turret.projectileId = 0;
             turret.isAiming = turret.isLockingTarget = false; turret.activeSearch = true;
-            turrets.GetOrCreateValue(factory).Turrets.TryRemove(turret.entityId, out _);
+            turrets.GetOrCreateValue(factory).TryRemove(turret.entityId, out _);
         }
     }
 }

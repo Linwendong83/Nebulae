@@ -92,7 +92,12 @@ internal sealed partial class BuildDispatchManager : IDisposable
     {
         // Every frame already runs BeginLaunchFrame for every loaded factory before the native
         // construction tick; calling it again here walked the prebuild pool twice per frame.
-        if (!Multiplayer.Session.IsServer) return;
+        // A client must never launch on its own: a flight without a host claim is rejected when
+        // its drone reports the finished build. PreLaunchDrone has just written the assignment the
+        // native pass below would consume, so clear exactly the sites this mecha offered this frame
+        // (RepairDispatchManager.Prepare does the same for repair targets).
+        if (!Multiplayer.Session.IsServer) { ClearOfferedSites(factory); return; }
+        if (offers.Count == 0) return;
         var candidates = new List<(ushort Player, ConstructionLaunchOfferPacket Offer, float Score)>();
         foreach (var entry in offers.ToArray())
         {
@@ -141,6 +146,24 @@ internal sealed partial class BuildDispatchManager : IDisposable
         p.Next1ObjectId = ids[1]; p.Next2ObjectId = ids[2]; p.Next3ObjectId = ids[3];
         p.TargetGeneration = generations[0]; p.Next1Generation = generations[1];
         p.Next2Generation = generations[2]; p.Next3Generation = generations[3]; p.DronePriority = priority;
+    }
+    /// <summary>Clears the build assignment the local mecha's next-flight pass just wrote.</summary>
+    private static void ClearOfferedSites(PlanetFactory factory)
+    {
+        var player = GameMain.mainPlayer;
+        var targets = player?.mecha?.constructionModule?.buildTargets;
+        if (player == null || targets == null || player.factory != factory) return;
+        var pool = factory.prebuildPool;
+        // buildTargets holds four slots per flight; slot 0 of each flight is the site it wants.
+        for (var i = 0; i < targets.Length; i += 4)
+        {
+            var id = targets[i].objectId;
+            if (id <= 0 || id >= factory.prebuildCursor || id >= pool.Length) continue;
+            ref var site = ref pool[id];
+            if (site.id != id || site.builderLaunched || site.builderModuleId != -1) continue;
+            site.builderModuleId = 0;
+            site.builderValue = 0f;
+        }
     }
     private static int[] Targets(BuildDroneLaunchPacket p) => new[] { p.TargetObjectId, p.Next1ObjectId, p.Next2ObjectId, p.Next3ObjectId };
     private static long[] Generations(BuildDroneLaunchPacket p) => new[] { p.TargetGeneration, p.Next1Generation, p.Next2Generation, p.Next3Generation };

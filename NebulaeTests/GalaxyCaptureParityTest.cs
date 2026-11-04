@@ -5,7 +5,7 @@ using Check = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class GalaxyCaptureParityTest
 {
     private static DataPool<T> Pool<T>() where T : struct, IPoolElement

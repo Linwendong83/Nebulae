@@ -8,7 +8,6 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 namespace NebulaeTests;
 
 [TestClass]
-[DoNotParallelize]
 public class DarkFogMonitorEntryTest
 {
     private readonly Harmony harmony = new("nebulae.tests.dark-fog-monitor-entry");

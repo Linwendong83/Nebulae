@@ -66,6 +66,38 @@ internal static class VegetableCollectionState
         return stream.ToArray();
     }
 
+    /// <summary>
+    /// True when <paramref name="candidate"/> holds every counted item of <paramref name="known"/> plus
+    /// at least one more; <paramref name="difference"/> names the additions.
+    /// </summary>
+    /// <remarks>
+    /// The host keeps a cache of each client's own collection, and that cache can fall behind: a
+    /// harvest request the host refused (a location race, a duplicate command sequence) never applied
+    /// there while the client had already taken the item. The snapshot is the client's own inventory,
+    /// so additions are the one direction the host may trust — they are exactly what it missed.
+    /// Anything that would drop a recorded item is not an addition, which keeps rolling back a client
+    /// that is missing items.
+    /// </remarks>
+    internal static bool OnlyAdds(byte[] known, byte[] candidate, out string difference)
+    {
+        difference = null;
+        Dictionary<(long Owner, int Proto), int> have, want;
+        try { have = Counts(known); want = Counts(candidate); }
+        catch (Exception error) when (error is IOException or OverflowException or InvalidDataException) { return false; }
+        var added = new List<string>();
+        foreach (var pair in want)
+        {
+            have.TryGetValue(pair.Key, out var count);
+            if (pair.Value < count) return false;
+            if (pair.Value > count) added.Add($"{pair.Value - count}x{pair.Key.Proto}@{pair.Key.Owner}");
+        }
+        foreach (var pair in have)
+            if (!want.ContainsKey(pair.Key)) return false;
+        if (added.Count == 0) return false;
+        difference = "added=" + string.Join(",", added);
+        return true;
+    }
+
     public static bool Equivalent(byte[] left, byte[] right)
     {
         try

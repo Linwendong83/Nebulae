@@ -8,7 +8,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class SpaceInvasionRenderingTest
 {
     private static readonly HashSet<object> drawn = new();

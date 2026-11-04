@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using HarmonyLib;
 using NebulaeModel.Authority;
 using NebulaeModel.DataStructures;
@@ -12,7 +12,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class PlayerMissileLifetimeTest
 {
     private GameData previousGame = null!;
@@ -143,12 +143,32 @@ public class PlayerMissileLifetimeTest
         var restored = (GeneralMissile)pool.Read(entry.Id);
         TestAssert.AreEqual(20, restored.life); TestAssert.AreEqual(400d, restored.uPos.x);
         TestAssert.AreEqual(0, restored.target.id, "Never follow an absent enemy or a reused slot from a stale sample.");
+        TestAssert.AreEqual(0, restored.target.astroId, "A retired target must not keep naming a planet its peer may have unloaded.");
         TestAssert.AreEqual(0, restored.targetCombatStatId); TestAssert.AreEqual(1200, restored.damage);
         TestAssert.AreEqual(ETargetTypeMask.Enemy, restored.mask);
         using var scope = manager.BeforeSkill(restored, skills, out var run);
         TestAssert.IsTrue(run, "Lost targets must not stop native flight, smoke or lifetime updates.");
         Receive(PlayerWeaponEvent.End);
         TestAssert.IsFalse(pool.Exists(1)); TestAssert.AreEqual(0, manager.ActiveCount);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void LostGroundTargetDoesNotKeepAnUnloadedFactoryInTheNativeFlightPath(bool stillNamesEnemy)
+    {
+        // PlanetData.factory can retain a cached factory after the skill lookup array is cleared.
+        // Native flight uses the latter, including when target.id has already become zero.
+        targets[(PoolKind.GroundEnemy, 101, 5)] = entry.Target;
+        skills.astroFactories[101] = null!;
+        var missile = Missile(false, -3); missile.id = 1;
+        if (!stillNamesEnemy) missile.target.id = 0;
+        TestAssert.IsFalse(EnemyTargetIdentity.ValidateMissile(skills, ref missile));
+        TestAssert.AreEqual(0, missile.target.id);
+        TestAssert.AreEqual(0, missile.target.astroId);
+        skills.mechaMissiles.buffer[1] = missile;
+        pool.Advance(1, skills, GameMain.gameTick, 3);
+        TestAssert.IsFalse(pool.Exists(1), "A stranded missile must finish native tail motion and expire.");
     }
 
     [TestMethod]

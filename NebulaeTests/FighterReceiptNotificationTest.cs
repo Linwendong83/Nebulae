@@ -11,7 +11,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class FighterReceiptNotificationTest
 {
     private GameData previousGame = null!;
@@ -130,6 +130,4 @@ public class FighterReceiptNotificationTest
         TestAssert.AreEqual(1001, player.inhandItemId); TestAssert.AreEqual(19, player.inhandItemCount);
         TestAssert.IsEmpty(tips); TestAssert.IsEmpty(notifications);
     }
-
-    private static T Uninitialized<T>() => (T)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(T));
 }

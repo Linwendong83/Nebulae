@@ -9,7 +9,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class BuildingDeathVisualTest
 {
     private Harmony harmony = null!;

@@ -8,7 +8,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 namespace NebulaeTests;
 
 /// <summary>Fault injection against the production clock handler; no Unity scene or wall-clock sleeps.</summary>
-[TestClass, DoNotParallelize]
+[TestClass]
 public class ClockDelayDiagnosisTest
 {
     private const long OriginMs = 1700000000000;

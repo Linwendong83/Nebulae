@@ -353,9 +353,12 @@ internal class Server : IServer
 
     public void Update()
     {
-        // Same per-frame budget the client uses: an unbounded drain can spend an entire
-        // frame dequeuing a packet burst, and anything left over simply waits one frame.
-        PacketProcessor.ProcessPacketQueue(Multiplayer.Session.IsGameLoaded ? 2 : 8);
+        // Keep network service proportional to elapsed time when construction or combat
+        // lowers the host's frame rate. A fixed 2ms per frame starves build requests and
+        // checkpoint receipts just when their queue needs to recover. The client policy
+        // retains the normal minimum and caps each drain at 50ms.
+        PacketProcessor.ProcessPacketQueue(Client.PacketBudget(Time.unscaledDeltaTime,
+            !Multiplayer.Session.IsGameLoaded));
         Multiplayer.Session.Planets.Update();
         Multiplayer.Session.JoinSync.UpdateServer();
         Multiplayer.Session.InventoryTransfers.CheckDiagnostics();

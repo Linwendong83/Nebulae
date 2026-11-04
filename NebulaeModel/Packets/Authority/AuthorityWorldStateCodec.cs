@@ -58,7 +58,6 @@ internal static class AuthorityWorldStateCodec
                 if (record.BaseRevision <= 0 || record.BaseRevision >= record.Revision) return false;
                 writer.WriteLong(record.BaseRevision);
             }
-            if (record.State == null || record.State.Length > AuthorityLimits.StateRecordMaxBytes) return false;
             writer.TryWriteBytes(record.State, AuthorityLimits.StateRecordMaxBytes);
         }
 
@@ -80,34 +79,9 @@ internal static class AuthorityWorldStateCodec
         records = null;
         reject = AuthorityReject.Accepted;
         if (!AuthorityPayloadReader.TryCreate(source, offset, length, out var reader, out reject)) return false;
-        if (!reader.TryReadInt(out var count))
-        {
-            reject = new AuthorityReject(AuthorityRejectCode.MalformedEnvelope, "missing record count");
+        if (!AuthorityBatchCodec.TryReadHeader(ref reader, declaredRecordCount,
+                AuthorityLimits.StateRecordCountMax, MinRecordBytes, out var count, out var shared, out reject))
             return false;
-        }
-        if (count < 0 || count > AuthorityLimits.StateRecordCountMax)
-        {
-            reject = new AuthorityReject(AuthorityRejectCode.PayloadTooLarge, "records=" + count);
-            return false;
-        }
-        if (count != declaredRecordCount)
-        {
-            reject = new AuthorityReject(AuthorityRejectCode.MalformedEnvelope,
-                "declared=" + declaredRecordCount + " encoded=" + count);
-            return false;
-        }
-
-        ObjectKey shared = default;
-        if (count > 0 && !AuthorityBatchCodec.TryReadScope(ref reader, out shared))
-        {
-            reject = new AuthorityReject(AuthorityRejectCode.InvalidObjectKey, "batch scope");
-            return false;
-        }
-        if (count > reader.Remaining / MinRecordBytes)
-        {
-            reject = new AuthorityReject(AuthorityRejectCode.MalformedEnvelope, "truncated records");
-            return false;
-        }
         var result = new List<AuthorityWorldStateRecord>(count);
         for (var i = 0; i < count; i++)
         {

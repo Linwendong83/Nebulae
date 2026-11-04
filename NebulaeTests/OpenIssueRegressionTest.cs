@@ -14,7 +14,6 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 namespace NebulaeTests;
 
 [TestClass]
-[DoNotParallelize]
 public class OpenIssueRegressionTest
 {
     private static PlayerData Checkpoint(long revision, bool alive = true, int deaths = 0) => new(900, 999, "untrusted-name")

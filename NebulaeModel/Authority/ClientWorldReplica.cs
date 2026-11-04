@@ -284,6 +284,7 @@ internal sealed class ClientWorldReplica
     private long digestsMismatchedTotal;
     private long digestsSupersededTotal;
     private long digestSummariesRecordedTotal;
+    private long runtimeRepairedTotal;
 
     public ClientWorldReplica(AuthorityEpoch epoch)
     {
@@ -333,7 +334,16 @@ internal sealed class ClientWorldReplica
             var result = verifier.VerifyObject(key, mirror.CanonicalState);
             if (result == RuntimeObjectIntegrity.Unavailable) continue;
             checkedObjects++;
-            if (result == RuntimeObjectIntegrity.Drift) RequestResync(mirror.Scope, ScopeRecoveryReason.RuntimeDrift);
+            if (result != RuntimeObjectIntegrity.Drift) continue;
+            // The canonical record is the repair: write it back and let the verifier judge again
+            // before the scope pays for a fresh baseline.
+            if (RuntimeRepair != null && RuntimeRepair(key, mirror.CanonicalState) &&
+                verifier.VerifyObject(key, mirror.CanonicalState) != RuntimeObjectIntegrity.Drift)
+            {
+                System.Threading.Interlocked.Increment(ref runtimeRepairedTotal);
+                continue;
+            }
+            RequestResync(mirror.Scope, ScopeRecoveryReason.RuntimeDrift);
         }
         return checkedObjects;
     }
@@ -366,6 +376,20 @@ internal sealed class ClientWorldReplica
     public IReplicaMirrorObserver MirrorObserver { get; set; }
 
     /// <summary>
+    /// Re-applies one canonical record to the live object it names, inside the session's apply
+    /// window, and reports whether the write landed. Unset means a drifted object can only be
+    /// repaired by rebuilding its whole scope.
+    /// </summary>
+    /// <remarks>
+    /// An audit answers one question about one object. When that object's local copy has drifted,
+    /// the canonical record that proves it is also the exact fix: the binding re-writes it, and the
+    /// verifier gets a second look. Rebuilding an eight-thousand-member scope to correct a single
+    /// recycled slot is what turns a benign local divergence into a resync loop, and the loop is
+    /// far more expensive than the repair.
+    /// </remarks>
+    public Func<ObjectKey, byte[], bool> RuntimeRepair { get; set; }
+
+    /// <summary>
     /// Where the replica sends scope-control requests. Unset in pure-model tests that do not
     /// exercise the host conversation; the omission is counted, never silent.
     /// </summary>
@@ -378,6 +402,7 @@ internal sealed class ClientWorldReplica
     public long BaselineRefusedTotal => baselineRefusedTotal;
     public long GapTotal => gapTotal;
     public long SequenceDroppedTotal => sequenceDroppedTotal;
+    public long RuntimeRepairedTotal => runtimeRepairedTotal;
 
     /// <summary>Live stream packets offered before their scope's baseline was installed.</summary>
     public long StreamBeforeBaselineTotal => streamBeforeBaselineTotal;
@@ -714,9 +739,20 @@ internal sealed class ClientWorldReplica
     public bool ReceiveSnapshotChunk(ScopeKey scope, long subscriptionEpoch, long baselineId, int chunkIndex,
         byte[] data)
     {
-        var accepted = Snapshots.Chunk(scope, subscriptionEpoch, baselineId, chunkIndex, data);
-        if (!accepted) Diagnostics.Warn("replica:chunk:" + scope, () => $"[authority] snapshot chunk refused scope={scope} subscription={subscriptionEpoch} baseline={baselineId} index={chunkIndex} bytes={data?.Length ?? 0}");
-        return accepted;
+        if (Snapshots.Chunk(scope, subscriptionEpoch, baselineId, chunkIndex, data)) return true;
+        Diagnostics.Warn("replica:chunk:" + scope, () => $"[authority] snapshot chunk refused scope={scope} subscription={subscriptionEpoch} baseline={baselineId} index={chunkIndex} bytes={data?.Length ?? 0}");
+        // A chunk with no staging cannot become an image: its Begin never arrived, or the staging was
+        // abandoned while the host was already streaming the whole baseline. Waiting for the next
+        // digest leaves the scope blind for a full interval and loses the reassembly anyway, so ask
+        // for a fresh baseline now. A chunk belonging to a baseline this replica has already replaced
+        // (or is already rebuilding past) is old news, not a reason to rebuild again.
+        if (Versions.TryGetScope(scope, out var state) && state.SubscriptionEpoch == subscriptionEpoch &&
+            baselineId > state.BaselineId && !Snapshots.IsStaging(scope))
+        {
+            System.Threading.Interlocked.Increment(ref baselineRefusedTotal);
+            RequestResync(scope, ScopeRecoveryReason.BaselineRefused);
+        }
+        return false;
     }
 
     /// <summary>
@@ -1113,6 +1149,17 @@ internal sealed class ClientWorldReplica
     {
         if (!Versions.TryGetScope(scope, out state) ||
             state.Phase == SubscriptionPhase.Unsubscribed)
+        {
+            System.Threading.Interlocked.Increment(ref sequenceDroppedTotal);
+            return false;
+        }
+
+        // A superseded subscription's tail is refusable by its own epoch — the gate below says so
+        // itself — and that verdict has to run before any phase verdict. While a baseline installs,
+        // the packets still in flight belong to the conversation that baseline just replaced; counting
+        // them as "the host streamed before the ack" turns every re-baseline into the trigger for the
+        // next one, which is a resync storm that never converges on a narrower window.
+        if (state.SubscriptionEpoch > 0 && subscriptionEpoch != state.SubscriptionEpoch)
         {
             System.Threading.Interlocked.Increment(ref sequenceDroppedTotal);
             return false;

@@ -12,7 +12,7 @@ using CollectionAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Collection
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class CombatStockSynchronizationTest
 {
     private GameData previousGame = null!;

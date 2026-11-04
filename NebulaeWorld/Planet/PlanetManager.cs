@@ -1,4 +1,4 @@
-﻿#region
+#region
 
 using System;
 using System.Collections.Generic;
@@ -341,6 +341,11 @@ internal class PlanetManager : IDisposable
         Multiplayer.Session.Drones.ClearAllRemoteDrones();
         Multiplayer.Session.BuildDispatch.OnFactoriesUnloaded();
         Multiplayer.Session.Repairs?.AbortPlanet(null);
+        // Retire the skills that name these planets *before* their factories go away. Native skill
+        // teardown resolves a skill's astro through galaxy.astrosFactory, so clearing afterwards
+        // leaves every in-flight ground projectile pointing at a factory that is already null — the
+        // first one to expire then throws inside SkillSystem.GameTick on every later frame.
+        Multiplayer.Session.Combat.OnAstroFactoryUnload();
         using (Multiplayer.Session.Ships.PatchLockILS.On())
         {
             for (var i = gameData.factoryCount - 1; i >= 0; i--)
@@ -351,7 +356,6 @@ internal class PlanetManager : IDisposable
                 gameData.galaxy.astrosFactory[planet.id] = null;  //Assigned by UpdateRuntimePose
             }
             gameData.factoryCount = 0;
-            Multiplayer.Session.Combat.OnAstroFactoryUnload();
         }
         // Temporarily clear all CustomCharts on the unloaded factories to avoid errors, but preserve layout
         if (gameData.statistics?.charts != null)

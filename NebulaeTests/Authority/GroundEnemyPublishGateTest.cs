@@ -24,7 +24,7 @@ namespace NebulaeTests.Authority;
 /// moves. A moving unit keeps the checkpoint policy and was never affected.
 /// </para>
 /// </remarks>
-[TestClass, DoNotParallelize]
+[TestClass]
 public class GroundEnemyPublishGateTest
 {
     private static readonly AuthorityEpoch Epoch = new(1, 2);

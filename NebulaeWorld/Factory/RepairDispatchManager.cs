@@ -36,6 +36,9 @@ internal sealed class RepairDispatchManager : IDisposable
         public DroneFlightView View;
     }
     private readonly Dictionary<long, Flight> flights = new();
+    // Recount runs several times per factory frame, including frames with no repair demand.
+    // All callers run on the simulation thread; the counts never escape this method.
+    private readonly Dictionary<int, int> repairCounts = new();
     private readonly Dictionary<long, Binding> bindings = new();
     private readonly Dictionary<(PlanetFactory Factory, int Drone), long> nativeBindings = new();
     private readonly Dictionary<(PlanetFactory Factory, int Drone), (long Offer, int Craft)> continuations = new();
@@ -151,6 +154,7 @@ internal sealed class RepairDispatchManager : IDisposable
             return;
         }
         Recount(factory);
+        if (offers.Count == 0) return;
         var candidates = new List<(ushort Player, RepairOfferPacket Offer, float Score)>();
         foreach (var entry in offers.ToArray())
         {
@@ -389,6 +393,7 @@ internal sealed class RepairDispatchManager : IDisposable
     }
     public void TickFactory(PlanetFactory factory, long time)
     {
+        if (flights.Count == 0) return;
         foreach (var f in flights.Values.Where(f => !f.Native && f.Factory == factory).ToArray())
         {
             if (f.Simulated == time) continue;
@@ -458,7 +463,8 @@ internal sealed class RepairDispatchManager : IDisposable
     }
     public void Recount(PlanetFactory factory)
     {
-        var system = factory.constructionSystem; var counts = new Dictionary<int, int>(); var drones = system.drones;
+        var system = factory.constructionSystem; var counts = repairCounts; var drones = system.drones;
+        counts.Clear();
         for (var id = 1; id < drones.cursor; id++)
         {
             ref var d = ref drones.buffer[id];

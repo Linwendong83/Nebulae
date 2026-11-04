@@ -14,7 +14,7 @@ using Check = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class SocketRetirementTest
 {
     private sealed class RecordingLogger : ILogger

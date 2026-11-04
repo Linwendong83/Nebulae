@@ -16,13 +16,13 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class GalaxyNamingTest
 {
     private MultiplayerSession previousSession = null!;
     private GameData previousData = null!;
     private object previousThemes = null!;
-    private RecordingNetwork network = null!;
+    private RecordingBroadcastNetwork network = null!;
 
     private sealed class NameReceiver : NameInputProcessor
     {
@@ -55,7 +55,7 @@ public class GalaxyNamingTest
         themes.dataArray = Array.Empty<ThemeProto>();
         AccessTools.Field(typeof(LDB), "_themes").SetValue(null, themes);
 
-        network = new RecordingNetwork();
+        network = new RecordingBroadcastNetwork();
         Multiplayer.Session = Uninitialized<MultiplayerSession>();
         Multiplayer.Session.Network = network;
         Multiplayer.Session.Client = Uninitialized<global::NebulaeNetwork.Client>();
@@ -373,20 +373,4 @@ public class GalaxyNamingTest
 
     private static T RoundTrip<T>(T packet) where T : class, new() =>
         TestSupport.RoundTrip(packet, processor => processor.RegisterNestedType<PlayerData>(() => new PlayerData()));
-
-    private sealed class RecordingNetwork : INetworkProvider
-    {
-        public List<object> Packets { get; } = new();
-        public INetPacketProcessor PacketProcessor { get; } = new NebulaeNetPacketProcessor();
-        public byte[] WriteOnce<T>(T packet) where T : class, new() => PacketProcessor.Write(packet);
-        public void SendPacket<T>(T packet) where T : class, new() => Packets.Add(packet);
-        public void SendToMatching<T>(T packet, Predicate<INebulaePlayer> condition) where T : class, new() => SendPacket(packet);
-        public void SendPacketToLocalStar<T>(T packet) where T : class, new() => SendPacket(packet);
-        public void SendPacketToLocalPlanet<T>(T packet) where T : class, new() => SendPacket(packet);
-        public void SendPacketToPlanet<T>(T packet, int planetId) where T : class, new() => SendPacket(packet);
-        public void SendPacketToStar<T>(T packet, int starId) where T : class, new() => SendPacket(packet);
-        public void SendPacketExclude<T>(T packet, INebulaeConnection exclude) where T : class, new() => SendPacket(packet);
-        public void SendPacketToStarExclude<T>(T packet, int starId, INebulaeConnection exclude) where T : class, new() => SendPacket(packet);
-        public void Dispose() { }
-    }
 }

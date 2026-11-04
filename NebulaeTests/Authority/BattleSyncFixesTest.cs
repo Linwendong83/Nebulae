@@ -11,7 +11,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class BattleSyncFixesTest
 {
     private static FleetProtoSet fixtureFleets = null!;

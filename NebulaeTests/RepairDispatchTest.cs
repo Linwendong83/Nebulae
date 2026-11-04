@@ -10,7 +10,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class RepairDispatchTest
 {
     [TestMethod]
@@ -49,6 +49,12 @@ public class RepairDispatchTest
             SetField(flight, "Returning", true); repairs.Recount(factory);
             TestAssert.AreEqual(2, system.constructStats.buffer[1].repairerCount);
             TestAssert.IsTrue(ConstructionSystem_Patch.AllDronesIdle(module, system));
+            system.drones.buffer[1].stage = system.drones.buffer[2].stage = 4;
+            repairs.Recount(factory);
+            TestAssert.AreEqual(0, system.constructStats.buffer[1].repairerCount, "Scratch counts must not retain retired flights.");
+            system.constructStats.buffer[1] = new ConstructStat { id = 1, entityId = 8, repairerCount = 99 };
+            repairs.Recount(factory);
+            TestAssert.AreEqual(0, system.constructStats.buffer[1].repairerCount, "A recycled construct slot must not inherit the previous entity's count.");
         }
         finally { Multiplayer.Session = previous; }
     }

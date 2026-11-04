@@ -112,34 +112,9 @@ internal static class AuthorityLifecycleCodec
         records = null;
         reject = AuthorityReject.Accepted;
         if (!AuthorityPayloadReader.TryCreate(source, offset, length, out var reader, out reject)) return false;
-        if (!reader.TryReadInt(out var count))
-        {
-            reject = new AuthorityReject(AuthorityRejectCode.MalformedEnvelope, "missing record count");
+        if (!AuthorityBatchCodec.TryReadHeader(ref reader, declaredRecordCount,
+                AuthorityLimits.LifecycleRecordCountMax, AuthorityLimits.LifecycleRecordBytes, out var count, out var shared, out reject))
             return false;
-        }
-        if (count < 0 || count > AuthorityLimits.LifecycleRecordCountMax)
-        {
-            reject = new AuthorityReject(AuthorityRejectCode.PayloadTooLarge, "records=" + count);
-            return false;
-        }
-        if (count != declaredRecordCount)
-        {
-            reject = new AuthorityReject(AuthorityRejectCode.MalformedEnvelope,
-                "declared=" + declaredRecordCount + " encoded=" + count);
-            return false;
-        }
-
-        ObjectKey shared = default;
-        if (count > 0 && !AuthorityBatchCodec.TryReadScope(ref reader, out shared))
-        {
-            reject = new AuthorityReject(AuthorityRejectCode.InvalidObjectKey, "batch scope");
-            return false;
-        }
-        if (count > reader.Remaining / AuthorityLimits.LifecycleRecordBytes)
-        {
-            reject = new AuthorityReject(AuthorityRejectCode.MalformedEnvelope, "truncated records");
-            return false;
-        }
         var result = new List<AuthorityLifecycleRecord>(count);
         for (var i = 0; i < count; i++)
         {

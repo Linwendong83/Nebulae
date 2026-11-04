@@ -10,7 +10,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class DarkFogLifecycleTest
 {
     private MultiplayerSession previousSession = null!;
@@ -369,5 +369,87 @@ public class DarkFogLifecycleTest
         runtime.ApplyContext.Run(new ApplyScope(scope), () => runtime.DarkFogReplica.OnBaselineInstalled(scope, [new SnapshotMemberRecord(key, 2, rebuilt)]));
         TestAssert.IsTrue(runtime.DarkFogReplica.BaseAlive[(101, 1)]);
         TestAssert.AreEqual((byte)3, runtime.DarkFogReplica.BaseRemovalFlags[(101, 1)]);
+    }
+
+    [TestMethod]
+    public void ADestroyedPitLosesFormationTagsThatNoUnitCanEverClear()
+    {
+        var (factory, item) = Ground();
+        var system = factory.enemySystem;
+        item.forms[0].AddUnit();
+        // Nothing owns this base any more: the pool holds no living unit that points at it.
+        factory.enemyPool[1].owner = 0; factory.enemyPool[2].owner = 0;
+        // The core dies and its tags stay behind, because the native cleanup only runs on the
+        // locally loaded planet and a dedicated server never has one. The base now points at its pit.
+        system.builders.buffer[1].sp = 0; item.ruinId = 7;
+        TestAssert.AreEqual(4, system.CheckBaseCanRemoved(1));
+        TestAssert.IsTrue(DarkFogBasePitCleanup.Prune(system));
+        TestAssert.AreEqual(0, system.CheckBaseCanRemoved(1), "A pit with no troops must stop reporting units.");
+        TestAssert.AreEqual(0, item.forms[0].unitCount);
+
+        // An intact base keeps the garrison it is about to deploy.
+        var (liveFactory, liveItem) = Ground();
+        liveItem.forms[1].AddUnit(); liveItem.ruinId = 7;
+        TestAssert.IsFalse(DarkFogBasePitCleanup.Prune(liveFactory.enemySystem));
+        TestAssert.AreEqual(1, liveItem.forms[1].unitCount);
+
+        // A dead core without a pit link is mid-teardown, not a pit: its tags are not leftovers yet.
+        var (tearingFactory, tearingItem) = Ground();
+        tearingItem.forms[0].AddUnit();
+        tearingFactory.enemySystem.builders.buffer[1].sp = 0;
+        tearingFactory.enemyPool[1].owner = 0; tearingFactory.enemyPool[2].owner = 0;
+        TestAssert.IsFalse(DarkFogBasePitCleanup.Prune(tearingFactory.enemySystem));
+        TestAssert.AreEqual(1, tearingItem.forms[0].unitCount);
+
+        // A pit whose unit is still on the field keeps the verdict that unit earned.
+        var (heldFactory, heldItem) = Ground();
+        heldItem.forms[2].AddUnit(); heldItem.ruinId = 7;
+        heldFactory.enemyPool[2].unitId = 1;
+        heldFactory.enemySystem.builders.buffer[1].sp = 0;
+        TestAssert.IsFalse(DarkFogBasePitCleanup.Prune(heldFactory.enemySystem));
+        TestAssert.AreEqual(1, heldItem.forms[2].unitCount);
+    }
+
+    [TestMethod]
+    public void PersistentCoreShellDoesNotCountAsALivingTroopOnAPit()
+    {
+        var (factory, item) = Ground();
+        item.forms[0].AddUnit(); item.ruinId = 7;
+        factory.enemySystem.builders.buffer[1].sp = 0;
+        // Native core death retains this enemy slot and its base owner until the pit is filled.
+        factory.enemyPool[1].isInvincible = true;
+        factory.enemyPool[2] = default;
+        TestAssert.AreEqual(4, factory.enemySystem.CheckBaseCanRemoved(1));
+        TestAssert.IsTrue(DarkFogBasePitCleanup.Prune(factory.enemySystem));
+        TestAssert.AreEqual(0, factory.enemySystem.CheckBaseCanRemoved(1));
+    }
+
+    [TestMethod]
+    public void ClientPitDoesNotCountItsPersistentCoreOrBuildingsAsTroops()
+    {
+        harmony.CreateClassProcessor(typeof(DarkFogActivity_Patch)).Patch();
+        var (factory, _) = Ground();
+        runtime.DarkFogReplica.BaseAlive[(101, 1)] = false;
+        runtime.DarkFogReplica.BaseRemovalFlags[(101, 1)] = 6;
+        factory.enemyPool[1].isInvincible = true;
+        TestAssert.AreEqual(2, factory.enemySystem.CheckBaseCanRemoved(1), "Buildings keep their own blocking bit.");
+        factory.enemyPool[2].unitId = 1;
+        TestAssert.AreEqual(6, factory.enemySystem.CheckBaseCanRemoved(1), "A real troop still blocks filling.");
+    }
+
+    [TestMethod]
+    public void ClientPitQueriesDeriveUnitsFromLiveTroopsInsteadOfAStaleRecord()
+    {
+        harmony.CreateClassProcessor(typeof(DarkFogActivity_Patch)).Patch();
+        var (factory, _) = Ground();
+        var facts = runtime.DarkFogReplica;
+        facts.BaseAlive[(101, 1)] = false;
+        facts.BaseRemovalFlags[(101, 1)] = 5;
+        factory.enemyPool[1].owner = 0; factory.enemyPool[2].owner = 0;
+        TestAssert.AreEqual(1, (int)AccessTools.Method(typeof(EnemyDFGroundSystem), "CheckBaseCanRemoved").Invoke(factory.enemySystem, [1])!,
+            "A pit with nothing left to kill must not keep the units verdict.");
+        factory.enemyPool[2].owner = 1; factory.enemyPool[2].unitId = 1;
+        TestAssert.AreEqual(5, (int)AccessTools.Method(typeof(EnemyDFGroundSystem), "CheckBaseCanRemoved").Invoke(factory.enemySystem, [1])!,
+            "A unit that is still on the field keeps the pit closed.");
     }
 }

@@ -11,7 +11,6 @@ namespace NebulaeTests.Authority;
 /// observation levels, sail speed and warp speed.
 /// </summary>
 [TestClass]
-[DoNotParallelize]
 public class TechUnlockFunctionApplyTest
 {
     private MultiplayerSession previousSession = null!;

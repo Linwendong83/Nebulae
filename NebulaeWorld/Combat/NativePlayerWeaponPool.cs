@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.IO;
 using NebulaeModel.Authority;
 using NebulaeModel.DataStructures;
@@ -100,8 +100,12 @@ internal abstract class NativePlayerWeaponPool
                     p.targetCombatStatId = 0; p.damageIncoming = 0;
                     // Apply the host's trajectory even when its target has died or its slot
                     // now holds a different enemy. Native flight can then continue/reacquire.
+                    // A retired target must not keep naming a planet either: native expiry clears a
+                    // target's base references through target.astroId, and this peer may have
+                    // unloaded that planet's factory in the meantime.
                     if (expectedTarget.HasValue && p.target.type == ETargetType.Enemy && p.target.id > 0 &&
-                        (!EnemyTargetIdentity.TryResolve(p.target, out var key) || key != expectedTarget.Value)) p.target.id = 0;
+                        (!EnemyTargetIdentity.TryResolve(p.target, out var key) || key != expectedTarget.Value))
+                        p.target = new SkillTarget { type = ETargetType.Enemy };
                     box = p; break;
             }
             value = (T)box;

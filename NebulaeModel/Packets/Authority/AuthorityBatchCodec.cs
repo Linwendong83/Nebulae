@@ -8,6 +8,40 @@ internal static class AuthorityBatchCodec
     public const int PrefixBytes = 4; // count
     public const int ScopeBytes = AuthorityEpoch.SizeBytes + 1 + 4;
 
+    public static bool TryReadHeader(ref AuthorityPayloadReader reader, int declaredRecordCount,
+        int maxRecordCount, int minRecordBytes, out int count, out ObjectKey shared, out AuthorityReject reject)
+    {
+        shared = default;
+        reject = AuthorityReject.Accepted;
+        if (!reader.TryReadInt(out count))
+        {
+            reject = new AuthorityReject(AuthorityRejectCode.MalformedEnvelope, "missing record count");
+            return false;
+        }
+        if (count < 0 || count > maxRecordCount)
+        {
+            reject = new AuthorityReject(AuthorityRejectCode.PayloadTooLarge, "records=" + count);
+            return false;
+        }
+        if (count != declaredRecordCount)
+        {
+            reject = new AuthorityReject(AuthorityRejectCode.MalformedEnvelope,
+                "declared=" + declaredRecordCount + " encoded=" + count);
+            return false;
+        }
+        if (count > 0 && !TryReadScope(ref reader, out shared))
+        {
+            reject = new AuthorityReject(AuthorityRejectCode.InvalidObjectKey, "batch scope");
+            return false;
+        }
+        if (count > reader.Remaining / minRecordBytes)
+        {
+            reject = new AuthorityReject(AuthorityRejectCode.MalformedEnvelope, "truncated records");
+            return false;
+        }
+        return true;
+    }
+
     public static void WriteScope(AuthorityPayloadWriter writer, in ObjectKey key)
     {
         writer.WriteLong(unchecked((long)key.Epoch.High));

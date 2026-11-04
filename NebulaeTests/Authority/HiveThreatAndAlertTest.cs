@@ -6,7 +6,7 @@ using Check = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class HiveThreatAndAlertTest
 {
     private static (GameData Game, EnemyDFHiveSystem Hive) Fixture()

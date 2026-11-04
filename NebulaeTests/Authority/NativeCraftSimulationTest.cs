@@ -9,7 +9,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class NativeCraftSimulationTest
 {
     [TestMethod]
@@ -106,6 +106,46 @@ public class NativeCraftSimulationTest
             TestAssert.IsTrue(NativeCraftSimulation.CanRun(sector, 1));
             TestAssert.IsFalse(NativeCraftSimulation.CanRun(sector, 2));
             TestAssert.IsFalse(NativeCraftSimulation.CanRun(sector, 3));
+        }
+        finally { Multiplayer.Session = previousSession; GameMain.data = previousData; GameMain.gameTick = previousTick; }
+    }
+
+    [TestMethod]
+    public void ARecycledFleetSlotIsTakenFromItsDeadOwnerInsteadOfBlockingTheNewCraft()
+    {
+        var previousSession = Multiplayer.Session; var previousData = GameMain.data; var previousTick = GameMain.gameTick;
+        using var runtime = new AuthoritySession(new AuthoritySessionState());
+        runtime.BeginAuthorityWorld(new AuthorityEpoch(7, 11), false);
+        foreach (var kind in new[] { PoolKind.SpaceCraft, PoolKind.SpaceEnemy })
+        {
+            var scope = new ScopeKey(kind, 0); runtime.WorldReplica.Subscribe(scope);
+            runtime.WorldReplica.Versions.TryGetScope(scope, out var version); version.SetPhase(SubscriptionPhase.Live);
+        }
+        var session = Uninitialized<MultiplayerSession>();
+        session.AuthorityRuntime = runtime;
+        var data = Uninitialized<GameData>();
+        AccessTools.Field(typeof(GameData), "<localStar>k__BackingField").SetValue(data, new StarData { id = 1 });
+        var sector = new SpaceSector { craftPool = new CraftData[4] };
+        sector.combatSpaceSystem = Uninitialized<CombatSpaceSystem>();
+        sector.combatSpaceSystem.fleets = new DataPool<FleetComponent>(); sector.combatSpaceSystem.fleets.Reset();
+        sector.combatSpaceSystem.units = new DataPool<UnitComponent>(); sector.combatSpaceSystem.units.Reset();
+        data.spaceSector = sector;
+        try
+        {
+            Multiplayer.Session = session; GameMain.data = data; GameMain.gameTick = 10;
+            // Craft 2 is gone, but fleet slot 3 still names it: the recycled host slot must win.
+            sector.craftPool[1] = new CraftData { id = 1 };
+            sector.combatSpaceSystem.fleets.buffer[3] = new FleetComponent { id = 3, craftId = 2 };
+            sector.combatSpaceSystem.fleets.cursor = 4;
+            var fleet = new FleetComponent { id = 3, craftId = 1 };
+            var state = new CraftState(false, true, true, 5100, 60, 0, (byte)ECraftProto.Fleet, 0,
+                100, 0, 0, 200, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+                sampleTick: -1, nativeFleet: CraftNativeStateCodec.Encode(fleet));
+            NativeCraftSimulation.Install(sector, sector.craftPool, 1, 1, state);
+            NativeCraftSimulation.Prepare(sector);
+            TestAssert.AreEqual(3, sector.craftPool[1].fleetId,
+                "A dead owner's fleet slot must not keep the recycled craft unbound.");
+            TestAssert.AreEqual(1, sector.combatSpaceSystem.fleets.buffer[3].craftId);
         }
         finally { Multiplayer.Session = previousSession; GameMain.data = previousData; GameMain.gameTick = previousTick; }
     }

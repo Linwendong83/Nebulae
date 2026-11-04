@@ -8,7 +8,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class WorldPauseSyncTest
 {
     private static float capturedFixUPS;

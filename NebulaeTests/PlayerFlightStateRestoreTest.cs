@@ -6,7 +6,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class PlayerFlightStateRestoreTest
 {
     private const string HarmonyId = "nebulae.tests.flight-restore";

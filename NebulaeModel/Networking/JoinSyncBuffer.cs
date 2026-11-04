@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace NebulaeModel.Networking;
 
@@ -41,7 +40,6 @@ internal sealed class JoinSyncBuffer
     private readonly HashSet<int> cuts = new();
     private readonly LinkedList<Change> pending = new();
     private readonly Dictionary<string, LinkedListNode<Change>> coalesced = new(StringComparer.Ordinal);
-    private readonly Dictionary<int, long> scopeBytes = new();
     private readonly Queue<(long Sequence, int Bytes)> outstanding = new();
     public long Generation { get; }
     public long Bytes { get; private set; }
@@ -84,7 +82,6 @@ internal sealed class JoinSyncBuffer
         var node = pending.AddLast(new Change(scope, data, key));
         if (key != null) coalesced[key] = node;
         Bytes += data.Length;
-        scopeBytes[scope] = scopeBytes.TryGetValue(scope, out var held) ? held + data.Length : data.Length;
         return true;
     }
 
@@ -93,11 +90,6 @@ internal sealed class JoinSyncBuffer
         pending.Remove(node);
         var entry = node.Value;
         Bytes -= entry.Data.Length;
-        if (scopeBytes.TryGetValue(entry.Scope, out var held))
-        {
-            held -= entry.Data.Length;
-            if (held > 0) scopeBytes[entry.Scope] = held; else scopeBytes.Remove(entry.Scope);
-        }
         if (entry.Key != null) coalesced.Remove(entry.Key);
     }
 
@@ -124,7 +116,6 @@ internal sealed class JoinSyncBuffer
         if (batch.Count > 0) batches.Add(batch.ToArray());
         pending.Clear();
         coalesced.Clear();
-        scopeBytes.Clear();
         return batches.ToArray();
     }
 
@@ -150,10 +141,4 @@ internal sealed class JoinSyncBuffer
     }
 
     public bool Expired(double now) => Failed || now - LastProgress >= TimeoutSeconds;
-
-    /// <summary>Bytes held per scope, largest first, for the pressure log.</summary>
-    public string ScopeSummary() => scopeBytes.Count == 0
-        ? "none"
-        : string.Join(",", scopeBytes.OrderByDescending(entry => entry.Value).Take(4)
-            .Select(entry => entry.Key + ":" + entry.Value));
 }

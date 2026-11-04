@@ -11,23 +11,18 @@ namespace NebulaeWorld.MonoBehaviours.Local;
 /// <summary>
 ///     Draws the other players of the current star system on the space minimap in the bottom-left
 ///     corner of the HUD, together with their names.
-///     The vanilla minimap is a camera rendered 3D scene, so a marker is placed by projecting the
-///     same universal position through that camera. Drawing the marker as a UI overlay on top of the
-///     minimap texture keeps it in sync even on frames where the texture itself is not re-rendered.
+///     Each remote player gets a clone of the vanilla player dot in the minimap's own 3D scene, so
+///     the marker is scaled by exactly the same game object transform as the local dot. The name is
+///     a UI overlay projected through the minimap camera, which keeps it readable when the texture
+///     itself is not re-rendered.
 /// </summary>
 [DefaultExecutionOrder(2000)]
 public sealed class SpaceMinimapPlayerMarkers : MonoBehaviour
 {
-    // UIMinimap3DControl.scaleRatio: minimap scene units per universal unit.
-    private const double SceneScale = 2.5e-6;
-
-    private const float DotSize = 7f;
     private const float NameGap = 5f;
     private const int NameFontSize = 12;
 
-    private static readonly Color DotColor = new(1f, 1f, 1f, 0.95f);
     private static readonly Color NameColor = new(1f, 1f, 1f, 0.95f);
-    private static Sprite dotSprite;
 
     private readonly Dictionary<ushort, Marker> markers = new();
     private readonly HashSet<ushort> visiblePlayers = new();
@@ -47,12 +42,30 @@ public sealed class SpaceMinimapPlayerMarkers : MonoBehaviour
             return;
         }
 
-        var star = GameMain.localStar;
         var camera = minimap.cam;
-        var system = minimap.planetarySystemTrans;
+        var playerDot = minimap.playerDot;
+        if (playerDot == null)
+        {
+            HideAll();
+            return;
+        }
+
         // The overlay is stretched over the same masked node as the minimap texture, so its own
         // rect is the space the markers are placed in; the texture may be laid out separately.
         var overlaySize = overlay.rect;
+        if (overlaySize.width <= 0f || overlaySize.height <= 0f)
+        {
+            HideAll();
+            return;
+        }
+
+        // The minimap keeps the local player's dot at the scene origin while in space and offsets
+        // the star system instead, so remote positions are expressed relative to the player's dot.
+        // That also covers interstellar space, where there is no local star (and no system
+        // transform) to measure against.
+        var dotOrigin = playerDot.transform.position;
+        var dotScale = playerDot.transform.localScale;
+        var playerUniversal = GameMain.mainPlayer.uPosition;
         visiblePlayers.Clear();
 
         using (world.GetRemotePlayersModels(out var remotePlayers))
@@ -60,9 +73,7 @@ public sealed class SpaceMinimapPlayerMarkers : MonoBehaviour
             foreach (var pair in remotePlayers)
             {
                 var movement = pair.Value?.Movement;
-                // Players in another star system have no body in the local frame; the starmap
-                // already shows them, and this minimap only covers the current system.
-                if (movement == null || movement.LocalStarId != star.id)
+                if (movement == null)
                 {
                     continue;
                 }
@@ -73,9 +84,7 @@ public sealed class SpaceMinimapPlayerMarkers : MonoBehaviour
                     continue;
                 }
 
-                // Same mapping the minimap uses for the planets: the system transform is placed
-                // relative to the local player and children are laid out at 2.5e-6 units per metre.
-                var scenePoint = system.TransformPoint((Vector3)((universal - star.uPosition) * SceneScale));
+                var scenePoint = dotOrigin + SpaceMinimapProjection.SceneOffset(universal, playerUniversal);
                 var viewport = camera.WorldToViewportPoint(scenePoint);
                 if (viewport.z <= 0f || viewport.x < 0f || viewport.x > 1f || viewport.y < 0f || viewport.y > 1f)
                 {
@@ -88,9 +97,19 @@ public sealed class SpaceMinimapPlayerMarkers : MonoBehaviour
                     continue;
                 }
 
+                // The clone sits in the same parent as the local dot and inherits the scale the game
+                // writes for it, so both dots shrink and grow together with the minimap zoom.
+                marker.Dot.position = scenePoint;
+                marker.Dot.localScale = dotScale;
+                if (!marker.Dot.gameObject.activeSelf)
+                {
+                    marker.Dot.gameObject.SetActive(true);
+                }
+
                 marker.Root.localPosition = new Vector3(
                     (viewport.x - 0.5f) * overlaySize.width,
                     (viewport.y - 0.5f) * overlaySize.height, 0f);
+
                 var username = pair.Value.Username ?? string.Empty;
                 if (marker.Name.text != username)
                 {
@@ -105,6 +124,13 @@ public sealed class SpaceMinimapPlayerMarkers : MonoBehaviour
         }
 
         RemoveHiddenMarkers();
+
+        // The vanilla minimap only re-renders its texture when the camera moves or once a second.
+        // Remote dots live in that texture, so keep it fresh while any of them is shown.
+        if (visiblePlayers.Count > 0 && !camera.enabled)
+        {
+            camera.enabled = true;
+        }
     }
 
     private void OnDestroy()
@@ -127,8 +153,9 @@ public sealed class SpaceMinimapPlayerMarkers : MonoBehaviour
         }
 
         // The planet minimap keeps its own remote player dots. This overlay is only for the star
-        // system view shown while flying in space.
-        if (GameMain.localPlanet != null || GameMain.localStar == null)
+        // system view shown while flying in space. Deep space has no local star, but it still has
+        // the space minimap, so the star is deliberately not part of this test.
+        if (GameMain.localPlanet != null)
         {
             return false;
         }
@@ -220,7 +247,7 @@ public sealed class SpaceMinimapPlayerMarkers : MonoBehaviour
         {
             return existing;
         }
-        if (overlay == null || font == null)
+        if (overlay == null || font == null || minimap.playerDot == null)
         {
             return null;
         }
@@ -231,16 +258,6 @@ public sealed class SpaceMinimapPlayerMarkers : MonoBehaviour
         rootRect.anchorMin = rootRect.anchorMax = new Vector2(0.5f, 0.5f);
         rootRect.pivot = new Vector2(0.5f, 0.5f);
         rootRect.sizeDelta = Vector2.zero;
-
-        var dot = new GameObject("Dot", typeof(RectTransform), typeof(Image));
-        var dotRect = (RectTransform)dot.transform;
-        dotRect.SetParent(rootRect, false);
-        dotRect.anchorMin = dotRect.anchorMax = new Vector2(0.5f, 0.5f);
-        dotRect.sizeDelta = new Vector2(DotSize, DotSize);
-        var dotImage = dot.GetComponent<Image>();
-        dotImage.sprite = DotSprite;
-        dotImage.color = DotColor;
-        dotImage.raycastTarget = false;
 
         var name = new GameObject("Name", typeof(RectTransform), typeof(Text));
         var nameRect = (RectTransform)name.transform;
@@ -263,8 +280,14 @@ public sealed class SpaceMinimapPlayerMarkers : MonoBehaviour
         outline.effectColor = new Color(0f, 0f, 0f, 0.85f);
         outline.effectDistance = new Vector2(1f, -1f);
 
+        // A clone of the vanilla player dot: same mesh, material and parent, so the game's own
+        // transform scaling applies to remote players exactly as it does to the local dot.
+        var dot = Object.Instantiate(minimap.playerDot.gameObject, minimap.playerDot.transform.parent, false);
+        dot.name = "Nebulae Space Minimap Player Dot";
+        dot.SetActive(false);
+
         root.SetActive(false);
-        var marker = new Marker { Root = rootRect, Name = nameText };
+        var marker = new Marker { Root = rootRect, Dot = dot.transform, Name = nameText };
         markers.Add(playerId, marker);
         return marker;
     }
@@ -276,6 +299,10 @@ public sealed class SpaceMinimapPlayerMarkers : MonoBehaviour
             if (marker.Root != null && marker.Root.gameObject.activeSelf)
             {
                 marker.Root.gameObject.SetActive(false);
+            }
+            if (marker.Dot != null && marker.Dot.gameObject.activeSelf)
+            {
+                marker.Dot.gameObject.SetActive(false);
             }
         }
     }
@@ -298,11 +325,22 @@ public sealed class SpaceMinimapPlayerMarkers : MonoBehaviour
             {
                 Destroy(marker.Root.gameObject);
             }
+            if (marker.Dot != null)
+            {
+                Destroy(marker.Dot.gameObject);
+            }
         }
     }
 
     private void DestroyOverlay()
     {
+        foreach (var marker in markers.Values)
+        {
+            if (marker.Dot != null)
+            {
+                Destroy(marker.Dot.gameObject);
+            }
+        }
         markers.Clear();
         visiblePlayers.Clear();
         removedPlayers.Clear();
@@ -317,44 +355,9 @@ public sealed class SpaceMinimapPlayerMarkers : MonoBehaviour
         font = null;
     }
 
-    private static Sprite DotSprite
-    {
-        get
-        {
-            if (dotSprite != null)
-            {
-                return dotSprite;
-            }
-
-            const int size = 32;
-            const float radius = size * 0.5f;
-            var texture = new Texture2D(size, size, TextureFormat.RGBA32, false)
-            {
-                name = "Nebulae Space Minimap Dot",
-                wrapMode = TextureWrapMode.Clamp,
-                filterMode = FilterMode.Bilinear
-            };
-            var pixels = new Color32[size * size];
-            for (var y = 0; y < size; y++)
-            {
-                for (var x = 0; x < size; x++)
-                {
-                    var dx = x + 0.5f - radius;
-                    var dy = y + 0.5f - radius;
-                    var alpha = Mathf.Clamp01(radius - Mathf.Sqrt(dx * dx + dy * dy));
-                    pixels[y * size + x] = new Color32(255, 255, 255, (byte)(alpha * 255f));
-                }
-            }
-            texture.SetPixels32(pixels);
-            texture.Apply();
-            dotSprite = Sprite.Create(texture, new Rect(0f, 0f, size, size), new Vector2(0.5f, 0.5f));
-            dotSprite.name = "Nebulae Space Minimap Dot";
-            return dotSprite;
-        }
-    }
-
     private sealed class Marker
     {
+        public Transform Dot;
         public Text Name;
         public RectTransform Root;
     }

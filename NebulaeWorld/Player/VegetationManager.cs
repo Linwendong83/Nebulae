@@ -206,14 +206,30 @@ internal sealed class VegetationManager : IDisposable
         if (revision > 0) installedReplicaRevisions[(ushort)author] = revision;
     }
 
+    /// <summary>
+    /// Verifies one client snapshot against the host's cache of that player's collection.
+    /// </summary>
+    /// <remarks>
+    /// The player owns the collection; the host only mirrors it. A snapshot that merely adds what the
+    /// mirror missed — an operation the host refused while the client had already applied it — is
+    /// therefore the corrected fact, and adopting it is what stops a single dropped harvest from
+    /// rolling the player's inventory back. Anything that would remove a recorded item is still
+    /// restored from the host, which is the fail-closed direction for a client that lost items.
+    /// </remarks>
+    /// <returns>The canonical bytes to restore, or null when the snapshot was accepted.</returns>
     public byte[] VerifySnapshot(ushort playerId, byte[] bytes)
     {
         if (bytes == null || bytes.Length > VegetableCollectionState.MaxBytes) return null;
         var player = Multiplayer.Session.Server?.Players.Get(playerId, EConnectionStatus.Connected);
-        if (player?.Data is not PlayerData) return null;
+        if (player?.Data is not PlayerData data) return null;
         var canonical = CaptureRemote(playerId);
         if (VegetableCollectionState.Equivalent(canonical, bytes)) return null;
-        return canonical;
+        if (!VegetableCollectionState.OnlyAdds(canonical, bytes, out _)) return canonical;
+        var adopted = new VegetableCollection();
+        VegetableCollectionState.Restore(adopted, bytes);
+        remoteCollections[playerId] = adopted;
+        data.VegetableCollectionData = bytes;
+        return null;
     }
 
     public void CaptureRemoteForSave()

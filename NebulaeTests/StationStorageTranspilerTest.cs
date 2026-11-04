@@ -7,7 +7,6 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 namespace NebulaeTests;
 
 [TestClass]
-[DoNotParallelize]
 internal class StationStorageTranspilerTest
 {
     private static List<CodeInstruction> Write(params CodeInstruction[] address)

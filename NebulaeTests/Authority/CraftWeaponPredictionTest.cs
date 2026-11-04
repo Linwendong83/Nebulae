@@ -13,7 +13,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 internal class CraftWeaponPredictionTest
 {
     private readonly AuthorityEpoch epoch = new(7, 11);

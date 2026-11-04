@@ -19,6 +19,30 @@ public class VegetationCollectionRegressionTest
         TestAssert.IsTrue(manager.AcceptCommand(2, 1));
     }
 
+
+    [TestMethod]
+    public void ASnapshotThatOnlyAddsWhatTheHostMissedIsAdoptedInsteadOfRolledBack()
+    {
+        var known = new VegetableCollection(); known.AddVegeToPlayer(1101, 3);
+        var missed = new VegetableCollection(); missed.AddVegeToPlayer(1101, 5);
+        TestAssert.IsTrue(VegetableCollectionState.OnlyAdds(
+            VegetableCollectionState.Capture(known), VegetableCollectionState.Capture(missed), out var difference));
+        TestAssert.Contains("2x1101", difference);
+
+        // A snapshot that would drop an item is not an addition: the host keeps its own record.
+        var dropped = new VegetableCollection(); dropped.AddVegeToPlayer(1101, 2);
+        TestAssert.IsFalse(VegetableCollectionState.OnlyAdds(
+            VegetableCollectionState.Capture(known), VegetableCollectionState.Capture(dropped), out _));
+
+        // Equivalent snapshots carry nothing to adopt.
+        TestAssert.IsFalse(VegetableCollectionState.OnlyAdds(
+            VegetableCollectionState.Capture(known), VegetableCollectionState.Capture(known), out _));
+
+        // Unreadable payloads are refused rather than trusted.
+        TestAssert.IsFalse(VegetableCollectionState.OnlyAdds(
+            VegetableCollectionState.Capture(known), new byte[] { 9, 9, 9 }, out _));
+    }
+
     [TestMethod]
     public void NestedReplayRestoresTheEnclosingCollection()
     {

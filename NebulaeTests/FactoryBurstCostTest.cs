@@ -12,7 +12,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 namespace NebulaeTests;
 
 /// <summary>Transport and lifecycle costs that only appear in multiplayer bursts.</summary>
-[TestClass, DoNotParallelize]
+[TestClass]
 public class FactoryBurstCostTest
 {
     [TestMethod]

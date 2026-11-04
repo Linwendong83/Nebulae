@@ -6,7 +6,7 @@ namespace NebulaeTests.Authority;
 
 /// <summary>Verifies that <see cref="EnemyPlayerTarget"/> resolves multiplayer Player hatred targets by player
 /// id.</summary>
-[TestClass, DoNotParallelize]
+[TestClass]
 public class EnemyPlayerTargetTest
 {
     private const int PlayerType = (int)ETargetType.Player << 26;

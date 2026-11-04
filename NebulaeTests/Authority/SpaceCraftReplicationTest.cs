@@ -38,18 +38,6 @@ public class SpaceCraftReplicationTest
         true, true, true, 5201, 61, 2, 7, 0, 1000101, owner,
         4900.0, -350.0, 1200.0, 0f, 0f, 0f, 1f, 10f, 0f, 0f, hp, 1100, 0, 0);
 
-    private static byte[] Encoded(SpaceEnemyState state)
-    {
-        TestAssert.IsTrue(SpaceEnemyStateCodec.TryEncode(state, out var data));
-        return data;
-    }
-
-    private static byte[] Encoded(CraftState state)
-    {
-        TestAssert.IsTrue(CraftStateCodec.TryEncode(state, out var data));
-        return data;
-    }
-
     private sealed class FakeHostDomain : IHostWorldView
     {
         public readonly List<ObjectKey> Members = [];

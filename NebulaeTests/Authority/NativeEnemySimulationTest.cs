@@ -9,7 +9,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class NativeEnemySimulationTest
 {
     private static EnemyUnitComponent Unit(int id = 9, int enemy = 3) => new()

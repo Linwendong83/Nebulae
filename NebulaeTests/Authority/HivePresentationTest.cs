@@ -1,4 +1,3 @@
-using System.Runtime.Serialization;
 using HarmonyLib;
 using NebulaeModel.Authority;
 using NebulaeModel.Networking;
@@ -11,10 +10,9 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class HivePresentationTest
 {
-    private static T Uninitialized<T>() => (T)FormatterServices.GetUninitializedObject(typeof(T));
     private static int opened, closed;
     private static bool Open() { opened++; return false; }
     private static bool Close() { closed++; return false; }

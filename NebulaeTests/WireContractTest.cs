@@ -10,7 +10,6 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 namespace NebulaeTests;
 
 [TestClass]
-[DoNotParallelize]
 internal class WireContractTest
 {
     [PacketId(0xff000001UL)]

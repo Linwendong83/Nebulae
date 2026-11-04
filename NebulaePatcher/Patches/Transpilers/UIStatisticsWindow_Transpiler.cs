@@ -61,16 +61,8 @@ internal static class UIStatisticsWindow_Transpiler
         var codeInstructions = instructions as CodeInstruction[] ?? instructions.ToArray();
         try
         {
-            instructions = ReplaceFactoryCount(codeInstructions);
-            instructions = new CodeMatcher(instructions)
-                .MatchForward(false,
-                    new CodeMatch(OpCodes.Ldfld, AccessTools.Field(typeof(PlanetData), nameof(PlanetData.factoryIndex)))
-                )
-                .Repeat(matcher => matcher
-                    .SetAndAdvance(OpCodes.Call,
-                        AccessTools.Method(typeof(LocalReferenceStatistics), nameof(LocalReferenceStatistics.GetFactoryIndex)))
-                )
-                .InstructionEnumeration();
+            instructions = LocalFactoryStatisticsTranspiler.ReplaceFactoryAccess(
+                codeInstructions, AccessTools.Field(typeof(UIStatisticsWindow), nameof(UIStatisticsWindow.gameData)));
 
             return new CodeMatcher(instructions)
                 .MatchForward(false,
@@ -163,22 +155,6 @@ internal static class UIStatisticsWindow_Transpiler
             .InsertAndAdvance(HarmonyLib.Transpilers.EmitDelegate(() =>
                 Multiplayer.IsActive && !Multiplayer.Session.LocalPlayer.IsHost))
             .InsertAndAdvance(new CodeInstruction(OpCodes.Brtrue, endLabel))
-            .InstructionEnumeration();
-    }
-
-    private static IEnumerable<CodeInstruction> ReplaceFactoryCount(IEnumerable<CodeInstruction> instructions)
-    {
-        return new CodeMatcher(instructions)
-            .MatchForward(false,
-                new CodeMatch(OpCodes.Ldarg_0),
-                new CodeMatch(OpCodes.Ldfld,
-                    AccessTools.Field(typeof(UIStatisticsWindow), nameof(UIStatisticsWindow.gameData))),
-                new CodeMatch(OpCodes.Ldfld, AccessTools.Field(typeof(GameData), nameof(GameData.factoryCount)))
-            )
-            .Repeat(matcher => matcher
-                .SetAndAdvance(OpCodes.Call, AccessTools.Method(typeof(LocalReferenceStatistics), nameof(LocalReferenceStatistics.GetFactoryCount)))
-                .RemoveInstructions(2)
-            )
             .InstructionEnumeration();
     }
 }

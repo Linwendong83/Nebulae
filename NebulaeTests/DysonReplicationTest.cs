@@ -16,7 +16,7 @@ using Check = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 [SuppressMessage("Style", "IDE0060:Remove unused parameter", Justification = "Native boundary adapters retain the original call signatures.")]
 public class DysonReplicationTest
 {
@@ -24,7 +24,7 @@ public class DysonReplicationTest
     private GameMain? previousMain;
     private GameData? previousData;
     private Harmony harmony = null!;
-    private RecordingNetwork network = null!;
+    private RecordingBroadcastNetwork network = null!;
     private static readonly List<DysonSphere> released = [];
     private static bool failImport;
     private static int loadingPopups;
@@ -45,7 +45,7 @@ public class DysonReplicationTest
             gameDesc = new GameDesc(),
             statistics = new GameStatData { production = new ProductionStatistics { factoryStatPool = new[] { new FactoryProductionStat() } } }
         };
-        network = new RecordingNetwork();
+        network = new RecordingBroadcastNetwork();
         Multiplayer.Session = Uninitialized<MultiplayerSession>();
         Multiplayer.Session.Network = network;
         Multiplayer.Session.LocalPlayer = new LocalPlayer { IsHost = false };
@@ -441,7 +441,7 @@ public class DysonReplicationTest
         public bool Equals(INebulaeConnection? other) => ReferenceEquals(this, other);
     }
 
-    private sealed class RecordingServer : RecordingNetwork, IServer
+    private sealed class RecordingServer : RecordingBroadcastNetwork, IServer
     {
         public ushort Port { get; set; }
         public ConcurrentPlayerCollection Players { get; } = new();
@@ -449,21 +449,5 @@ public class DysonReplicationTest
         public void Update() { }
         public void Disconnect(INebulaeConnection connection, DisconnectionReason reason, string reasonMessage = "") { }
         public void SendToPlayers<T>(IEnumerable<KeyValuePair<INebulaeConnection, INebulaePlayer>> players, T packet) where T : class, new() { }
-    }
-
-    private class RecordingNetwork : INetworkProvider
-    {
-        public List<object> Packets { get; } = [];
-        public INetPacketProcessor PacketProcessor { get; } = new NebulaeNetPacketProcessor();
-        public byte[] WriteOnce<T>(T packet) where T : class, new() => PacketProcessor.Write(packet);
-        public void SendPacket<T>(T packet) where T : class, new() => Packets.Add(packet);
-        public void SendToMatching<T>(T packet, Predicate<INebulaePlayer> condition) where T : class, new() => SendPacket(packet);
-        public void SendPacketToLocalStar<T>(T packet) where T : class, new() => SendPacket(packet);
-        public void SendPacketToLocalPlanet<T>(T packet) where T : class, new() => SendPacket(packet);
-        public void SendPacketToPlanet<T>(T packet, int planetId) where T : class, new() => SendPacket(packet);
-        public void SendPacketToStar<T>(T packet, int starId) where T : class, new() => SendPacket(packet);
-        public void SendPacketExclude<T>(T packet, INebulaeConnection exclude) where T : class, new() => SendPacket(packet);
-        public void SendPacketToStarExclude<T>(T packet, int starId, INebulaeConnection exclude) where T : class, new() => SendPacket(packet);
-        public void Dispose() { }
     }
 }

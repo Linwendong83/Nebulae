@@ -12,7 +12,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class RespawnSettlementTest
 {
     public TestContext TestContext { get; set; } = null!;

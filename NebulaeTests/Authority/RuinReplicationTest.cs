@@ -7,7 +7,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class RuinReplicationTest
 {
     [TestMethod]
@@ -63,6 +63,4 @@ public class RuinReplicationTest
         }
         finally { GameMain.data = previous; }
     }
-
-    private static T Uninitialized<T>() => (T)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(T));
 }

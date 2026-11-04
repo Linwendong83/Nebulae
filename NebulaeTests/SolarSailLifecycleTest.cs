@@ -12,7 +12,7 @@ using Check = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 [SuppressMessage("Style", "IDE0060:Remove unused parameter", Justification = "Native boundary adapters retain the original call signatures.")]
 public class SolarSailLifecycleTest
 {

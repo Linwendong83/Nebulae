@@ -6,7 +6,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class FrameLogicTest
 {
     private static readonly HashSet<object> ready = new();

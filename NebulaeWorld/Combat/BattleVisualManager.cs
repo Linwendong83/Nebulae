@@ -244,13 +244,7 @@ internal sealed class BattleVisualManager : IDisposable
             if (!stream.Observe(kind, i, star, nativeLife, tick, out var generation)) continue;
             if (kind is BattleEffectKind.TurretCannon or BattleEffectKind.MechaLocalCannon or
                     BattleEffectKind.MechaSpaceCannon or BattleEffectKind.TurretDisturb)
-                remaining = item switch
-                {
-                    LocalCannonade cannon => BattleEffectMotion.CannonRemaining(cannon.progress, cannon.distance, cannon.speed),
-                    GeneralCannonade cannon => BattleEffectMotion.CannonRemaining(cannon.progress, cannon.distance, cannon.speed),
-                    LocalDisturbingWave wave => BattleEffectMotion.WaveRemaining(wave),
-                    _ => remaining
-                };
+                remaining = BattleEffectReading<T>.Remaining?.Invoke(item) ?? remaining;
             var effectLife = kind == BattleEffectKind.TurretLaser ? 0 : remaining;
             var scratch = exportBuffer ??= new MemoryStream();
             var writer = exportWriter ??= new BinaryWriter(scratch, System.Text.Encoding.UTF8, true);
@@ -260,14 +254,7 @@ internal sealed class BattleVisualManager : IDisposable
             scratch.Position = 0;
             export(item, writer);
             writer.Flush();
-            var caster = item switch
-            {
-                LocalLaserOneShot p => p.caster.id,
-                LocalGeneralProjectile p => p.caster.id,
-                SpaceLaserOneShot p => p.caster.id,
-                GeneralProjectile p => p.caster.id,
-                _ => 0
-            };
+            var caster = BattleEffectReading<T>.Caster?.Invoke(item) ?? 0;
             stream.Capture(kind, i, generation, tick, effectLife, source, scratch.GetBuffer(), (int)scratch.Length, caster,
                 BattleEffectData.IsCraft(kind) ? CraftWeapons.Launch(kind, i) : null);
         }

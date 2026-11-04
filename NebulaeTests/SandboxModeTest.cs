@@ -1,11 +1,10 @@
-using System.Runtime.Serialization;
 using HarmonyLib;
 using NebulaeWorld;
 using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class SandboxModeTest
 {
     private readonly Harmony harmony = new("nebulae.tests.sandbox-mode");
@@ -101,6 +100,4 @@ public class SandboxModeTest
         GameMain.sandboxToolsEnabled = true;
         TestAssert.IsTrue(GameMain.sandboxToolsEnabled);
     }
-
-    private static T Uninitialized<T>() => (T)FormatterServices.GetUninitializedObject(typeof(T));
 }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using NebulaeModel.Authority;
@@ -243,12 +243,12 @@ internal static class NativeCraftSimulation
                 craft.owner = owner;
                 if (CraftNativeStateCodec.TryFleet(entry.State.NativeFleet, out var fleet))
                 {
-                    if (!Reserve(fleets, fleet.id, value => value.id == 0 || value.craftId == entry.LocalId)) continue;
+                    if (!Reserve(fleets, fleet.id, value => value.id == 0 || value.craftId == entry.LocalId || StaleOwner(pool, value.craftId))) continue;
                     fleet.craftId = entry.LocalId; fleets.buffer[fleet.id] = fleet; craft.fleetId = fleet.id;
                 }
                 else if (CraftNativeStateCodec.TryUnit(entry.State.NativeUnit, out var unit))
                 {
-                    if (!Reserve(units, unit.id, value => value.id == 0 || value.craftId == entry.LocalId)) continue;
+                    if (!Reserve(units, unit.id, value => value.id == 0 || value.craftId == entry.LocalId || StaleOwner(pool, value.craftId))) continue;
                     unit.craftId = entry.LocalId; units.buffer[unit.id] = unit; craft.unitId = unit.id;
                 }
                 else { craft.fleetId = craft.unitId = 0; }
@@ -398,6 +398,16 @@ internal static class NativeCraftSimulation
             !replica.Mirrors.TryGetValue(key, out var mirror)) return false;
         localId = mirror.LocalComponentId; return localId > 0;
     }
+    /// <summary>True when a fleet/unit slot is still held by a craft the local pool no longer has.</summary>
+    /// <remarks>
+    /// A recycled host slot arrives under a new craft while the client's fleet/unit slot still names
+    /// the craft that used to own it. Waiting for that owner would keep the new craft unbound
+    /// forever — its fleet id never matches the record, so the runtime audit calls it drift on every
+    /// pass — therefore a dead owner's slot is taken rather than waited for.
+    /// </remarks>
+    private static bool StaleOwner(CraftData[] crafts, int craftId) =>
+        craftId <= 0 || craftId >= crafts.Length || crafts[craftId].id != craftId;
+
     private static bool Reserve<T>(DataPool<T> pool, int id, Func<T, bool> available) where T : struct, IPoolElement
     {
         if (id <= 0 || id > CraftNativeStateCodec.MaxPoolId) return false;

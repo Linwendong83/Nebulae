@@ -7,7 +7,7 @@ using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests.Authority;
 
-[TestClass, DoNotParallelize]
+[TestClass]
 public class EnemyTargetResolutionPatchTest
 {
     private const int PlayerType = (int)ETargetType.Player << 26;
