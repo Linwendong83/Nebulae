@@ -1,5 +1,4 @@
 using HarmonyLib;
-using NebulaeModel.Contracts;
 using NebulaeModel.Networking;
 using NebulaeModel.Packets.Trash;
 using NebulaeModel.Utils;

@@ -97,6 +97,34 @@ internal class BattleEffectStreamTest
     }
 
     [TestMethod]
+    public void FadingContinuousBeamKeepsItsGenerationUntilTheNativeSlotDisappears()
+    {
+        var stream = new BattleEffectStream();
+        var generation = 0L;
+        for (var tick = 100; tick <= 160; tick++)
+        {
+            stream.BeginFrame();
+            if (stream.Observe(BattleEffectKind.TurretLaser, 7, 1, 500_000 - (tick - 100) * 5_000, tick, out var current))
+            {
+                if (generation == 0) generation = current;
+                TestAssert.AreEqual(generation, current);
+                stream.Capture(BattleEffectKind.TurretLaser, 7, current, tick, 0, 101, [(byte)tick], 1);
+            }
+            stream.EndFrame(tick);
+        }
+
+        TestAssert.IsFalse(stream.Changes.Any(change => change.Effect.End));
+        TestAssert.AreEqual(generation, stream.Snapshot(1, 160).Single().Generation);
+
+        stream.BeginFrame();
+        stream.EndFrame(161);
+        var ended = stream.Changes.Single().Effect;
+        TestAssert.IsTrue(ended.End);
+        TestAssert.AreEqual(generation, ended.Generation);
+        TestAssert.AreEqual(0, stream.ActiveCount);
+    }
+
+    [TestMethod]
     public void ABufferSuppliedByTheCallerIsCopiedBeforeItIsRetained()
     {
         // The host exports every observed effect into one reused buffer, so a published payload must

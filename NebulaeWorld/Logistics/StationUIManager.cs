@@ -331,6 +331,7 @@ internal class StationUIManager : IDisposable
 
         // Get the station from stationId on the planet; the pool index resolves ILS and PLS alike.
         var stationPool = planet.factory.transport.stationPool;
+        if (stationId <= 0 || stationId >= stationPool.Length || stationPool[stationId]?.id != stationId) return null;
         var stationComponent = stationPool[stationId];
 
         return stationComponent;

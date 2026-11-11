@@ -50,6 +50,84 @@ public class FactoryProductTest
     }
 
     [TestMethod]
+    public void QuickDepositOnlyQueuesMatchingItemsWithoutDebitingThePresentationGrid()
+    {
+        var package = Uninitialized<StorageComponent>();
+        package.size = 3;
+        package.grids = [
+            new() { itemId = 1001, count = 7, inc = 28, stackSize = 100 },
+            new() { itemId = 1001, count = 13, inc = 52, stackSize = 100 },
+            new() { itemId = 1201, count = 9, stackSize = 100 }];
+        var requests = new List<(int Slot, int Count)>();
+        void Put(int slot, int count) => requests.Add((slot, count));
+        FactoryServingGridInteraction_Patch.QueuePackageDeposit(package, 0, false, [1001, 1201], Put);
+        CollectionAssert.AreEqual(new[] { (0, 7) }, requests);
+        requests.Clear();
+        FactoryServingGridInteraction_Patch.QueuePackageDeposit(package, 0, true, [1001, 1201], Put);
+        CollectionAssert.AreEqual(new[] { (0, 0) }, requests);
+        requests.Clear();
+        FactoryServingGridInteraction_Patch.QueuePackageDeposit(package, 2, true, [1001], Put);
+        TestAssert.HasCount(0, requests);
+        TestAssert.AreEqual(20, package.GetItemCount(1001));
+        TestAssert.AreEqual(80, package.grids[0].inc + package.grids[1].inc);
+    }
+
+    [TestMethod]
+    public void CtrlEmptyCellQueuesAllInputsAndShiftEmptyCellQueuesNothing()
+    {
+        var package = Package(); package.grids[0] = default;
+        var requests = new List<(int Slot, int Count)>();
+        void Put(int slot, int count) => requests.Add((slot, count));
+        FactoryServingGridInteraction_Patch.QueuePackageDeposit(package, 0, false, [1001, 1201], Put);
+        TestAssert.HasCount(0, requests);
+        FactoryServingGridInteraction_Patch.QueuePackageDeposit(package, 0, true, [1001, 1201], Put);
+        CollectionAssert.AreEqual(new[] { (0, 0), (1, 0) }, requests);
+    }
+
+    [TestMethod]
+    public void SmelterQuickTransferPreservesItemsAndProliferatorAcrossPartialAndFullPackage()
+    {
+        var machine = new AssemblerComponent
+        {
+            recipeId = 17,
+            recipeType = ERecipeType.Smelt,
+            served = [0],
+            incServed = [0],
+            recipeExecuteData = new RecipeExecuteData([1001], [1], [], [], 3600, 3600, false)
+        };
+        var package = Package(20); package.grids[0].inc = 80;
+        FactoryServingGridInteraction_Patch.QueuePackageDeposit(package, 0, false, [1001], (slot, count) =>
+        {
+            TestAssert.IsTrue(FactoryProductManager.Deposit(ref machine,
+                new FactoryProductIntent(FactoryInteractionKind.Deposit, 17, slot, 1001, count, 80), package));
+        });
+        TestAssert.AreEqual(20, machine.served[0]); TestAssert.AreEqual(80, machine.incServed[0]);
+        TestAssert.AreEqual(0, package.GetItemCount(1001));
+        package.grids[0] = new() { itemId = 1001, count = 99, inc = 396, stackSize = 100 };
+        var take = new FactoryProductIntent(FactoryInteractionKind.InputWithdraw, 17, 0, 1001, 20);
+        var credit = FactoryProductManager.WithdrawInput(ref machine, take, package, null);
+        TestAssert.AreEqual(1, credit.Count); TestAssert.AreEqual(4, credit.Inc);
+        TestAssert.AreEqual(19, machine.served[0]); TestAssert.AreEqual(76, machine.incServed[0]);
+        TestAssert.AreEqual(0, FactoryProductManager.WithdrawInput(ref machine, take, package, null).Count);
+        TestAssert.AreEqual(119, package.GetItemCount(1001) + machine.served[0]);
+        TestAssert.AreEqual(476, package.grids[0].inc + machine.incServed[0]);
+    }
+
+    [TestMethod]
+    public void ServingGridPrefixesBindToNativeTransferHandAndContentChangeMethods()
+    {
+        var harmony = new Harmony("nebulae.tests.serving-grid");
+        try
+        {
+            harmony.CreateClassProcessor(typeof(FactoryServingGridInteraction_Patch)).Patch();
+            foreach (var method in new[] { "HandTake", "HandPut", "OnGridMouseDown", "TransferToOther" })
+                TestAssert.IsTrue(Harmony.GetPatchInfo(AccessTools.Method(typeof(UIStorageGrid), method))!
+                    .Prefixes.Any(patch => patch.owner == harmony.Id), method);
+        }
+        finally { harmony.UnpatchSelf(); }
+    }
+
+    [TestMethod]
     public void ResearchMatrixTransfersPreserveFractionalPointsAndNativeIncrementSplits()
     {
         var lab = new LabComponent { id = 1, entityId = 2, researchMode = true, matrixServed = [7201, 0, 0, 0, 0, 0], matrixIncServed = [28804, 0, 0, 0, 0, 0] };

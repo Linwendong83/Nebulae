@@ -1,7 +1,6 @@
 using System.Net;
 using System.Reflection.Emit;
 using HarmonyLib;
-using NebulaeModel.Contracts;
 using NebulaeModel.Networking;
 using NebulaeModel.Networking.Serialization;
 using NebulaeModel.Packets.Warning;

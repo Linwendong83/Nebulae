@@ -1,5 +1,4 @@
-﻿using System.Reflection;
-using System.Runtime.Serialization;
+﻿using System.Runtime.Serialization;
 using HarmonyLib;
 using UnityEngine;
 using Check = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;

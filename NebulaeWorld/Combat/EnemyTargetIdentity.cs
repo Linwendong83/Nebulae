@@ -65,6 +65,7 @@ internal static class EnemyTargetIdentity
         if (missile.target.id <= 0)
         {
             var clean = missile.target.astroId == 0 && missile.targetCombatStatId == 0;
+            GroundDefenseReferences.Clear(skills, missile.id, missile.target.astroId, MissileType(missile));
             missile.target = new SkillTarget { type = ETargetType.Enemy };
             missile.targetCombatStatId = 0;
             return clean;
@@ -85,14 +86,25 @@ internal static class EnemyTargetIdentity
         // GeneralMissile.life is an increasing age, unlike local projectile countdowns.
         if (targets.TryGetValue(missile.id, out var previous) && missile.life >= previous.Life && SameTarget(previous.Target, missile.target))
             valid &= previous.Key == key;
-        if (valid) { targets[missile.id] = (missile.target, key, missile.life); return true; }
+        if (valid)
+        {
+            // A guardian can redirect a missile to a different target on the same planet.
+            // Retire interception links only when the missile leaves its old planet.
+            if (targets.TryGetValue(missile.id, out var old) && old.Target.astroId != missile.target.astroId)
+                GroundDefenseReferences.Clear(skills, missile.id, old.Target.astroId, MissileType(missile));
+            targets[missile.id] = (missile.target, key, missile.life); return true;
+        }
         // Keep native flight/expiry, but never home onto an unrelated recycled slot.
         // The astro is part of the identity: native expiry clears the target's base references
         // through target.astroId, and a planet this peer has unloaded has no factory to clear.
+        GroundDefenseReferences.Clear(skills, missile.id, missile.target.astroId, MissileType(missile));
         missile.target = new SkillTarget { type = ETargetType.Enemy };
         missile.targetCombatStatId = 0;
         targets.TryRemove(missile.id, out _); return false;
     }
+
+    private static ESkillType MissileType(in GeneralMissile missile) => missile.caster.type == ETargetType.Player
+        ? ESkillType.MechaMissiles : ESkillType.TurretMissiles;
 
     public static void ForgetMissile(DataPool<GeneralMissile> pool, int id)
     {

@@ -123,17 +123,26 @@ internal class Client : IClient
 
     public void Stop()
     {
-        if (clientSocket?.IsAlive == true && Multiplayer.Session?.IsGameLoaded == true &&
-            Multiplayer.Session.JoinSync.CanInteract && GameMain.mainPlayer != null)
+        try
         {
-            Multiplayer.Session.Life.Publish();
-            var exitingConnection = serverConnection;
-            if (exitingConnection != null && !exitingConnection.FlushSendQueue())
-                Diagnostics.Warn("client:exit-flush", () => $"[network] final checkpoint send did not flush connection={exitingConnection.Id} {exitingConnection.SendDiagnostics}");
+            // IsAlive performs a synchronous Ping; a lost peer must not hold the UI here.
+            if (clientSocket?.ReadyState == WebSocketState.Open && Multiplayer.Session?.IsGameLoaded == true &&
+                Multiplayer.Session.JoinSync.CanInteract && GameMain.mainPlayer != null)
+            {
+                // The menu already settled (or timed out) its final checkpoint. Only abrupt
+                // disconnects need a best-effort snapshot here; do not start a second exit save.
+                if (!Multiplayer.Session.Life.IsExiting) Multiplayer.Session.Life.Publish();
+                var exitingConnection = serverConnection;
+                if (exitingConnection != null && !exitingConnection.FlushSendQueue())
+                    Diagnostics.Warn("client:exit-flush", () => $"[network] final checkpoint send did not flush connection={exitingConnection.Id} {exitingConnection.SendDiagnostics}");
+            }
         }
-        clientSocket?.Close((ushort)DisconnectionReason.ClientRequestedDisconnect, "Player left the game");
-        serverConnection?.StopSending();
-
+        finally
+        {
+            serverConnection?.StopSending();
+            // Closing waits for the peer's handshake; keep that wait off Unity's UI thread.
+            clientSocket?.CloseAsync((ushort)DisconnectionReason.ClientRequestedDisconnect, "Player left the game");
+        }
     }
 
     public void Dispose()

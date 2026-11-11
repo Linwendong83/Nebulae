@@ -113,6 +113,33 @@ public class MechaSettingsPersistenceTest
     }
 
     [TestMethod]
+    [DataRow(3, 0)]
+    [DataRow(3, 1)]
+    [DataRow(2, 0)]
+    [DataRow(0, 0)]
+    public void RejoinReleasesFlightsFromThePreviousConnectionWithoutRevivingDestroyedDrones(int alive, int idle)
+    {
+        var source = Player();
+        var module = source.mecha.constructionModule;
+        module.droneCount = 3;
+        module.droneAliveCount = alive;
+        module.droneIdleCount = idle;
+        module.droneRespawnTick = 123;
+        var saved = Serialize(new MechaData(source));
+        var restored = new MechaData(); restored.Deserialize(new NetDataReader(saved));
+        var destination = Player();
+        restored.UpdateMech(destination);
+        SimulatedWorld.FixPlayerAfterImport();
+        restored.TechBonuses.UpdateMech(destination.mecha);
+
+        var actual = destination.mecha.constructionModule;
+        TestAssert.AreEqual(3, actual.droneCount);
+        TestAssert.AreEqual(alive, actual.droneAliveCount);
+        TestAssert.AreEqual(alive, actual.droneIdleCount, "Old flights have no native drone in the new connection.");
+        TestAssert.AreEqual(123, actual.droneRespawnTick);
+    }
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public void OldCheckpointsUseNativeDefaultsWithoutLeakingAnotherPlayersSettings(bool diskImport)

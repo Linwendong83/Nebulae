@@ -211,7 +211,7 @@ internal class PlayerData : IPlayerData
         BodyRotation = reader.GetFloat3();
     }
 
-    private void ReadAppearanceAndDashboard(INetDataReader reader)
+    private void ReadAppearanceAndDashboard(INetDataReader reader, bool readDashboard = true)
     {
         Appearance = reader.GetBool() ? MechaAppearanceCodec.Read(reader.GetBytesWithLength()) : null;
         DIYAppearance = reader.GetBool() ? MechaAppearanceCodec.Read(reader.GetBytesWithLength()) : null;
@@ -225,7 +225,9 @@ internal class PlayerData : IPlayerData
             DIYItemId[i] = reader.GetInt();
             DIYItemValue[i] = reader.GetInt();
         }
-        var isDashboardPresent = reader.GetBool();
+        // Revision 8 ends immediately after the DIY materials. Its next byte belongs
+        // to the next player's identity (or the end of the file), not a dashboard flag.
+        var isDashboardPresent = readDashboard && reader.GetBool();
         if (isDashboardPresent)
         {
             DashboardData = reader.GetBytesWithLength();
@@ -385,21 +387,19 @@ internal class PlayerData : IPlayerData
         var mecha = new MechaData();
         mecha.Import(reader, revision);
         Mecha = mecha;
-        ReadAppearanceAndDashboard(reader);
+        ReadAppearanceAndDashboard(reader, revision >= 9);
         if (revision >= 9) ReadLife(reader);
         else if (Mecha.FightData != null && Mecha.FightData.Hp == 0 && GameMain.mainPlayer != null)
             Mecha.FightData.Hp = GameMain.mainPlayer.mecha.hpMaxApplied;
 
         // Older saves can omit this section. Flight and star fields are selected by the
         // save revision, never by bytes belonging to the next player in the shared stream.
-        if (revision >= 10 && reader.AvailableBytes >= sizeof(int))
+        if (revision >= 10)
         {
             var length = ReadVegetationLength(reader);
-            if (reader.AvailableBytes >= length)
-            {
-                VegetableCollectionData = new byte[length];
-                reader.GetBytes(VegetableCollectionData, length);
-            }
+            if (length > reader.AvailableBytes) throw new ParseException("Truncated vegetation collection");
+            VegetableCollectionData = new byte[length];
+            reader.GetBytes(VegetableCollectionData, length);
         }
         if (revision >= 11) ReadFlightState(reader);
         if (revision >= 12) LocalStarId = reader.GetInt();

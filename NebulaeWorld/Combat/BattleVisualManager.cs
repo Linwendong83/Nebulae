@@ -342,7 +342,16 @@ internal sealed class BattleVisualManager : IDisposable
     }
 
     public void Receive(BattleVisualPacket packet, BattleVisualFrame frame) =>
-        incoming.Enqueue((Multiplayer.Session.Authority.Epoch, packet, frame));
+        // SubscribeReusable overwrites the transport packet before TickClient drains this
+        // queue. Retain the header, not that shared instance, or sequence deduplication can
+        // discard earlier end events and leave continuous effects alive indefinitely.
+        incoming.Enqueue((Multiplayer.Session.Authority.Epoch, new BattleVisualPacket
+        {
+            StarId = packet.StarId,
+            Sequence = packet.Sequence,
+            Tick = packet.Tick,
+            Reset = packet.Reset
+        }, frame));
 
     private void ReceiveFrame(BattleVisualPacket packet, BattleVisualFrame frame)
     {

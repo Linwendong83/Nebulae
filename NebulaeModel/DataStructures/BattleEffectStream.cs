@@ -26,12 +26,15 @@ internal sealed class BattleEffectStream
     {
         var key = (kind, id);
         var exists = active.TryGetValue(key, out var entry);
-        var risingClock = kind is BattleEffectKind.TurretMissile or BattleEffectKind.MechaMissile or BattleEffectKind.TurretLaser;
+        var risingClock = kind is BattleEffectKind.TurretMissile or BattleEffectKind.MechaMissile;
         var phaseFlag = kind is BattleEffectKind.TurretCannon or BattleEffectKind.MechaLocalCannon or
             BattleEffectKind.MechaSpaceCannon or BattleEffectKind.TurretDisturb;
         var phaseChanged = exists && (phaseFlag && nativeLife != entry.NativeLife ||
             risingClock && Math.Sign(nativeLife) != Math.Sign(entry.NativeLife));
+        // TurretLaser.nativeLife is fade, not a slot countdown. Fade changes describe the
+        // same beam; treating them as slot reuse emits a new generation every correction.
         var reused = exists && (entry.Star != star || entry.SeenTick < tick - 1 ||
+            kind != BattleEffectKind.TurretLaser &&
             (risingClock ? nativeLife > 0 && (entry.NativeLife <= 0 || nativeLife < entry.NativeLife) :
                 phaseFlag ? nativeLife > entry.NativeLife :
                 Math.Abs((long)nativeLife) >= Math.Abs((long)entry.NativeLife)));

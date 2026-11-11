@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Timers;
 using BepInEx;
+using HarmonyLib;
 using NebulaeModel.DataStructures;
 using NebulaeModel.Contracts;
 using NebulaeModel.Logger;
@@ -16,6 +17,10 @@ namespace NebulaeWorld.Factory;
 
 internal class FactoryManager : IDisposable
 {
+    private static readonly AccessTools.FieldRef<PlanetFactory, int> prebuildRecycleCursorRef =
+        AccessTools.FieldRefAccess<PlanetFactory, int>("prebuildRecycleCursor");
+    private static readonly AccessTools.FieldRef<PlanetFactory, int[]> prebuildRecycleRef =
+        AccessTools.FieldRefAccess<PlanetFactory, int[]>("prebuildRecycle");
     private readonly ToggleSwitch isIncomingRequest = new();
     private readonly ThreadSafe threadSafe = new();
 
@@ -240,9 +245,9 @@ internal class FactoryManager : IDisposable
         }
 
 
-        var prebuildRecycleCursor = factory.prebuildRecycleCursor;
-        var prebuildRecycle = factory.prebuildRecycle;
-        return prebuildRecycleCursor <= 0 ? factory.prebuildCursor + 1 : prebuildRecycle[prebuildRecycleCursor - 1];
+        var prebuildRecycleCursor = prebuildRecycleCursorRef(factory);
+        var prebuildRecycle = prebuildRecycleRef(factory);
+        return prebuildRecycleCursor <= 0 ? factory.prebuildCursor : prebuildRecycle[prebuildRecycleCursor - 1];
     }
 
     private Locker GetPrebuildRequests(out Dictionary<PrebuildOwnerKey, ushort> prebuildRequests)

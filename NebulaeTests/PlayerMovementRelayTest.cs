@@ -4,7 +4,6 @@ using NebulaeModel.Networking;
 using NebulaeModel.Networking.Serialization;
 using NebulaeModel.Packets.Players;
 using NebulaeWorld.MonoBehaviours.Remote;
-using UnityEngine;
 using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;
 
 namespace NebulaeTests;

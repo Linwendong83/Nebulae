@@ -1,4 +1,3 @@
-using System.IO;
 using NebulaeModel.Packets.Authority;
 using UnityEngine;
 using TestAssert = Microsoft.VisualStudio.TestTools.UnitTesting.Assert;

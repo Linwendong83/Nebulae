@@ -82,8 +82,11 @@ internal static class Multiplayer
 
         var wasGameLoaded = Session?.IsGameLoaded ?? false;
 
-        Session?.Dispose();
-        Session = null;
+        // A failed final snapshot or subsystem disposal must not strand a half-disposed session
+        // in the menu, where subsequent exit clicks cannot make progress.
+        try { Session?.Dispose(); }
+        catch (System.Exception error) { NebulaeModel.Logger.Log.Warn($"Multiplayer cleanup failed while leaving: {error}"); }
+        finally { Session = null; }
         if (wasGameLoaded) IsInMultiplayerMenu = false;
 
         if (wasGameLoaded)

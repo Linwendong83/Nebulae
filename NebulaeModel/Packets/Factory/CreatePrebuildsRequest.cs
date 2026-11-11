@@ -73,16 +73,31 @@ internal class CreatePrebuildsRequest
 
         try
         {
-            using var reader = new BinaryUtils.Reader(BuildPreviewData);
-            var previewCount = reader.BinaryReader.ReadInt32();
+            using var compressed = new BinaryUtils.Reader(BuildPreviewData);
+            // LZ4 frames written by BinaryUtils do not declare their decoded size:
+            // the decoder's Length is -1 and it cannot seek. Validate remaining
+            // bytes against a bounded decoded buffer, never against that sentinel.
+            using var payload = new MemoryStream();
+            var buffer = new byte[8192];
+            int read;
+            while ((read = compressed.BinaryReader.BaseStream.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                if (payload.Length > PacketCompression.MaxDecompressedMessageBytes - read) return false;
+                payload.Write(buffer, 0, read);
+            }
+            payload.Position = 0;
+            using var reader = new BinaryReader(payload);
+            var previewCount = reader.ReadInt32();
+            if (previewCount <= 0 || previewCount > 100000 || previewCount > payload.Length / 128) return false;
             for (var i = 0; i < previewCount; i++)
             {
                 buildPreviews.Add(new BuildPreview());
             }
             for (var i = 0; i < previewCount; i++)
             {
-                DeserializeBuildPreview(buildPreviews[i], buildPreviews, reader.BinaryReader);
+                DeserializeBuildPreview(buildPreviews[i], buildPreviews, reader);
             }
+            if (payload.Position != payload.Length) throw new InvalidDataException("Trailing build preview data");
             return true;
         }
         catch (System.Exception e)
@@ -100,6 +115,8 @@ internal class CreatePrebuildsRequest
         buildPreview.input = inputRef == -1 ? null : list[inputRef];
         buildPreview.objId = br.ReadInt32();
         var num = br.ReadInt32();
+        if (num < 0 || num > 4096 || (long)num * sizeof(int) > br.BaseStream.Length - br.BaseStream.Position)
+            throw new InvalidDataException("Invalid nearby power-object count");
         buildPreview.nearestPowerObjId = num == 0 ? null : new int[num];
         for (var i = 0; i < num; i++)
         {
@@ -148,6 +165,9 @@ internal class CreatePrebuildsRequest
         }
 
         buildPreview.paramCount = br.ReadInt32();
+        if (buildPreview.paramCount < 0 || buildPreview.paramCount > 4096 ||
+            (long)buildPreview.paramCount * sizeof(int) > br.BaseStream.Length - br.BaseStream.Position)
+            throw new InvalidDataException("Invalid build parameter count");
         buildPreview.parameters = new int[buildPreview.paramCount];
         for (var i = 0; i < buildPreview.paramCount; i++)
         {

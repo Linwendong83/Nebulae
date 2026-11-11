@@ -1,8 +1,6 @@
 using HarmonyLib;
 using NebulaeModel.Authority;
-using NebulaeModel.Contracts;
 using NebulaeModel.DataStructures;
-using NebulaeModel.Networking;
 using NebulaeModel.Packets.Authority;
 using NebulaeModel.Utils;
 using NebulaePatcher.Patches.Authority;

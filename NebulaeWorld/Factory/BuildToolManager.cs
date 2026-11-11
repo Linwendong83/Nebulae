@@ -110,7 +110,8 @@ internal class BuildToolManager : IDisposable
         var canBuild = false;
         if (Multiplayer.Session.LocalPlayer.IsHost)
         {
-            GameMain.mainPlayer.mecha.buildArea = float.MaxValue;
+            // Connection validation does not use the host mecha's reach. Keep its real
+            // range: CreatePrebuilds immediately registers nearby construction targets.
             canBuild = CheckBuildingConnections(buildTool.buildPreviews, planet.factory.entityPool,
                 planet.factory.prebuildPool);
             if (canBuild)
@@ -197,7 +198,6 @@ internal class BuildToolManager : IDisposable
             pab.nearcdLogic = tmpNearcdLogic;
         }
 
-        GameMain.mainPlayer.mecha.buildArea = Configs.freeMode.mechaBuildArea;
         Multiplayer.Session.Factories.EventFactory = null;
 
         if (!incomingBlueprintEvent)

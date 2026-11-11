@@ -42,6 +42,7 @@ internal class StartGameMessageProcessor : PacketProcessor<StartGameMessage>
         else if (packet.IsAllowedToStart)
         {
             Multiplayer.Session.JoinSync.BeginLocal();
+            Multiplayer.Session.InventoryColumns = packet.InventoryColumns;
             ((LocalPlayer)Multiplayer.Session.LocalPlayer).IsHost = false;
             ((LocalPlayer)Multiplayer.Session.LocalPlayer).SetPlayerData(packet.LocalPlayerData, packet.IsNewPlayer);
             Multiplayer.Session.Goals.SetExistingPlayer(!packet.IsNewPlayer);

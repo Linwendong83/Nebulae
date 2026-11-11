@@ -250,7 +250,12 @@ internal static class SaveManager
                     playerSaves.Add(hash, playerData);
                 }
             }
-            legacyAuthorityArchive = ServerSaveAuthorityArchive.Read(netDataReader, WorldId);
+            // Historical server revisions do not define a trailing authority archive. In
+            // particular, revision 8 can leave opaque legacy bytes after player records;
+            // interpreting them as NBAS would reject an otherwise valid multiplayer save.
+            legacyAuthorityArchive = revision >= REVISION
+                ? ServerSaveAuthorityArchive.Read(netDataReader, WorldId)
+                : null;
             serverDataLoaded = true;
         }
         catch (Exception e)

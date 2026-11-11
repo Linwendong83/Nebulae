@@ -70,10 +70,11 @@ internal sealed partial class FactoryProductManager : IDisposable
         if (!TryView(factory, id, out var machine) || machine.recipeId <= 0 || machine.produced == null || slot < 0 || slot >= machine.produced.Length || machine.produced[slot] <= 0) return false;
         return Queue(factory, id, new FactoryProductIntent(FactoryInteractionKind.Withdraw, machine.recipeId, slot, machine.recipeExecuteData.products[slot], machine.produced[slot], hand: hand));
     }
-    public bool RequestInput(PlanetFactory factory, int id, int slot)
+    public bool RequestInput(PlanetFactory factory, int id, int slot, int wanted = 0)
     {
         if (!TryView(factory, id, out var machine) || machine.recipeExecuteData?.requires == null || slot < 0 || slot >= machine.served.Length) return false;
         var count = (InputCapacity(machine, slot) - machine.served[slot]) / InputUnit(machine);
+        if (wanted > 0) count = Math.Min(count, wanted);
         if (count <= 0) return false;
         return Queue(factory, id, new FactoryProductIntent(FactoryInteractionKind.Deposit, machine.recipeId, slot, machine.recipeExecuteData.requires[slot], count));
     }
@@ -301,7 +302,7 @@ internal sealed partial class FactoryProductManager : IDisposable
         return added;
     }
 
-    public int LocalInput(PlanetFactory factory, int assembler, int slot, StorageComponent package)
+    public int LocalInput(PlanetFactory factory, int assembler, int slot, StorageComponent package, int wanted = 0)
     {
         EnsureWorld();
         var binding = new FactoryMachine(factory, assembler); var machine = binding.View;
@@ -310,6 +311,7 @@ internal sealed partial class FactoryProductManager : IDisposable
         lock (machine.served)
         {
             var unit = InputUnit(machine); var item = requires[slot]; var count = Math.Min((InputCapacity(machine, slot) - machine.served[slot]) / unit, package.GetItemCount(item));
+            if (wanted > 0) count = Math.Min(count, wanted);
             if (count <= 0) return 0;
             package.TakeTailItems(ref item, ref count, out var inc);
             machine.served[slot] += count * unit; machine.incServed[slot] += inc * unit;

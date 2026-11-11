@@ -109,6 +109,9 @@ internal abstract class NativePlayerWeaponPool
                     box = p; break;
             }
             value = (T)box;
+            if (Exists(id) && pool is DataPool<GeneralMissile> oldMissiles && value is GeneralMissile correction &&
+                oldMissiles.buffer[id].target.astroId != correction.target.astroId)
+                GroundDefenseReferences.RetireMissile(oldMissiles, id);
             if (!Exists(id)) id = pool != null ? pool.Add().ID : renderer.Add().ID;
             // A correction may deliberately retarget the same missile to a new generation.
             if (expectedTarget.HasValue && pool is DataPool<GeneralMissile> missiles) EnemyTargetIdentity.ForgetMissile(missiles, id);

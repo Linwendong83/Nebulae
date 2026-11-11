@@ -308,22 +308,21 @@ internal class SimulatedWorld : IDisposable
         player.mecha.forge.bottleneckItems = new HashSet<int>();
 
         // Rebind runtime state without replacing the construction preferences just imported.
-        player.mecha.energyShieldBurstUnlocked = true;
+        player.mecha.energyShieldBurstUnlocked = GameMain.history?.TechUnlocked(2803) == true;
         // Personal saves retain local pool slots. Resolve targets again in this connection's
         // factory/claim generation instead of replaying queues from the previous connection.
         var construction = player.mecha.constructionModule;
+        // Personal checkpoints include busy counts, but their native flights belong to the
+        // previous connection and are not restored. Return surviving drones to idle; keep
+        // destroyed drones and their respawn timer intact.
+        construction.droneIdleCount = construction.droneAliveCount;
         if (construction.buildTargets != null) Array.Clear(construction.buildTargets, 0, construction.buildTargets.Length);
         if (construction.tmpTargets != null) Array.Clear(construction.tmpTargets, 0, construction.tmpTargets.Length);
         if (construction.repairTargets != null) Array.Clear(construction.repairTargets, 0, construction.repairTargets.Length);
         if (construction.autoReconstructTargets != null) Array.Clear(construction.autoReconstructTargets, 0, construction.autoReconstructTargets.Length);
         construction.buildTargetTotalCount = construction.repairTargetTotalCount = construction.autoReconstructTargetTotalCount = 1;
 
-        // Inventory Capacity level 7 will increase package columncount from 10 -> 12
-        var packageRowCount = (player.package.size - 1) / player.GetPackageColumnCount() + 1;
-        // Make sure all slots are available on UI
-        player.package.SetSize(player.packageColCount * packageRowCount);
-        player.deliveryPackage.rowCount = packageRowCount;
-        player.deliveryPackage.NotifySizeChange();
+        RestoreInventoryLayout(player, Multiplayer.Session?.InventoryColumns ?? 0);
 
         // do we need to do something about the spaceSector?
         player.mecha.groundCombatModule.AfterImport(GameMain.data);
@@ -340,6 +339,15 @@ internal class SimulatedWorld : IDisposable
         {
             moduleFleets[index].ClearFleetForeignKey();
         }
+    }
+
+    internal static void RestoreInventoryLayout(global::Player player, int columns)
+    {
+        if (columns is >= 10 and <= 30) player.packageColCount = columns;
+        // A partial UI row does not grant extra inventory slots. Keep legacy inventories
+        // intact as well: rounding 144 slots to ten-column rows used to create 150 slots.
+        player.deliveryPackage.rowCount = Math.Min(20, (player.package.size - 1) / player.GetPackageColumnCount() + 1);
+        player.deliveryPackage.NotifySizeChange();
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Style", "IDE0060:Remove unused parameter",

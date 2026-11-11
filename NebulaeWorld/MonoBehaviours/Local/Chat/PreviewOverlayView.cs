@@ -140,7 +140,7 @@ public sealed class PreviewOverlayView : MonoBehaviour
             ShowChat();
         }
 
-        var showList = !chatOpen && ShortcutHeld(Config.Options.PlayerListHotkey) && CanUseGameHotkeys();
+        var showList = !chatOpen && ShortcutHeld(Config.Options.PlayerListHotkey) && CanUseGameHotkeys() && !IsFunctionWindowOpen();
         if (showList != listOpen) SetListOpen(showList);
         if (listOpen)
         {

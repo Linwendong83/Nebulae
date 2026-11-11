@@ -18,5 +18,9 @@ internal static class MissileTargetLifetime_Patch
 internal static class MissileTargetRetirement_Patch
 {
     [HarmonyPrefix]
-    public static void Prefix(DataPool<GeneralMissile> __instance, int id) => EnemyTargetIdentity.ForgetMissile(__instance, id);
+    public static void Prefix(DataPool<GeneralMissile> __instance, int id)
+    {
+        if (Multiplayer.IsActive) GroundDefenseReferences.RetireMissile(__instance, id);
+        EnemyTargetIdentity.ForgetMissile(__instance, id);
+    }
 }

@@ -1,7 +1,10 @@
 ﻿using NebulaeModel.Networking;
 
 #region
+using System;
+using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Reflection.Emit;
 using HarmonyLib;
 using NebulaeModel.Packets.Universe;
 using NebulaeWorld;
@@ -59,28 +62,30 @@ internal class UIPlanetDetail_Patch
         return false;
     }
 
-    // temp set universe exploration to max for planet detail display in galaxy select screen
-    [HarmonyPrefix]
+    // Lobby previews may reveal resources, but must never change shared research state.
+    // Replacing only these reads also handles nested refreshes and exceptions without cleanup.
+    [HarmonyTranspiler]
     [HarmonyPatch(nameof(UIPlanetDetail.OnPlanetDataSet))]
     [HarmonyPatch(nameof(UIPlanetDetail.RefreshDynamicProperties))]
-    public static void OnPlanetDataSet_Prefix()
+    public static IEnumerable<CodeInstruction> ObserveLevel_Transpiler(IEnumerable<CodeInstruction> instructions)
     {
-        if (Multiplayer.IsActive && Multiplayer.Session.IsInLobby)
+        var field = AccessTools.Field(typeof(GameHistoryData), nameof(GameHistoryData.universeObserveLevel));
+        var reader = AccessTools.Method(typeof(UIPlanetDetail_Patch), nameof(ObserveLevelForDetail));
+        var code = new List<CodeInstruction>(instructions);
+        var changed = 0;
+        foreach (var instruction in code)
         {
-            GameMain.history.universeObserveLevel = 4;
+            if (!instruction.LoadsField(field)) continue;
+            instruction.opcode = OpCodes.Call;
+            instruction.operand = reader;
+            changed++;
         }
+        if (changed != 2) throw new InvalidOperationException("Native planet detail observation checks changed.");
+        return code;
     }
 
-    [HarmonyPostfix]
-    [HarmonyPatch(nameof(UIPlanetDetail.OnPlanetDataSet))]
-    [HarmonyPatch(nameof(UIPlanetDetail.RefreshDynamicProperties))]
-    public static void OnPlanetDataSet_Postfix()
-    {
-        if (Multiplayer.IsActive && Multiplayer.Session.IsInLobby)
-        {
-            GameMain.history.universeObserveLevel = SimulatedWorld.GetUniverseObserveLevel();
-        }
-    }
+    internal static int ObserveLevelForDetail(GameHistoryData history) =>
+        Multiplayer.IsActive && Multiplayer.Session.IsInLobby ? 4 : history.universeObserveLevel;
 
     /// <summary>
     /// Show the memo button for planets that have memos in the global pool,

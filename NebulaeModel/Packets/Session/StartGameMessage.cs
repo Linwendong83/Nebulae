@@ -18,6 +18,7 @@ internal class StartGameMessage
         // still need a complete placeholder so the receiver can read the trailing bool.
         LocalPlayerData = localPlayerData ?? new PlayerData(0, 0);
         IsNewPlayer = isNewPlayer;
+        InventoryColumns = GameMain.data?.mainPlayer?.GetPackageColumnCount() ?? 10;
     }
 
     [NebulaeModel.Networking.WireOrder(0)]
@@ -26,4 +27,7 @@ internal class StartGameMessage
     public PlayerData LocalPlayerData { get; set; }
     [NebulaeModel.Networking.WireOrder(2)]
     public bool IsNewPlayer { get; set; }
+
+    [NebulaeModel.Networking.WireOrder(3)]
+    public int InventoryColumns { get; set; }
 }

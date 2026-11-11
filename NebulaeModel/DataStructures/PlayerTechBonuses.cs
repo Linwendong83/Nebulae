@@ -252,15 +252,17 @@ internal class PlayerTechBonuses : IPlayerTechBonuses
         destination.maxSailSpeed = maxSailSpeed;
         destination.maxWarpSpeed = maxWarpSpeed;
         destination.buildArea = buildArea;
-        destination.constructionModule.droneCount = droneCount;
-        destination.constructionModule.droneIdleCount = droneCount;
-        destination.constructionModule.droneAliveCount = droneCount;
+        var construction = destination.constructionModule;
+        var addedDrones = System.Math.Max(0, droneCount - construction.droneCount);
+        construction.droneCount = droneCount;
+        construction.droneAliveCount = System.Math.Min(droneCount, construction.droneAliveCount + addedDrones);
+        construction.droneIdleCount = System.Math.Min(construction.droneAliveCount, construction.droneIdleCount + addedDrones);
         if (inventorySize > destination.player.package.size)
         {
             destination.player.package.SetSize(inventorySize);
         }
         destination.player.deliveryPackage.unlocked = deliveryPackageUnlocked;
-        var deliveryPackageRowCount = (destination.player.package.size - 1) / 10 + 1;
+        var deliveryPackageRowCount = System.Math.Min(20, (destination.player.package.size - 1) / destination.player.GetPackageColumnCount() + 1);
         if (destination.player.deliveryPackage.rowCount != deliveryPackageRowCount ||
             deliveryPackageColCount != destination.player.deliveryPackage.colCount)
         {

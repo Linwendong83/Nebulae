@@ -48,10 +48,10 @@ internal class UIMechaWindow_Patch
         // combat HUD. Ease only the images; weapon budgets and settings keep their exact values.
         progress.Ammo = reset || progress.AmmoItem != ammoItem || progress.AmmoSlot != mecha.ammoSelectSlot || progress.AmmoInc != ammoInc
             ? __instance.ammoProgress.fillAmount
-            : SmoothProgress(progress.Ammo, __instance.ammoProgress.fillAmount, Time.unscaledDeltaTime);
+            : SynchronizedProgress.Ease(progress.Ammo, __instance.ammoProgress.fillAmount, Time.unscaledDeltaTime);
         progress.Laser = reset || progress.LaserCapacity != mecha.laserEnergyCapacity
             ? __instance.laserProgress.fillAmount
-            : SmoothProgress(progress.Laser, __instance.laserProgress.fillAmount, Time.unscaledDeltaTime);
+            : SynchronizedProgress.Ease(progress.Laser, __instance.laserProgress.fillAmount, Time.unscaledDeltaTime);
         progress.Mecha = mecha;
         progress.DeathCount = deathCount;
         progress.AmmoItem = ammoItem;
@@ -60,13 +60,6 @@ internal class UIMechaWindow_Patch
         progress.LaserCapacity = mecha.laserEnergyCapacity;
         __instance.ammoProgress.fillAmount = progress.Ammo;
         __instance.laserProgress.fillAmount = progress.Laser;
-    }
-
-    private static float SmoothProgress(float current, float target, float deltaTime)
-    {
-        // About 95% of a correction settles in 0.125 s, independent of render frame rate.
-        var value = Mathf.Lerp(current, target, 1f - Mathf.Exp(-24f * deltaTime));
-        return Mathf.Abs(value - target) < 0.0001f ? target : value;
     }
 
     [HarmonyPrefix]

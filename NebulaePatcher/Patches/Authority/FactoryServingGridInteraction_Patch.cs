@@ -35,11 +35,11 @@ internal static class FactoryServingGridInteraction_Patch
             {
                 if (Launcher) Multiplayer.Session.FactoryProducts.RequestLauncher(Factory, Id, true, hand, count);
                 else if (hand) Multiplayer.Session.FactoryProducts.RequestHandInput(Factory, Id, slot, count);
-                else Multiplayer.Session.FactoryProducts.RequestInput(Factory, Id, slot);
+                else Multiplayer.Session.FactoryProducts.RequestInput(Factory, Id, slot, count);
             }
             else if (Launcher) Multiplayer.Session.FactoryProducts.LocalLauncher(Factory, Id, true, hand, player, count);
             else if (hand) Multiplayer.Session.FactoryProducts.LocalHandInput(Factory, Id, slot, count, player);
-            else Multiplayer.Session.FactoryProducts.LocalInput(Factory, Id, slot, player.package);
+            else Multiplayer.Session.FactoryProducts.LocalInput(Factory, Id, slot, player.package, count);
         }
     }
     private static bool Serving(UIStorageGrid grid, out Target target)
@@ -79,7 +79,20 @@ internal static class FactoryServingGridInteraction_Patch
     [HarmonyPrefix, HarmonyPatch(typeof(UIStorageGrid), "OnGridMouseDown")]
     private static bool ModifiedClick(UIStorageGrid __instance, int grid, int button, bool shift, bool control, Player player)
     {
-        if (!Serving(__instance, out var window) || button != 0 || (!shift && !control) || player.inhandItemCount > 0) return true;
+        if (!Multiplayer.IsActive || button != 0 || (!shift && !control) || player.inhandItemCount > 0) return true;
+        if (ReferenceEquals(__instance.storage, player.package))
+        {
+            if (SplitGrid(__instance) >= 0) return false;
+            if (grid < 0 || grid >= player.package.size) return false;
+            var item = player.package.grids[grid].itemId;
+            var other = item > 0 ? __instance.GetOtherStorageGrid(item) : __instance.GetOtherStorageGrid();
+            if (other == null || !Serving(other, out var destination)) return true;
+            // Never let native quick-transfer debit the package into a presentation-only grid.
+            QueuePackageDeposit(player.package, grid, control, destination.Items,
+                (slot, count) => destination.Put(slot, count, false, player));
+            return false;
+        }
+        if (!Serving(__instance, out var window)) return true;
         if (SplitGrid(__instance) >= 0) return false;
         var requires = window.Items;
         if (requires == null || grid < 0 || grid >= requires.Length) return false;
@@ -89,6 +102,17 @@ internal static class FactoryServingGridInteraction_Patch
             window.Take(slot, 0, false, player);
         }
         return false;
+    }
+
+    internal static void QueuePackageDeposit(StorageComponent package, int grid, bool control, int[] requires, Action<int, int> put)
+    {
+        if (requires == null || grid < 0 || grid >= package.size) return;
+        var source = package.grids[grid];
+        // Ctrl on an empty cell transfers all accepted items; Shift transfers one stack.
+        if (!control && source.count <= 0) return;
+        for (var slot = 0; slot < requires.Length; slot++)
+            if (source.itemId == requires[slot] || control && source.itemId == 0)
+                put(slot, control ? 0 : source.count);
     }
 
     [HarmonyPrefix, HarmonyPatch(typeof(UIStorageGrid), nameof(UIStorageGrid.TransferToOther))]

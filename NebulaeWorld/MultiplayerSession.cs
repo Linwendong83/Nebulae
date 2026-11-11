@@ -28,6 +28,7 @@ namespace NebulaeWorld;
 internal class MultiplayerSession : IDisposable
 {
     private bool canPause = true;
+    internal int InventoryColumns { get; set; }
 
     // A player that steps into space (planet 0) keeps the planet streams it holds until it
     // unsubscribes. A scope that needs a fresh cursor after a lost baseline was refused for as long

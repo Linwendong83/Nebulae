@@ -1,7 +1,4 @@
-using System;
 using HarmonyLib;
-using NebulaeModel;
-using NebulaeModel.Logger;
 using NebulaePatcher.UI;
 using NebulaeWorld;
 using NebulaeWorld.MonoBehaviours.Local;

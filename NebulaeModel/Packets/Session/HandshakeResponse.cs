@@ -26,6 +26,7 @@ internal class HandshakeResponse
         IsNewPlayer = isNewPlayer;
         LocalPlayerData = localPlayerData;
         NumPlayers = numPlayers;
+        InventoryColumns = GameMain.data?.mainPlayer?.GetPackageColumnCount() ?? 10;
     }
 
     [NebulaeModel.Networking.WireOrder(0)]
@@ -55,5 +56,8 @@ internal class HandshakeResponse
 
     [NebulaeModel.Networking.WireOrder(12)]
     public int StarNameLCID { get; set; }
+
+    [NebulaeModel.Networking.WireOrder(13)]
+    public int InventoryColumns { get; set; } = 10;
 
 }

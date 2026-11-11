@@ -41,9 +41,10 @@ public class ClientExitSaveRegressionTest
             harmony.Patch(AccessTools.Method(typeof(DSPGame), nameof(DSPGame.EndGame)),
                 prefix: new HarmonyMethod(typeof(ClientExitSaveRegressionTest), nameof(EndBoundary)));
             harmony.CreateClassProcessor(typeof(GameSave_Patch)).Patch();
-            if (failAt == "none") Multiplayer.LeaveGame();
-            else Check.ThrowsExactly<InvalidOperationException>(Multiplayer.LeaveGame);
-            Check.AreEqual(failAt != "dispose", reachedEnd);
+            if (failAt == "end") Check.ThrowsExactly<InvalidOperationException>(Multiplayer.LeaveGame);
+            else Multiplayer.LeaveGame();
+            Check.IsTrue(reachedEnd, "Disposal failures must still allow the game to return to the menu.");
+            Check.IsNull(Multiplayer.Session);
             Check.IsFalse(Multiplayer.SuppressClientWorldSaves);
             Multiplayer.Session = null;
             Check.IsTrue(GameSave_Patch.SaveCurrentGame_Prefix(), "Subsequent single-player saves must remain enabled.");

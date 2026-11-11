@@ -45,8 +45,9 @@ internal class BeltManager : IDisposable
     {
         if (GameMain.data.localPlanet != null)
         {
-            Multiplayer.Session.Network.SendPacketToLocalStar(
-                new BeltUpdatePickupItemsPacket(beltPickupUpdates.ToArray(), GameMain.data.localPlanet.id));
+            for (var offset = 0; offset < beltPickupUpdates.Count; offset += 512)
+                Multiplayer.Session.Network.SendPacketToLocalStar(new BeltUpdatePickupItemsPacket(
+                    beltPickupUpdates.GetRange(offset, Math.Min(512, beltPickupUpdates.Count - offset)).ToArray(), GameMain.data.localPlanet.id));
         }
 
         beltPickupUpdates.Clear();

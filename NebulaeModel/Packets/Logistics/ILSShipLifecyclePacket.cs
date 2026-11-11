@@ -8,7 +8,6 @@ internal class ILSShipLifecyclePacket
 {
     // Records start with a kind and the physical ship slot. Array positions are never identities.
     public const int Depart = 1, Return = 2, Facts = 3;
-    public const int DepartureSize = 9;
     public const int MaxRecordSize = 12;
     public const int MaxChanges = 256;
 

@@ -76,6 +76,10 @@ internal sealed class RepairDispatchManager : IDisposable
 
     public void Dispose() { flights.Clear(); bindings.Clear(); nativeBindings.Clear(); continuations.Clear(); offers.Clear(); ended.Clear(); endedOrder.Clear(); }
     private static Vector3 Eject(Vector3 position) => position.normalized * (position.magnitude + 2.8f);
+    internal static bool WithinRepairRange(PlanetFactory factory, Mecha mecha, int entity) =>
+        mecha?.player != null && mecha.player.factory == factory && entity > 0 && entity < factory.entityCursor &&
+        factory.entityPool[entity].id == entity && BuildCandidateScore.Calculate(BuildOwnerKind.Player,
+            (factory.entityPool[entity].pos - mecha.player.position).sqrMagnitude, mecha.buildArea) > 0;
     private static bool Target(PlanetFactory factory, int entity, long generation, out int stat)
     {
         stat = 0;
@@ -222,7 +226,7 @@ internal sealed class RepairDispatchManager : IDisposable
         if (packet.Message == RepairControl.Cancel) { Return(f); return; }
         if (packet.Message != RepairControl.Started || f.Started || f.Returning) return;
         var actor = Multiplayer.Session.CombatAuthority.MechaFor(player);
-        if (actor?.player.isAlive != true || actor.player.factory != f.Factory || !Target(f.Factory, f.Entity, f.Generation, out _)) { End(f); return; }
+        if (actor?.player.isAlive != true || !WithinRepairRange(f.Factory, actor, f.Entity) || !Target(f.Factory, f.Entity, f.Generation, out _)) { End(f); return; }
         if (!DroneFlightState.TryDecode(packet.FlightState, out var launched) || launched.Target != f.Entity ||
             launched.Stage != (f.ResumeDrone > 0 ? 2 : 1) ||
             (launched.Position - actor.player.position).sqrMagnitude > 14400 ||
@@ -258,6 +262,7 @@ internal sealed class RepairDispatchManager : IDisposable
         var accepted = player?.isAlive == true && factory?.planetId == packet.PlanetId && module?.droneEnabled == true && module.droneRepairEnabled &&
             (packet.ResumeDrone > 0 || module.droneIdleCount > 0) && module.dronePriority == packet.Priority && player.speed <= 20 && player.mecha.coreEnergy > 0 &&
             Multiplayer.Session.AuthorityRuntime.WorldReplica.TryFindKey(PoolKind.Entity, packet.PlanetId, packet.EntityId, out var key) && key.Generation == packet.Generation &&
+            WithinRepairRange(factory, player.mecha, packet.EntityId) &&
             ConstructionRepairTargets.Valid(factory, factory.entityPool[packet.EntityId].constructStatId);
         if (accepted && packet.ResumeDrone > 0)
         {

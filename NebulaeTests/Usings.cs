@@ -7,7 +7,6 @@ global using NebulaePatcher.Patches.Dynamic.World;
 global using Microsoft.VisualStudio.TestTools.UnitTesting;
 global using static NebulaeTests.TestSupport;
 using HarmonyLib;
-using System.IO;
 using System.Reflection;
 using global::NebulaeModel.DataStructures;
 using global::NebulaeModel.Networking;

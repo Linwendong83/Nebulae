@@ -22,7 +22,11 @@ internal class GameData_Patch
     public static void FactoryPresence_Postfix(PlanetFactory __result)
     {
         if (Multiplayer.IsActive && Multiplayer.Session.IsServer && Multiplayer.Session.IsGameLoaded && __result != null)
+        {
+            if (!GameMain.data.gameDesc.isSandboxMode && __result.planetId == GameMain.galaxy.birthPlanetId)
+                NebulaeWorld.Factory.LandingCapsule.RepairDuplicates(__result);
             Multiplayer.Session.Planets.PublishFactoryPresence();
+        }
     }
     [HarmonyPrefix]
     [HarmonyPatch(nameof(GameData.GetOrCreateFactory))]

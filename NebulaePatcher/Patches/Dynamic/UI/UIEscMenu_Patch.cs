@@ -37,32 +37,40 @@ internal class UIEscMenu_Patch
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(UIEscMenu.OnButton5Click))]
-    public static bool OnButton5Click_Prefix(UIEscMenu __instance)
+    public static bool OnButton5Click_Prefix(ref bool ___locked)
     {
-        if (DeferClientExit(() => __instance.OnButton5Click())) return false;
-        QuitGame();
-        return true;
+        return ExitGame(ref ___locked, false);
     }
 
     [HarmonyPrefix]
     [HarmonyPatch(nameof(UIEscMenu.OnButton6Click))]
-    public static bool OnButton6Click_Prefix(UIEscMenu __instance)
+    public static bool OnButton6Click_Prefix(ref bool ___locked)
     {
-        if (DeferClientExit(() => __instance.OnButton6Click())) return false;
-        QuitGame();
-        return true;
+        return ExitGame(ref ___locked, true);
     }
 
-    private static bool DeferClientExit(System.Action complete)
+    private static bool ExitGame(ref bool locked, bool exitProgram)
     {
-        if (!Multiplayer.IsActive || !Multiplayer.Session.IsClient || GameMain.mainPlayer?.mecha == null) return false;
-        if (!Multiplayer.Session.Life.IsExiting)
+        var session = Multiplayer.Session;
+        if (session == null) return true;
+        if (locked) return false;
+        locked = true;
+
+        void Complete()
         {
-            UIRealtimeTip.Popup("Saving personal progress...".Translate(), sound: false);
-            NebulaeWorld.GameStates.LocalPlayerPreferences.SaveDashboard();
-            Multiplayer.Session.Life.BeginExit(() => { QuitGame(); complete(); });
+            // A disconnect may already have ended this session while the callback was queued.
+            if (Multiplayer.Session != session) return;
+            try { QuitGame(); }
+            finally { if (exitProgram) DSPGame.ExitProgram(); }
         }
-        return true;
+
+        if (session.IsClient && GameMain.mainPlayer?.mecha != null)
+        {
+            session.Life.BeginExit(Complete);
+            UIRealtimeTip.Popup("Saving personal progress...".Translate(), sound: false);
+        }
+        else Complete();
+        return false;
     }
 
     private static void QuitGame()

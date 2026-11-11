@@ -128,8 +128,7 @@ public class RestorationPersistenceTest
         TestAssert.IsFalse(revisionNine.Life.IsAlive);
         TestAssert.IsEmpty(revisionNine.VegetableCollectionData);
         TestAssert.AreEqual(0, revisionNineReader.AvailableBytes);
-        var lifeWriter = new NetDataWriter(); player.Life.Serialize(lifeWriter);
-        var legacyBytes = revisionNineBytes.Take(revisionNineBytes.Length - lifeWriter.Length - sizeof(int)).ToArray();
+        var legacyBytes = SavedEmptyPlayer(player, 8);
         var revisionEightReader = new NetDataReader(legacyBytes);
         var legacy = new PlayerData(); legacy.Import(revisionEightReader, 8);
         TestAssert.IsTrue(legacy.Life.IsAlive);
@@ -224,7 +223,8 @@ public class RestorationPersistenceTest
             if (revision < 9)
             {
                 var life = new NetDataWriter(); player.Life.Serialize(life);
-                omitted += life.Length + sizeof(int) + player.PersonalKillData.Length;
+                // Revision 8 also predates the dashboard presence flag.
+                omitted += sizeof(bool) + life.Length + sizeof(int) + player.PersonalKillData.Length;
             }
             return writer.CopyData().Take(writer.Length - omitted).ToArray();
         }
