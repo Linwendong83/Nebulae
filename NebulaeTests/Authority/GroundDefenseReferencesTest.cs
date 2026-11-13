@@ -11,6 +11,118 @@ namespace NebulaeTests.Authority;
 public class GroundDefenseReferencesTest
 {
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void PrecisionDronePlasmaRequiresALiveLocalEnemyAndSkillSlot(bool shield)
+    {
+        var pool = new DataPoolRenderer<LocalGeneralProjectile>(); pool.ResetPool(); pool.Add();
+        var type = shield ? ESkillType.FighterShieldPlasmas : ESkillType.FighterPlasmas;
+        if (shield) skills.fighterShieldPlasmas = pool; else skills.fighterPlasmas = pool;
+        pool.buffer[1] = new LocalGeneralProjectile
+        {
+            id = 1, life = 10, astroId = 101,
+            target = new SkillTargetLocal { id = 3, type = ETargetType.Enemy }
+        };
+        var skill = new SKILLID(1, type);
+        TestAssert.IsTrue(GroundDefenseReferences.Valid(skill, skills, factory.enemyPool, 101));
+        pool.buffer[1].target.id = 65536;
+        owner.AddIncomingSkill(1, type);
+        TestAssert.AreEqual(0, GroundDefenseReferences.ValidId(ref skill, skills, factory.enemyPool,
+            factory.enemySystem.bases.buffer, ref factory.enemyPool[3]));
+        TestAssert.AreEqual(0, owner.incomingSkillsCursor);
+        TestAssert.AreEqual(0, skill.id);
+    }
+
+    [TestMethod]
+    public void ProjectileConsumptionRejectsStaleIndexesWithoutChangingValidShots()
+    {
+        var shots = new LocalGeneralProjectile[8];
+        shots[3] = new LocalGeneralProjectile
+        {
+            id = 3, life = 10, astroId = 101,
+            target = new SkillTargetLocal { id = 3, type = ETargetType.Enemy }
+        };
+        TestAssert.AreEqual(3, GroundDefenseReferences_Patch.Snapshot(shots, 3).target.id);
+        foreach (var id in new[] { -1, 0, 2, 8, 65536 })
+            TestAssert.AreEqual(0, GroundDefenseReferences_Patch.Snapshot(shots, id).target.id);
+        TestAssert.AreEqual(0, GroundDefenseReferences_Patch.Snapshot<LocalGeneralProjectile>(null!, 3).id);
+        TestAssert.IsNull(GroundDefenseReferences_Patch.BaseAt(factory.enemySystem.bases.buffer, 65536));
+        TestAssert.AreSame(owner, GroundDefenseReferences_Patch.BaseAt(factory.enemySystem.bases.buffer, 1));
+
+        var native = AccessTools.Method(typeof(EnemyUnitComponent), nameof(EnemyUnitComponent.RunBehavior_Defense_Ground));
+        var code = GroundDefenseReferences_Patch.Transpiler(PatchProcessor.GetOriginalInstructions(native)).ToArray();
+        TestAssert.AreEqual(7, code.Count(i => i.operand is System.Reflection.MethodInfo m && m.Name == "Snapshot"));
+        TestAssert.AreEqual(1, code.Count(i => i.operand is System.Reflection.MethodInfo m && m.Name == "BaseAt"));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void PatchedNativeDefensePreservesPrecisionDroneInterception(bool shield)
+    {
+        var prefabs = SpaceSector.PrefabDescByModelIndex;
+        var harmony = new Harmony("nebulae.tests.ground-defense-drone");
+        try
+        {
+            SetStatic(typeof(SpaceSector), nameof(SpaceSector.PrefabDescByModelIndex),
+                new[] { new PrefabDesc { unitMaxMovementSpeed = 10, unitMaxMovementAcceleration = 10 } });
+            harmony.CreateClassProcessor(typeof(GroundDefenseReferences_Patch)).Patch();
+            var pool = new DataPoolRenderer<LocalGeneralProjectile>(); pool.ResetPool(); pool.Add();
+            if (shield) skills.fighterShieldPlasmas = pool; else skills.fighterPlasmas = pool;
+            pool.buffer[1] = new LocalGeneralProjectile
+            {
+                id = 1, life = 10, astroId = 101, pos = new Vector3(0, 200, 0),
+                target = new SkillTargetLocal { id = 3, type = ETargetType.Enemy }
+            };
+            ref var unit = ref factory.enemySystem.units.buffer[1];
+            unit.blockSkill = new SKILLID(1, shield ? ESkillType.FighterShieldPlasmas : ESkillType.FighterPlasmas);
+            unit.RunBehavior_Defense_Ground(0, skills, factory.enemyPool, factory.enemySystem.bases.buffer,
+                0, ref factory.enemyPool[3]);
+            TestAssert.AreEqual(29, unit.stateTick);
+            TestAssert.AreEqual(1, unit.blockSkill.id);
+            TestAssert.AreEqual(3, pool.buffer[1].target.id);
+        }
+        finally
+        {
+            harmony.UnpatchSelf();
+            SetStatic(typeof(SpaceSector), nameof(SpaceSector.PrefabDescByModelIndex), prefabs);
+        }
+    }
+
+    [TestMethod]
+    public void PatchedNativeDefenseRejectsADroneSlotThatIsStaleAtConsumption()
+    {
+        var prefabs = SpaceSector.PrefabDescByModelIndex;
+        var session = Multiplayer.Session;
+        var harmony = new Harmony("nebulae.tests.ground-defense-stale-drone");
+        try
+        {
+            SetStatic(typeof(SpaceSector), nameof(SpaceSector.PrefabDescByModelIndex),
+                new[] { new PrefabDesc { unitMaxMovementSpeed = 10, unitMaxMovementAcceleration = 10 } });
+            // Bypass the earlier multiplayer validation to exercise a reference that became
+            // invalid between validation and the actual native pool read.
+            Multiplayer.Session = null!;
+            skills.fighterPlasmas = new DataPoolRenderer<LocalGeneralProjectile>();
+            skills.fighterPlasmas.ResetPool();
+            factory.enemySystem.units.buffer[1].blockSkill = new SKILLID(65536, ESkillType.FighterPlasmas);
+            TestAssert.ThrowsExactly<IndexOutOfRangeException>(() => RunDefense());
+            harmony.CreateClassProcessor(typeof(GroundDefenseReferences_Patch)).Patch();
+            RunDefense();
+            TestAssert.AreEqual(19, factory.enemySystem.units.buffer[1].stateTick);
+            TestAssert.AreEqual(0, skills.fighterPlasmas.cursor - 1);
+        }
+        finally
+        {
+            harmony.UnpatchSelf();
+            Multiplayer.Session = session;
+            SetStatic(typeof(SpaceSector), nameof(SpaceSector.PrefabDescByModelIndex), prefabs);
+        }
+    }
+
+    private void RunDefense() => factory.enemySystem.units.buffer[1].RunBehavior_Defense_Ground(
+        0, skills, factory.enemyPool, factory.enemySystem.bases.buffer, 0, ref factory.enemyPool[3]);
+
+    [TestMethod]
     public void ArrayAccessRechecksARetargetedShotAndPreservesValidReferences()
     {
         var enemies = new EnemyData[8]; enemies[3].id = 3;
